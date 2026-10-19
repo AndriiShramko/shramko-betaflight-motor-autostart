@@ -19,18 +19,22 @@
 | `TX` (empty) | KISS telemetry | optional → pin `R` (UART5 RX, PD2) + `feature ESC_SENSOR` |
 | A / B / C | motor phases | motor, any order (direction is set in BLHeliSuite32 or via DShot commands) |
 
-## FC underside connector `4321RCGB` (JST-SH 8-pin)
+## FC underside connector `4321RCGB` (JST-SH 8-pin) and its cable
 
-Silkscreen order `4 3 2 1 R C G B` = `M4 M3 M2 M1 RX5 CU GND BAT`. The second connector `8765RCGB` carries motors 5–8. Cut one end off the supplied 8-pin cable and solder to its wires:
+Silkscreen order `4 3 2 1 R C G B` = `M4 M3 M2 M1 RX5 CU GND BAT`. The supplied 8-wire cable, plugged in, has these colours (checked on the owner's board photo): **white, white, white, white, yellow, green, black, red**. Cut the far end off and make three joints (solder + heat-shrink each, twist the three wires together):
 
-| Pin | Signal | Wire |
-|---|---|---|
-| `1` | motor 1 | ESC yellow |
-| `G` | ground | ESC black **and** the thin − from the ESC's `V−` pad |
-| `B` | board power in | thin + (20–22 AWG) from the ESC's `V+` pad |
-| `4 3 2 R C` | unused | insulate each |
+| Pin | Signal | Cable wire | Goes to |
+|---|---|---|---|
+| `1` | motor 1 | **white next to the yellow** | ESC **yellow** (signal, pad `S`) |
+| `G` | ground | **black** | ESC **black** (pad `GND`) |
+| `B` | board power in | **red** | **new** thin wire 22–24 AWG from battery + (ESC `V+` pad or the + cup of the ESC's battery plug) |
+| `4 3 2 R C` | unused | 3 other whites, **yellow**, green | cut short, insulate **each** |
 
-**Take the FC's thin power pair from the ESC's own battery pads (`V+` / `V−`), not from the battery plug, and twist it together with the yellow/black signal pair.** If it were tapped at the plug and the ESC's thick negative lead ever came loose, the ESC's return current (tens of amps) would flow through the thin signal ground and the FC's ground plane. Tapping at the ESC pads also keeps the FC and ESC grounds at the same potential (no I·R drop of the 10 AWG lead between them).
+- The cable's **yellow is not the signal** — it is the ESC-telemetry input (UART5 RX). The ESC's yellow goes to a **white**.
+- This build drives motors 1–4 with the same signal (`autostart_motors = 15`), so any of the four whites works; the one next to the yellow is pin 1.
+- The FC's ground comes through the ESC's black signal wire: inside the ESC the `GND` pad is the battery minus, and the FC draws only ~0.1–0.2 A. There is no second ground path, so if a thick ESC lead ever comes loose no ESC current can flow through the thin wires or the FC.
+- **Red = battery voltage.** Its joint must be fully insulated: battery + touching any white/yellow/green wire destroys the FC's processor.
+- After plugging the cable in, put a drop of hot glue or neutral silicone over the plug so vibration cannot pull it out. Soldering directly to the connector's 1 mm-pitch legs is possible but not recommended; the 12 square pads along that edge have no documented pin map.
 
 **Never put more than 8S on `B`.** For 10–12S feed `B/G` from a 12S-rated BEC (e.g. Matek BEC12S-PRO set to 12 V).
 

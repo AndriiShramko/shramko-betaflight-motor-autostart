@@ -125,9 +125,16 @@ def capture(a):
         motors = struct.unpack("<%dH" % (len(m) // 2), m)
         dbg = struct.unpack("<8h", d[:16])
         rpm, inv, vbat = -1, -1.0, -1.0
-        if t and t[0] >= a.motor and len(t) >= 1 + 13 * a.motor:
-            rpm, inv_raw = struct.unpack_from("<IH", t, 1 + 13 * (a.motor - 1))
-            inv = inv_raw / 100.0
+        if t and t[0] >= 1:
+            # all four outputs may carry the signal: report the motor whose ESC answers best
+            best = None
+            for i in range(min(t[0], 8)):
+                if len(t) >= 1 + 13 * (i + 1):
+                    r_, inv_raw = struct.unpack_from("<IH", t, 1 + 13 * i)
+                    if best is None or inv_raw < best[1]:
+                        best = (r_, inv_raw)
+            if best:
+                rpm, inv = best[0], best[1] / 100.0
         if b and len(b) >= 11:
             vbat = struct.unpack_from("<H", b, 9)[0] / 100.0
         f = dbg[4]

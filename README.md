@@ -46,7 +46,7 @@ Safety: the ESC always gets ≥ 3 s of stop frames after it is powered before th
 | `autostart_delay` | `10` | 0–600 s | delay before the ramp, counted **from power-on** (POWER) or from the click |
 | `autostart_ramp` | `100` | 0–6000 (0.1 s) | ramp time 0 → target; `100` = 10.0 s |
 | `autostart_throttle` | `15` | 0–100 % | target throttle, % of the ESC range (1000–2000 µs / DShot 48–2047) |
-| `autostart_motors` | `1` | bitmask | `1` = motor 1, `3` = motors 1+2, `15` = 1–4 … |
+| `autostart_motors` | `15` | bitmask | `15` = motors 1–4 (any of the four signal wires works), `1` = motor 1 only … |
 | `autostart_vbat_min` | `60` | 0–600 (0.1 V) | battery counts as plugged in at ≥ 6.0 V; countdown starts then. `0` = don't check |
 | `autostart_usb_inhibit` | `OFF` (generic builds: `ON`) | `OFF`, `ON` | `ON`: never spin while a USB host is connected |
 | `autostart_box` | `255` (none) | 40–43 | `BOXUSER1..4` permanent id: an AUX switch runs the program while the receiver link is valid |
@@ -65,8 +65,8 @@ save
 
 ![Wiring diagram](docs/img/wiring-en.png)
 
-- ESC **yellow** (middle pad `S`) → FC connector `4321RCGB` pin **`1`** (motor 1, PC9); ESC **black** (pad `GND`) → pin **`G`**.
-- FC power: a thin pair from the **ESC's battery pads `V+`/`V−`** (not the battery plug), twisted with the signal pair → pins **`B`** and **`G`** (the ESC has no BEC). **Max 8S on `B`.**
+- Use the 8-wire cable that comes with the FC (colours on the `4321RCGB` connector: white ×4, yellow, green, black, red). Three joints: ESC **yellow** → cable **white** (pin `1`; this build drives all four whites), ESC **black** → cable **black** (`G`), a new thin wire from **battery +** → cable **red** (`B`). The cable's yellow/green and the other whites are cut and insulated.
+- The FC's ground comes through the ESC's black signal wire (the ESC's `GND` pad is the battery minus); the ESC has no BEC. **Max 8S on `B`.**
 - Optional button: top-side pads **`RX4`** (PA1) + the **`GND`** pad next to it → `resource SERIAL_RX 4 NONE`, `resource AUTOSTART 1 A01`.
 - Correct wiring = on battery the ESC plays 3 rising tones, then 1 low + 1 high tone (signal seen, armed).
 

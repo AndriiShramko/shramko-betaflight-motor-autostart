@@ -150,7 +150,7 @@
 #define AUTOSTART_DEFAULT_DELAY_S      10
 #define AUTOSTART_DEFAULT_RAMP_DS      100     // 10.0 s
 #define AUTOSTART_DEFAULT_THROTTLE_PCT 15
-#define AUTOSTART_DEFAULT_MOTOR_MASK   0x01    // motor 1 = pin "1" of the "4321RCGB" connector (PC9)
+#define AUTOSTART_DEFAULT_MOTOR_MASK   0x0F    // motors 1-4: the four white wires of the "4321RCGB" cable all carry the signal
 #define AUTOSTART_DEFAULT_USB_INHIBIT  0       // owner tests "hot" over USB; the battery gate (autostart_vbat_min) keeps USB-only safe
 #define AUTOSTART_DEFAULT_VBAT_MIN_DV  60      // 6.0 V: countdown starts when the battery is plugged in
 

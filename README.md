@@ -36,7 +36,7 @@ Arbitration, highest priority first:
 2. **Receiver link valid** for 0.5 s → stock Betaflight; an AUX switch (`autostart_box`) can run the same program.
 3. **No receiver** → `POWER` mode starts the program at boot; a **button click** starts it, the next click stops it.
 
-Safety: never drives before 3 s of uptime (the ESC always sees ≥ 3 s of stop frames to arm), never takes a pin owned by another driver, generic default is `OFF` (only the project board config enables `POWER`).
+Safety: the ESC always gets ≥ 3 s of stop frames after it is powered before the ramp; the program parameters are frozen when it starts (a CLI `set` while running never steps the throttle); entering the CLI or moving a slider in the Configurator Motors tab stops the program and hands the motor to you; never takes a pin owned by another driver; generic default is `OFF` (only the project board config enables `POWER`).
 
 ## CLI settings
 
@@ -51,6 +51,7 @@ Safety: never drives before 3 s of uptime (the ESC always sees ≥ 3 s of stop f
 | `autostart_usb_inhibit` | `OFF` (generic builds: `ON`) | `OFF`, `ON` | `ON`: never spin while a USB host is connected |
 | `autostart_box` | `255` (none) | 40–43 | `BOXUSER1..4` permanent id: an AUX switch runs the program while the receiver link is valid |
 | `resource AUTOSTART 1 <pin>` | none | any free pin | push-button between that pad and GND (internal pull-up) |
+| `dshot_bidir` | `OFF` | `OFF`, `ON` | turn `ON` before plugging the battery to see the ESC's RPM over USB (needs BLHeli_32 ≥ 32.7) |
 | `debug_mode = AUTOSTART` | on in this build | — | debug[0..7] = state, % ×10, ms in state /10, uptime 0.1 s, flags (USB·RX·button·battery), battery 0.1 V, time since battery 0.1 s, source |
 
 Change the target to 80 %:
@@ -65,7 +66,7 @@ save
 ![Wiring diagram](docs/img/wiring-en.png)
 
 - ESC **yellow** (middle pad `S`) → FC connector `4321RCGB` pin **`1`** (motor 1, PC9); ESC **black** (pad `GND`) → pin **`G`**.
-- FC power: a thin pair from the same 6S battery → pins **`B`** and **`G`** (the ESC has no BEC). **Max 8S on `B`.**
+- FC power: a thin pair from the **ESC's battery pads `V+`/`V−`** (not the battery plug), twisted with the signal pair → pins **`B`** and **`G`** (the ESC has no BEC). **Max 8S on `B`.**
 - Optional button: top-side pads **`RX4`** (PA1) + the **`GND`** pad next to it → `resource SERIAL_RX 4 NONE`, `resource AUTOSTART 1 A01`.
 - Correct wiring = on battery the ESC plays 3 rising tones, then 1 low + 1 high tone (signal seen, armed).
 
@@ -91,8 +92,14 @@ Details and sources: [docs/wiring.md](docs/wiring.md).
 | No battery (USB only), battery gate 6.0 V | motor stays at stop (negative control) |
 | Battery gate off, final firmware | starts 10.06 s, target at 19.95 s, max deviation 1.0 µs |
 | Bidirectional DShot ON | same curve; telemetry correctly reports "no ESC" |
+| CLI `set autostart_throttle = 80` while running (red-team case) | motor **stops** (no jump to 80 %), no restart |
+| Configurator Motors tab writes 1300 µs while running | program yields, motor stays at 1300 µs, slider back → 1000 |
+| Receiver (MSP receiver driven from the PC): link on, AUX off | autostart never drives the motor |
+| … AUX2 → `autostart_box` | same program runs, target at 20.0 s |
+| … link lost | motor stops, no restart |
+| Reviewed firmware, final ramp | delay 10.01 s, ramp 10.00 s (host clock 10.03 s), max deviation 1.0 µs |
 
-Raw data: [docs/selftest/](docs/selftest/). 21 unit tests of the state machine (incl. battery plugged later / unplugged / glitch) (Betaflight googletest harness) + regression tests of the touched modules: `docker run --rm -v "$PWD:/repo" shramko-bf-build:2025.12.1 bash /repo/build/test.sh`.
+Tools: `tools/autostart_selftest.py` (timing measured on the FC clock, independent of the expected values; `--self-check` proves the evaluator rejects a ramp 1 s early/late or a wrong plateau), `tools/interference_test.py`, `tools/rx_arbitration_test.py`. Raw data: [docs/selftest/](docs/selftest/). 26 unit tests of the state machine (incl. battery plugged later / unplugged / glitch, settings change while running, CLI session, Motors-tab takeover, EMI spikes on the button pin; each checked with a code mutant that must fail it) (Betaflight googletest harness) + regression tests of the touched modules: `docker run --rm -v "$PWD:/repo" shramko-bf-build:2025.12.1 bash /repo/build/test.sh`.
 
 ## Build from source
 

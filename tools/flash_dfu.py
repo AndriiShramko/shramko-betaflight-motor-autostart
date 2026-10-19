@@ -1,8 +1,9 @@
 """Flash a Betaflight .hex over USB DFU without the Configurator (Windows, STM32CubeProgrammer CLI).
 usage: python flash_dfu.py COM6 firmware.hex
 Enters the Betaflight CLI, sends `bl` (reboot to the STM32 ROM bootloader), waits for the DFU device,
-writes + verifies the hex and starts it. The flight controller's settings are kept (only the firmware
-area is erased).
+writes + verifies the hex and starts it. Only the firmware area is erased, but Betaflight itself resets
+ALL settings at the first boot when the new firmware adds or changes a parameter group (e.g. the first
+flash of this autostart build over stock Betaflight). Save `diff all` before flashing and compare after.
 """
 import os, subprocess, sys, time
 import serial
@@ -11,7 +12,14 @@ PROG = r"C:\Program Files\STMicroelectronics\STM32Cube\STM32CubeProgrammer\bin\S
 
 
 def enter_bootloader(port):
-    s = serial.Serial(port, 115200, timeout=0.3)
+    for _ in range(40):                 # the board may still be rebooting after a CLI "exit"/"save"
+        try:
+            s = serial.Serial(port, 115200, timeout=0.3)
+            break
+        except serial.SerialException:
+            time.sleep(0.5)
+    else:
+        raise SystemExit("port %s not found" % port)
     time.sleep(0.3)
     for _ in range(10):
         s.reset_input_buffer()

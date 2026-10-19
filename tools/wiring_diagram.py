@@ -15,7 +15,7 @@ T = {
         batt="LiPo 6S battery\n(XT60)", esc="Flycolor X-Cross HV3 160A\n(BLHeli_32, no BEC)",
         fc="HGLRC F405 8S V2 — underside\n8-pin connector \"4321RCGB\"",
         motor="Motor\n(any phase order)", thick="thick 10 AWG (ESC power)",
-        thin="thin pair 20–22 AWG\n(FC power from the same battery)",
+        thin="thin pair 20–22 AWG = FC power,\ntaken from the ESC battery pads V+ / V−\n(not from the battery plug);\ntwist it with the signal pair",
         sig="factory twisted pair:\nyellow = signal (S)\nblack = signal ground",
         unused="M4 M3 M2 RX5 CU: not used, insulate each wire",
         cut="cut one end off the supplied 8-pin cable, solder to its wires",
@@ -28,7 +28,7 @@ T = {
         batt="Батарея LiPo 6S\n(XT60)", esc="Flycolor X-Cross HV3 160A\n(BLHeli_32, без BEC)",
         fc="HGLRC F405 8S V2 — низ платы\nразъём 8 pin «4321RCGB»",
         motor="Мотор\n(фазы в любом порядке)", thick="толстые 10 AWG (питание ESC)",
-        thin="тонкая пара 20–22 AWG\n(питание полётника от той же батареи)",
+        thin="тонкая пара 20–22 AWG = питание полётника,\nс площадок V+ / V− на ESC\n(не с разъёма батареи);\nскрутить с сигнальной парой",
         sig="заводская витая пара:\nжёлтый = сигнал (S)\nчёрный = земля сигнала",
         unused="M4 M3 M2 RX5 CU: не нужны, каждый провод заизолировать",
         cut="у шлейфа 8 pin из коробки отрезать один разъём, паять к его проводам",
@@ -92,9 +92,9 @@ ax.plot([68, 68, x_m1, x_m1], [51, 38, 38, top], color="#e6b800", lw=3.5)
 ax.plot([76, 76, x_gnd - 0.8, x_gnd - 0.8], [51, 40, 40, top], color="#111", lw=3.5)
 ax.text(100, 45, T["sig"], fontsize=10, color="#333", va="center")
 # thin FC power from battery
-ax.plot([20, 20, x_bat, x_bat], [55, 32, 32, top], color="#d62728", lw=2)
-ax.plot([10, 10, x_gnd + 0.8, x_gnd + 0.8], [55, 29, 29, top], color="#111", lw=2)
-ax.text(21.5, 42, T["thin"], fontsize=10, color="#333")
+ax.plot([53.2, 53.2, 44, 44, x_bat, x_bat], [51, 49, 49, 30, 30, top], color="#d62728", lw=2)
+ax.plot([85.5, 85.5, 92, 92, x_gnd + 0.8, x_gnd + 0.8], [51, 49, 49, 27, 27, top], color="#111", lw=2)
+ax.text(2, 30, T["thin"], fontsize=10, color="#333", va="top")
 ax.text(fx - 6, -3.5, T["unused"], fontsize=9, color="#555")
 ax.text(fx - 6, -6.5, T["cut"], fontsize=9, color="#555")
 

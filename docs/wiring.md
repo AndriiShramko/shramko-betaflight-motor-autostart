@@ -26,9 +26,11 @@ Silkscreen order `4 3 2 1 R C G B` = `M4 M3 M2 M1 RX5 CU GND BAT`. The second co
 | Pin | Signal | Wire |
 |---|---|---|
 | `1` | motor 1 | ESC yellow |
-| `G` | ground | ESC black **and** battery − (thin) |
-| `B` | board power in | battery + (thin, 20–22 AWG) |
+| `G` | ground | ESC black **and** the thin − from the ESC's `V−` pad |
+| `B` | board power in | thin + (20–22 AWG) from the ESC's `V+` pad |
 | `4 3 2 R C` | unused | insulate each |
+
+**Take the FC's thin power pair from the ESC's own battery pads (`V+` / `V−`), not from the battery plug, and twist it together with the yellow/black signal pair.** If it were tapped at the plug and the ESC's thick negative lead ever came loose, the ESC's return current (tens of amps) would flow through the thin signal ground and the FC's ground plane. Tapping at the ESC pads also keeps the FC and ESC grounds at the same potential (no I·R drop of the 10 AWG lead between them).
 
 **Never put more than 8S on `B`.** For 10–12S feed `B/G` from a 12S-rated BEC (e.g. Matek BEC12S-PRO set to 12 V).
 

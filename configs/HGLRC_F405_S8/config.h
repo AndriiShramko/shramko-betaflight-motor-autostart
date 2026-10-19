@@ -156,5 +156,6 @@
 
 // Survive any config reset (Betaflight resets the whole config when a parameter group changes):
 #define DEFAULT_MOTOR_DSHOT_SPEED      MOTOR_PROTOCOL_DSHOT300   // ~50 cm twisted pair next to 160 A wiring
-#define DEFAULT_DSHOT_TELEMETRY        DSHOT_TELEMETRY_ON        // bidirectional DShot: ESC RPM visible over USB
+// dshot_bidir stays OFF by default: an ESC older than BLHeli_32 32.7 would never arm with it.
+// Turn it on from the CLI for bench tests (ESC RPM over USB) once the ESC is known to answer.
 #define DEBUG_MODE                     DEBUG_AUTOSTART           // state / timing for tools/autostart_selftest.py

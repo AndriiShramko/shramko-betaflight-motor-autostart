@@ -157,10 +157,10 @@ index e4267ea..a3c40a6 100644
  
 diff --git a/src/main/fc/autostart.c b/src/main/fc/autostart.c
 new file mode 100644
-index 0000000..e20e651
+index 0000000..b24a833
 --- /dev/null
 +++ b/src/main/fc/autostart.c
-@@ -0,0 +1,448 @@
+@@ -0,0 +1,511 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -213,6 +213,8 @@ index 0000000..e20e651
 +
 +#include "build/debug.h"
 +
++#include "cli/cli.h"
++
 +#include "config/feature.h"
 +
 +#include "drivers/io.h"
@@ -241,7 +243,8 @@ index 0000000..e20e651
 +#include "fc/autostart.h"
 +
 +#define AUTOSTART_MIN_UPTIME_MS      3000    // never drive before 3 s uptime: ESC sees >= 3 s of stop frames, USB host can enumerate
-+#define AUTOSTART_DEBOUNCE_MS        40      // button level must be stable this long
++#define AUTOSTART_DEBOUNCE_MS        60      // button level must be stable this long (3+ ticks)
++#define AUTOSTART_BUTTON_READS       8       // pin reads per tick; all must agree (rejects coupled spikes)
 +#define AUTOSTART_RX_CONFIRM_MS      500     // RX link must stay valid this long before it takes over
 +#define AUTOSTART_COUNTDOWN_BEEP_MS  1000    // one short beep per second during the delay
 +#define AUTOSTART_POWER_CONFIRM_MS   300     // battery voltage must be stable this long to count as plugged in
@@ -278,13 +281,27 @@ index 0000000..e20e651
 +
 +static int16_t commandedPermille;   // last commanded output, percent x10 (debug only)
 +
++// Program parameters are copied at start and used until the next start: a CLI "set" while the
++// motor runs must never step the output (the live config is written immediately by the CLI).
++typedef struct {
++    uint16_t delaySeconds;
++    uint16_t rampDeciseconds;
++    uint8_t throttlePercent;
++    uint8_t motorMask;
++} autostartProgram_t;
++static autostartProgram_t program;
++static float lastWritten;           // value we put into motor_disarmed[] for our motors
++
 +// Battery power. The ESC has no BEC: it only wakes up (and arms on stop frames) when the battery is
 +// plugged in. On USB the board runs without a battery, so the countdown must start at the battery,
 +// otherwise the ESC would power up into a running ramp and refuse to arm.
 +static bool powerRaw;
 +static timeMs_t powerRawChangeMs;
 +static bool powerPresent;
-+static timeMs_t powerSinceMs;
++static timeMs_t powerSinceMs;       // countdown origin: 0 when the battery powered the board, else plug-in time
++static timeMs_t powerDetectMs;      // ESC power-up: 0 if the battery was there at the first check, else when it appeared
++static bool powerFirstCheckDone;
++static bool powerAtFirstCheck;
 +
 +static IO_t buttonIo = IO_NONE;
 +static bool buttonRawPressed;
@@ -304,13 +321,14 @@ index 0000000..e20e651
 +    commandedPermille = (int16_t)lrintf(pct * 10.0f);
 +    const uint16_t external = PWM_RANGE_MIN + (uint16_t)lrintf(pct * (PWM_RANGE_MAX - PWM_RANGE_MIN) / 100.0f);
 +    const float value = (external <= PWM_RANGE_MIN) ? mixerRuntime.disarmMotorOutput : motorConvertFromExternal(external);
-+    const uint8_t mask = autostartConfig()->motorMask;
++    const uint8_t mask = program.motorMask;
 +
 +    for (int i = 0; i < autostartMotorCount(); i++) {
 +        if (mask & (1U << i)) {
 +            motor_disarmed[i] = value;
 +        }
 +    }
++    lastWritten = value;
 +    outputsWritten = true;
 +}
 +
@@ -319,7 +337,7 @@ index 0000000..e20e651
 +    if (!outputsWritten) {
 +        return;
 +    }
-+    const uint8_t mask = autostartConfig()->motorMask;
++    const uint8_t mask = program.motorMask;
 +    for (int i = 0; i < autostartMotorCount(); i++) {
 +        if (mask & (1U << i)) {
 +            motor_disarmed[i] = mixerRuntime.disarmMotorOutput;
@@ -334,8 +352,26 @@ index 0000000..e20e651
 +    return state != AUTOSTART_STATE_IDLE;
 +}
 +
++static bool outputsOverwritten(void)
++{
++    if (!outputsWritten) {
++        return false;
++    }
++    for (int i = 0; i < autostartMotorCount(); i++) {
++        if ((program.motorMask & (1U << i)) && motor_disarmed[i] != lastWritten) {
++            return true;
++        }
++    }
++    return false;
++}
++
 +static void programStart(autostartSource_e newSource, timeMs_t nowMs)
 +{
++    const autostartConfig_t *cfg = autostartConfig();
++    program.delaySeconds = cfg->delaySeconds;
++    program.rampDeciseconds = cfg->rampDeciseconds;
++    program.throttlePercent = cfg->throttlePercent;
++    program.motorMask = cfg->motorMask;
 +    source = newSource;
 +    state = AUTOSTART_STATE_DELAY;
 +    // power-on start counts the delay from the moment the battery appeared ("plug in, 1, 2, 3 ... 10";
@@ -359,7 +395,17 @@ index 0000000..e20e651
 +        return false;
 +    }
 +
-+    const bool rawPressed = !IORead(buttonIo); // internal pull-up: released = high, pressed (to GND) = low
++    // internal pull-up: released = high, pressed (to GND) = low; a spike coupled from the ESC wiring
++    // must not look like a press, so all reads of this tick have to agree
++    int lowReads = 0;
++    for (int i = 0; i < AUTOSTART_BUTTON_READS; i++) {
++        lowReads += IORead(buttonIo) ? 0 : 1;
++    }
++    if (lowReads != 0 && lowReads != AUTOSTART_BUTTON_READS) {
++        buttonChangeMs = nowMs;     // mixed reads: treat as unstable
++        return false;
++    }
++    const bool rawPressed = (lowReads == AUTOSTART_BUTTON_READS);
 +
 +    if (rawPressed != buttonRawPressed) {
 +        buttonRawPressed = rawPressed;
@@ -401,7 +447,7 @@ index 0000000..e20e651
 +// the ESC has had at least AUTOSTART_MIN_UPTIME_MS of stop frames since it got power
 +static bool escHadTimeToArm(timeMs_t nowMs)
 +{
-+    return uptimeReached && powerPresent && cmpTimeMs(nowMs, powerSinceMs) >= AUTOSTART_MIN_UPTIME_MS;
++    return uptimeReached && powerPresent && cmpTimeMs(nowMs, powerDetectMs) >= AUTOSTART_MIN_UPTIME_MS;
 +}
 +
 +// debug_mode = AUTOSTART: [0] state, [1] commanded percent x10, [2] ms in current state / 10,
@@ -453,6 +499,9 @@ index 0000000..e20e651
 +    powerRawChangeMs = 0;
 +    powerPresent = false;
 +    powerSinceMs = 0;
++    powerDetectMs = 0;
++    powerFirstCheckDone = false;
++    powerAtFirstCheck = false;
 +
 +    rcBoxId = BOXID_NONE;
 +    if (cfg->rcBoxPermanentId != PERMANENT_ID_NONE) {
@@ -495,6 +544,10 @@ index 0000000..e20e651
 +
 +    // battery power detection (see powerRaw)
 +    const bool rawPower = batteryPowerRaw(cfg);
++    if (!powerFirstCheckDone) {
++        powerFirstCheckDone = true;
++        powerAtFirstCheck = rawPower;   // battery already there: it powered the board (and the ESC) at boot
++    }
 +    if (rawPower != powerRaw) {
 +        powerRaw = rawPower;
 +        powerRawChangeMs = nowMs;
@@ -502,6 +555,8 @@ index 0000000..e20e651
 +    const timeDelta_t powerStableMs = cmpTimeMs(nowMs, powerRawChangeMs);
 +    if (!powerPresent && powerRaw && powerStableMs >= AUTOSTART_POWER_CONFIRM_MS) {
 +        powerPresent = true;
++        powerDetectMs = powerAtFirstCheck ? 0 : powerRawChangeMs;
++        powerAtFirstCheck = false;      // a later re-plug counts from its own moment
 +        powerSinceMs = (powerRawChangeMs <= AUTOSTART_BOOT_POWER_WINDOW_MS) ? 0 : powerRawChangeMs;
 +        if (cfg->mode == AUTOSTART_MODE_POWER && !rxSeen) {
 +            powerTriggerPending = true;     // battery plugged in: (re)start the power-on program
@@ -514,9 +569,18 @@ index 0000000..e20e651
 +        }
 +    }
 +
++    // a CLI session or another writer of motor_disarmed[] (Configurator Motors tab, CLI "motor",
++    // cliExit reset) stops the program for good: the person at the computer is in charge now
++    if (programActive() && (cliMode || outputsOverwritten())) {
++        outputsWritten = outputsWritten && !outputsOverwritten();   // don't stomp on the other writer
++        programStop(nowMs);
++        powerTriggerPending = false;
++    }
++
 +    // 1. hard inhibits
 +    if (ARMING_FLAG(ARMED)
 +        || featureIsEnabled(FEATURE_3D)
++        || cliMode
 +        || (cfg->usbInhibit && usbHostPresent())) {
 +        if (programActive() || outputsWritten) {
 +            programStop(nowMs);
@@ -576,7 +640,7 @@ index 0000000..e20e651
 +        break;
 +
 +    case AUTOSTART_STATE_DELAY:
-+        if (escHadTimeToArm(nowMs) && cmpTimeMs(nowMs, stateStartMs) >= (timeDelta_t)(cfg->delaySeconds * 1000U)) {
++        if (escHadTimeToArm(nowMs) && cmpTimeMs(nowMs, stateStartMs) >= (timeDelta_t)(program.delaySeconds * 1000U)) {
 +            state = AUTOSTART_STATE_RAMP;
 +            stateStartMs = nowMs;
 +            beeperConfirmationBeeps(3);
@@ -587,21 +651,20 @@ index 0000000..e20e651
 +        break;
 +
 +    case AUTOSTART_STATE_RAMP: {
-+        const timeDelta_t rampMs = (timeDelta_t)(cfg->rampDeciseconds * 100U);
++        const timeDelta_t rampMs = (timeDelta_t)(program.rampDeciseconds * 100U);
 +        const timeDelta_t elapsedMs = cmpTimeMs(nowMs, stateStartMs);
 +        if (rampMs <= 0 || elapsedMs >= rampMs) {
 +            state = AUTOSTART_STATE_RUN;
 +            stateStartMs = nowMs;
-+            writeOutputs(cfg->throttlePercent);
++            writeOutputs(program.throttlePercent);
 +        } else {
-+            writeOutputs((float)cfg->throttlePercent * (float)elapsedMs / (float)rampMs);
++            writeOutputs((float)program.throttlePercent * (float)elapsedMs / (float)rampMs);
 +        }
 +        break;
 +    }
 +
 +    case AUTOSTART_STATE_RUN:
-+        // re-written every tick: survives cliExit()/MSP writes resetting motor_disarmed[]
-+        writeOutputs(cfg->throttlePercent);
++        writeOutputs(program.throttlePercent);
 +        break;
 +    }
 +
@@ -769,7 +832,7 @@ index e816db0..b166d96 100644
  #endif
 diff --git a/src/main/pg/autostart.c b/src/main/pg/autostart.c
 new file mode 100644
-index 0000000..cdf39fc
+index 0000000..f1ad535
 --- /dev/null
 +++ b/src/main/pg/autostart.c
 @@ -0,0 +1,76 @@
@@ -834,7 +897,7 @@ index 0000000..cdf39fc
 +#define AUTOSTART_BUTTON_PIN NONE
 +#endif
 +
-+PG_REGISTER_WITH_RESET_TEMPLATE(autostartConfig_t, autostartConfig, PG_AUTOSTART_CONFIG, 1);
++PG_REGISTER_WITH_RESET_TEMPLATE(autostartConfig_t, autostartConfig, PG_AUTOSTART_CONFIG, 0);
 +
 +PG_RESET_TEMPLATE(autostartConfig_t, autostartConfig,
 +    .mode = AUTOSTART_DEFAULT_MODE,
@@ -958,10 +1021,10 @@ index 0de224c..5dc863d 100644
  		$(USER_DIR)/common/filter.c \
 diff --git a/src/test/unit/autostart_unittest.cc b/src/test/unit/autostart_unittest.cc
 new file mode 100644
-index 0000000..c2c578a
+index 0000000..7058b47
 --- /dev/null
 +++ b/src/test/unit/autostart_unittest.cc
-@@ -0,0 +1,492 @@
+@@ -0,0 +1,569 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -1030,15 +1093,18 @@ index 0000000..c2c578a
 +    static int pinInitCount;
 +    static uint8_t fakeIoRec;
 +    static uint16_t fakeVbat;       // 0.01 V
++    static bool spikeFirstRead;     // a short EMI spike pulls the pin low exactly at the first read of every tick
++    static int tickReadIndex;
 +
 +    uint8_t armingFlags = 0;
 +    uint8_t debugMode = DEBUG_NONE;
++    bool cliMode = false;
 +    int16_t debug[DEBUG16_VALUE_COUNT];
 +    float motor_disarmed[MAX_SUPPORTED_MOTORS];
 +    mixerRuntime_t mixerRuntime;
 +
 +    timeMs_t millis(void) { return fakeMs; }
-+    bool IORead(IO_t io) { UNUSED(io); return fakePinHigh; }
++    bool IORead(IO_t io) { UNUSED(io); const bool spike = spikeFirstRead && tickReadIndex == 0; tickReadIndex++; return spike ? false : fakePinHigh; }
 +    IO_t IOGetByTag(ioTag_t tag) { return tag ? (IO_t)&fakeIoRec : IO_NONE; }
 +    void IOInit(IO_t io, resourceOwner_e owner, uint8_t index) { UNUSED(io); UNUSED(owner); UNUSED(index); pinInitCount++; }
 +    void IOConfigGPIO(IO_t io, ioConfig_t cfg) { UNUSED(io); UNUSED(cfg); }
@@ -1096,6 +1162,9 @@ index 0000000..c2c578a
 +    fakeActiveBox = (boxId_e)BOXID_NONE;
 +    fakeFeatures = 0;
 +    fakeVbat = 2500;        // 6S battery present from power-on (battery-only use)
++    spikeFirstRead = false;
++    tickReadIndex = 0;
++    cliMode = false;
 +    beepCalls = 0;
 +    pinInitCount = 0;
 +    armingFlags = 0;
@@ -1113,6 +1182,7 @@ index 0000000..c2c578a
 +{
 +    while (fakeMs < targetMs) {
 +        fakeMs += 20;
++        tickReadIndex = 0;
 +        autostartUpdate(fakeMs * 1000);
 +    }
 +}
@@ -1453,4 +1523,74 @@ index 0000000..c2c578a
 +    autostartInit();
 +    runUntil(25000);
 +    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++}
++
++// Red-team review: a CLI "set" while the motor runs must not step the output.
++TEST(AutostartTest, SettingsChangeDuringRunDoesNotJump)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartInit();
++    runUntil(25000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++    autostartConfigMutable()->throttlePercent = 80;    // written live by the CLI
++    autostartConfigMutable()->motorMask = 0x0F;
++    runUntil(26000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);             // program keeps the values it started with
++    EXPECT_EQ(OTHER, motor_disarmed[1]);
++}
++
++TEST(AutostartTest, CliSessionStopsProgramForGood)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartInit();
++    runUntil(25000);
++    cliMode = true;
++    runUntil(25020);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++    cliMode = false;                                    // "exit noreboot"
++    runUntil(60000);
++    EXPECT_FALSE(autostartIsDrivingMotors());           // no surprise restart
++}
++
++TEST(AutostartTest, ForeignMotorWriteYields)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartInit();
++    runUntil(25000);
++    motor_disarmed[0] = 1300.0f;                        // Configurator Motors tab slider
++    runUntil(25100);
++    EXPECT_EQ(1300.0f, motor_disarmed[0]);              // neither overwritten nor reset by us
++    EXPECT_FALSE(autostartIsDrivingMotors());
++}
++
++// battery plugged 0.5 s after a USB boot: counting starts at boot, but the ESC still gets 3 s of stop frames
++TEST(AutostartTest, EscGetsStopFramesWhenBatteryFollowsUsbBoot)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartConfigMutable()->delaySeconds = 0;
++    autostartConfigMutable()->rampDeciseconds = 0;
++    fakeVbat = 10;
++    autostartInit();
++    runUntil(2000);
++    fakeVbat = 2500;                                    // ESC powers up at t = 2.0 s
++    runUntil(4980);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++    runUntil(5400);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, ButtonSpikesAreNotClicks)
++{
++    setDefaults(AUTOSTART_MODE_BUTTON);
++    autostartConfigMutable()->buttonTag = 1;
++    autostartInit();
++    runUntil(5000);                                     // battery confirmed, a real click would start now
++    spikeFirstRead = true;                              // every tick: 1 of the reads pulled low by a short spike
++    runUntil(60000);
++    EXPECT_FALSE(autostartIsDrivingMotors());
 +}

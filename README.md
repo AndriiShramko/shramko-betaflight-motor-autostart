@@ -29,6 +29,8 @@ The module writes the throttle into the same place the Configurator **Motors tab
 
 `IDLE → DELAY (countdown) → RAMP (linear) → RUN (hold)`
 
+**Battery gate.** ESCs without a BEC wake up only when the battery is plugged in, and a BLHeli_32 ESC will not arm if it powers up into a non-zero throttle. The board measures the battery voltage on its `B` pin, so the countdown starts **when the battery appears** (on battery-only power that is the boot itself). Unplugging the battery for > 0.5 s stops the program; plugging it back in starts the countdown again. That is what makes "hot" bench testing with the USB cable attached safe and predictable.
+
 Arbitration, highest priority first:
 1. **Armed** by a receiver, 3D mode, or (optionally) a **computer connected** → the program stops and stock Betaflight owns the motors.
 2. **Receiver link valid** for 0.5 s → stock Betaflight; an AUX switch (`autostart_box`) can run the same program.
@@ -45,10 +47,11 @@ Safety: never drives before 3 s of uptime (the ESC always sees ≥ 3 s of stop f
 | `autostart_ramp` | `100` | 0–6000 (0.1 s) | ramp time 0 → target; `100` = 10.0 s |
 | `autostart_throttle` | `15` | 0–100 % | target throttle, % of the ESC range (1000–2000 µs / DShot 48–2047) |
 | `autostart_motors` | `1` | bitmask | `1` = motor 1, `3` = motors 1+2, `15` = 1–4 … |
-| `autostart_usb_inhibit` | `ON` | `OFF`, `ON` | don't spin while a USB host is connected (turn `OFF` for bench tests over USB) |
+| `autostart_vbat_min` | `60` | 0–600 (0.1 V) | battery counts as plugged in at ≥ 6.0 V; countdown starts then. `0` = don't check |
+| `autostart_usb_inhibit` | `OFF` (generic builds: `ON`) | `OFF`, `ON` | `ON`: never spin while a USB host is connected |
 | `autostart_box` | `255` (none) | 40–43 | `BOXUSER1..4` permanent id: an AUX switch runs the program while the receiver link is valid |
 | `resource AUTOSTART 1 <pin>` | none | any free pin | push-button between that pad and GND (internal pull-up) |
-| `debug_mode = AUTOSTART` | — | — | debug[0..7] = state, % ×10, ms in state /10, uptime 0.1 s, USB, RX, button, source |
+| `debug_mode = AUTOSTART` | on in this build | — | debug[0..7] = state, % ×10, ms in state /10, uptime 0.1 s, flags (USB·RX·button·battery), battery 0.1 V, time since battery 0.1 s, source |
 
 Change the target to 80 %:
 
@@ -72,9 +75,9 @@ Details and sources: [docs/wiring.md](docs/wiring.md).
 
 1. Download the `.hex` from [Releases](https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/releases) (or build it, below).
 2. Flash with Betaflight Configurator (*Load firmware [Local]*) or `python tools/flash_dfu.py COM6 firmware.hex` (STM32CubeProgrammer CLI, no Configurator).
-3. **Remove the propeller**, then check the settings in the CLI (`get autostart`).
-4. Optional bench check over USB: `set autostart_usb_inhibit = OFF`, `set debug_mode = AUTOSTART`, `save`, then
-   `python tools/autostart_selftest.py COM6 --plot ramp.png` — reboots the board and prints PASS/FAIL, the curve and (with `dshot_bidir = ON` and an ESC on battery) the motor RPM.
+3. **Remove the propeller**, then check the settings in the CLI (`get autostart`). Flashing this firmware over another Betaflight resets all settings once (Betaflight does that when a parameter group is added) — this build's defaults already are the project settings (DShot300, bidirectional DShot, autostart 10 s / 10 s / 15 %).
+4. Bench check over USB (no battery: `set autostart_vbat_min = 0`), or "hot" with the battery and ESC attached (props off):
+   `python tools/autostart_selftest.py COM6 --plot ramp.png` — reboots the board and prints PASS/FAIL, the curve and, from the ESC's bidirectional-DShot telemetry, the motor RPM and the battery voltage.
 
 ## Verified on hardware (2026-10-19, HGLRC F405 8S V2, no ESC)
 
@@ -85,9 +88,11 @@ Details and sources: [docs/wiring.md](docs/wiring.md).
 | 3 s / 5 s / 80 % | starts 3.0 s, target at 8.0 s, plateau 1800 µs, slope 160.2 µs/s |
 | `autostart_usb_inhibit = ON` with USB connected | motor stays at stop (negative control) |
 | `autostart_mode = OFF` | motor stays at stop (negative control) |
+| No battery (USB only), battery gate 6.0 V | motor stays at stop (negative control) |
+| Battery gate off, final firmware | starts 10.06 s, target at 19.95 s, max deviation 1.0 µs |
 | Bidirectional DShot ON | same curve; telemetry correctly reports "no ESC" |
 
-Raw data: [docs/selftest/](docs/selftest/). 17 unit tests of the state machine (Betaflight googletest harness) + regression tests of the touched modules: `docker run --rm -v "$PWD:/repo" shramko-bf-build:2025.12.1 bash /repo/build/test.sh`.
+Raw data: [docs/selftest/](docs/selftest/). 21 unit tests of the state machine (incl. battery plugged later / unplugged / glitch) (Betaflight googletest harness) + regression tests of the touched modules: `docker run --rm -v "$PWD:/repo" shramko-bf-build:2025.12.1 bash /repo/build/test.sh`.
 
 ## Build from source
 

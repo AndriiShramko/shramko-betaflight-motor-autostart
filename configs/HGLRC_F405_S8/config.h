@@ -151,4 +151,10 @@
 #define AUTOSTART_DEFAULT_RAMP_DS      100     // 10.0 s
 #define AUTOSTART_DEFAULT_THROTTLE_PCT 15
 #define AUTOSTART_DEFAULT_MOTOR_MASK   0x01    // motor 1 = pin "1" of the "4321RCGB" connector (PC9)
-#define AUTOSTART_DEFAULT_USB_INHIBIT  1       // never spin while a computer is connected
+#define AUTOSTART_DEFAULT_USB_INHIBIT  0       // owner tests "hot" over USB; the battery gate (autostart_vbat_min) keeps USB-only safe
+#define AUTOSTART_DEFAULT_VBAT_MIN_DV  60      // 6.0 V: countdown starts when the battery is plugged in
+
+// Survive any config reset (Betaflight resets the whole config when a parameter group changes):
+#define DEFAULT_MOTOR_DSHOT_SPEED      MOTOR_PROTOCOL_DSHOT300   // ~50 cm twisted pair next to 160 A wiring
+#define DEFAULT_DSHOT_TELEMETRY        DSHOT_TELEMETRY_ON        // bidirectional DShot: ESC RPM visible over USB
+#define DEBUG_MODE                     DEBUG_AUTOSTART           // state / timing for tools/autostart_selftest.py

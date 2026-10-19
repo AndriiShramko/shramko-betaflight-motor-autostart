@@ -3,7 +3,13 @@
 Reboots the flight controller, reconnects to its USB port and records, every ~50 ms:
   - MSP_MOTOR      (what Betaflight outputs to motors 1..8, 1000 = stop, 2000 = full)
   - MSP_DEBUG      (debug_mode = AUTOSTART: [0] state, [1] percent x10, [2] ms in state / 10,
-                    [3] FC uptime in 0.1 s, [4] USB host seen, [5] RX link, [6] button, [7] source)
+                    [3] FC uptime in 0.1 s, [4] flags (1 USB, 2 RX, 4 button, 8 battery),
+                    [5] battery 0.1 V, [6] time since battery 0.1 s, [7] source)
+  - MSP_MOTOR_TELEMETRY / MSP_BATTERY_STATE (RPM and invalid-frame % over bidirectional DShot, voltage)
+
+With a battery: the countdown starts when the battery voltage appears (autostart_vbat_min), so the
+expected curve is measured from that moment (column power_age_s); without a battery set
+autostart_vbat_min = 0.
 Then checks the measured curve against the expected one: motor at stop until <delay>, linear ramp to
 <throttle> % over <ramp> s, then constant. Prints PASS/FAIL with numbers and writes a CSV.
 
@@ -108,14 +114,16 @@ def main():
             pass
         dbg = struct.unpack("<%dh" % (len(d) // 2), d[:16]) if len(d) >= 16 else struct.unpack("<%di" % (len(d) // 4), d)[:8]
         uptime_s = dbg[3] / 10.0
-        rows.append((uptime_s, motors[a.motor - 1], dbg[0], dbg[1] / 10.0, dbg[2] * 10, dbg[4], dbg[5], dbg[6], dbg[7],
-                     rpm, invalid_pct, vbat))
+        flags = dbg[4]
+        rows.append((uptime_s, motors[a.motor - 1], dbg[0], dbg[1] / 10.0, dbg[2] * 10,
+                     flags & 1, (flags >> 1) & 1, (flags >> 2) & 1, dbg[7],
+                     rpm, invalid_pct, vbat, (flags >> 3) & 1, dbg[6] / 10.0))
     s.close()
 
     with open(a.csv, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["fc_uptime_s", "motor_us", "state", "percent", "state_ms", "usb", "rx", "button", "source",
-                    "rpm", "esc_invalid_pct", "vbat_v"])
+                    "rpm", "esc_invalid_pct", "vbat_v", "battery_present", "power_age_s"])
         w.writerows(rows)
 
     return evaluate(a, rows)
@@ -172,6 +180,14 @@ def plot(a, rows, out):
     print("plot:", out)
 
 
+def battery_offset(rows):
+    """Seconds between boot and the moment the battery appeared (0 if it powered the board)."""
+    for r in rows:
+        if len(r) > 13 and r[12] == 1 and r[13] >= 0:
+            return max(0.0, r[0] - r[13]) if r[0] - r[13] > 2.5 else 0.0
+    return 0.0
+
+
 def precise_time(a, r):
     """FC uptime from debug[3] has 0.1 s steps; debug[2] (time in the current state, 10 ms steps) is finer.
     For a power-on program the state clock of DELAY starts at boot, of RAMP at the end of the delay, etc."""
@@ -189,7 +205,10 @@ def evaluate(a, rows):
     if not rows:
         print("FAIL: no samples")
         sys.exit(1)
-    rows = [(precise_time(a, r),) + tuple(r[1:]) for r in rows]
+    off = battery_offset(rows)
+    if off:
+        print("battery appeared at FC uptime %.1f s - times below are counted from that moment" % off)
+    rows = [(precise_time(a, r) - (off if not (r[8] == 1 and r[2] in (1, 2, 3)) else 0.0),) + tuple(r[1:]) for r in rows]
     if a.plot:
         plot(a, rows, a.plot)
     esc_ok = esc_report(a, rows)

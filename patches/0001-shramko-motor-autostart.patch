@@ -63,7 +63,7 @@ index 33f5e81..8f081bf 100644
  
  #undef DEFS
 diff --git a/src/main/cli/settings.c b/src/main/cli/settings.c
-index 1c9b159..6d622f6 100644
+index 1c9b159..7594742 100644
 --- a/src/main/cli/settings.c
 +++ b/src/main/cli/settings.c
 @@ -79,6 +79,7 @@
@@ -98,7 +98,7 @@ index 1c9b159..6d622f6 100644
  };
  
  #undef LOOKUP_TABLE_ENTRY
-@@ -1838,6 +1849,17 @@ const clivalue_t valueTable[] = {
+@@ -1838,6 +1849,18 @@ const clivalue_t valueTable[] = {
  #endif
  #endif
  
@@ -111,6 +111,7 @@ index 1c9b159..6d622f6 100644
 +    { "autostart_motors",      VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 1, 255 },  PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, motorMask) },
 +    { "autostart_usb_inhibit", VAR_UINT8  | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_OFF_ON }, PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, usbInhibit) },
 +    { "autostart_box",         VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 255 },  PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, rcBoxPermanentId) },
++    { "autostart_vbat_min",    VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 0, 600 },  PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, vbatMinDeciVolts) },
 +#endif
 +
  //PG USB
@@ -156,10 +157,10 @@ index e4267ea..a3c40a6 100644
  
 diff --git a/src/main/fc/autostart.c b/src/main/fc/autostart.c
 new file mode 100644
-index 0000000..5daaf70
+index 0000000..e20e651
 --- /dev/null
 +++ b/src/main/fc/autostart.c
-@@ -0,0 +1,392 @@
+@@ -0,0 +1,448 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -235,12 +236,17 @@ index 0000000..5daaf70
 +
 +#include "rx/rx.h"
 +
++#include "sensors/battery.h"
++
 +#include "fc/autostart.h"
 +
 +#define AUTOSTART_MIN_UPTIME_MS      3000    // never drive before 3 s uptime: ESC sees >= 3 s of stop frames, USB host can enumerate
 +#define AUTOSTART_DEBOUNCE_MS        40      // button level must be stable this long
 +#define AUTOSTART_RX_CONFIRM_MS      500     // RX link must stay valid this long before it takes over
 +#define AUTOSTART_COUNTDOWN_BEEP_MS  1000    // one short beep per second during the delay
++#define AUTOSTART_POWER_CONFIRM_MS   300     // battery voltage must be stable this long to count as plugged in
++#define AUTOSTART_POWER_LOSS_MS      500     // ... and absent this long to count as unplugged (ignores ADC glitches)
++#define AUTOSTART_BOOT_POWER_WINDOW_MS 2500  // battery seen this early = it powered the board: count from boot
 +
 +typedef enum {
 +    AUTOSTART_STATE_IDLE = 0,
@@ -271,6 +277,14 @@ index 0000000..5daaf70
 +static uint8_t rcBoxId = BOXID_NONE;
 +
 +static int16_t commandedPermille;   // last commanded output, percent x10 (debug only)
++
++// Battery power. The ESC has no BEC: it only wakes up (and arms on stop frames) when the battery is
++// plugged in. On USB the board runs without a battery, so the countdown must start at the battery,
++// otherwise the ESC would power up into a running ramp and refuse to arm.
++static bool powerRaw;
++static timeMs_t powerRawChangeMs;
++static bool powerPresent;
++static timeMs_t powerSinceMs;
 +
 +static IO_t buttonIo = IO_NONE;
 +static bool buttonRawPressed;
@@ -324,9 +338,9 @@ index 0000000..5daaf70
 +{
 +    source = newSource;
 +    state = AUTOSTART_STATE_DELAY;
-+    // power-on start counts the delay from the moment the MCU booted ("plug in, 1, 2, 3 ... 10"),
-+    // a click or an RC switch counts it from the event itself
-+    stateStartMs = (newSource == AUTOSTART_SOURCE_POWER) ? 0 : nowMs;
++    // power-on start counts the delay from the moment the battery appeared ("plug in, 1, 2, 3 ... 10";
++    // on battery-only power that is the boot itself), a click or an RC switch from the event itself
++    stateStartMs = (newSource == AUTOSTART_SOURCE_POWER) ? powerSinceMs : nowMs;
 +    lastBeepMs = nowMs - AUTOSTART_COUNTDOWN_BEEP_MS; // first countdown beep on the next tick
 +}
 +
@@ -376,18 +390,34 @@ index 0000000..5daaf70
 +    return rcBoxId != BOXID_NONE && IS_RC_MODE_ACTIVE((boxId_e)rcBoxId);
 +}
 +
++static bool batteryPowerRaw(const autostartConfig_t *cfg)
++{
++    if (cfg->vbatMinDeciVolts == 0 || !isBatteryVoltageConfigured()) {
++        return true;    // gating disabled: behave as if the battery is always there
++    }
++    return getBatteryVoltageLatest() >= cfg->vbatMinDeciVolts * 10U;   // 0.01 V units
++}
++
++// the ESC has had at least AUTOSTART_MIN_UPTIME_MS of stop frames since it got power
++static bool escHadTimeToArm(timeMs_t nowMs)
++{
++    return uptimeReached && powerPresent && cmpTimeMs(nowMs, powerSinceMs) >= AUTOSTART_MIN_UPTIME_MS;
++}
++
 +// debug_mode = AUTOSTART: [0] state, [1] commanded percent x10, [2] ms in current state / 10,
-+// [3] uptime in 0.1 s, [4] USB host present, [5] RX link valid, [6] button pressed, [7] source
++// [3] uptime in 0.1 s, [4] flags (bit0 USB host, bit1 RX link, bit2 button pressed, bit3 battery present),
++// [5] battery voltage in 0.1 V, [6] time since the battery appeared in 0.1 s (-1 = no battery), [7] source
 +
 +static void autostartDebug(timeMs_t nowMs, bool rxValid)
 +{
++    const int16_t flags = (usbHostPresent() ? 1 : 0) | (rxValid ? 2 : 0) | (buttonStablePressed ? 4 : 0) | (powerPresent ? 8 : 0);
 +    DEBUG_SET(DEBUG_AUTOSTART, 0, state);
 +    DEBUG_SET(DEBUG_AUTOSTART, 1, commandedPermille);
 +    DEBUG_SET(DEBUG_AUTOSTART, 2, (int16_t)MIN(cmpTimeMs(nowMs, stateStartMs) / 10, INT16_MAX));
 +    DEBUG_SET(DEBUG_AUTOSTART, 3, (int16_t)MIN(nowMs / 100, (timeMs_t)INT16_MAX));
-+    DEBUG_SET(DEBUG_AUTOSTART, 4, usbHostPresent());
-+    DEBUG_SET(DEBUG_AUTOSTART, 5, rxValid);
-+    DEBUG_SET(DEBUG_AUTOSTART, 6, buttonStablePressed);
++    DEBUG_SET(DEBUG_AUTOSTART, 4, flags);
++    DEBUG_SET(DEBUG_AUTOSTART, 5, (int16_t)((getBatteryVoltageLatest() + 5) / 10));
++    DEBUG_SET(DEBUG_AUTOSTART, 6, powerPresent ? (int16_t)MIN(cmpTimeMs(nowMs, powerSinceMs) / 100, INT16_MAX) : -1);
 +    DEBUG_SET(DEBUG_AUTOSTART, 7, source);
 +}
 +
@@ -418,7 +448,11 @@ index 0000000..5daaf70
 +    uptimeReached = false;
 +    rxSeen = false;
 +    rxWasValid = false;
-+    powerTriggerPending = (cfg->mode == AUTOSTART_MODE_POWER);
++    powerTriggerPending = false;       // armed when battery power is confirmed
++    powerRaw = false;
++    powerRawChangeMs = 0;
++    powerPresent = false;
++    powerSinceMs = 0;
 +
 +    rcBoxId = BOXID_NONE;
 +    if (cfg->rcBoxPermanentId != PERMANENT_ID_NONE) {
@@ -459,6 +493,27 @@ index 0000000..5daaf70
 +    // sample every tick so the debounce state is current
 +    const bool clicked = buttonClicked(nowMs);
 +
++    // battery power detection (see powerRaw)
++    const bool rawPower = batteryPowerRaw(cfg);
++    if (rawPower != powerRaw) {
++        powerRaw = rawPower;
++        powerRawChangeMs = nowMs;
++    }
++    const timeDelta_t powerStableMs = cmpTimeMs(nowMs, powerRawChangeMs);
++    if (!powerPresent && powerRaw && powerStableMs >= AUTOSTART_POWER_CONFIRM_MS) {
++        powerPresent = true;
++        powerSinceMs = (powerRawChangeMs <= AUTOSTART_BOOT_POWER_WINDOW_MS) ? 0 : powerRawChangeMs;
++        if (cfg->mode == AUTOSTART_MODE_POWER && !rxSeen) {
++            powerTriggerPending = true;     // battery plugged in: (re)start the power-on program
++        }
++    } else if (powerPresent && !powerRaw && powerStableMs >= AUTOSTART_POWER_LOSS_MS) {
++        powerPresent = false;               // battery unplugged: the ESC is off, stop and wait for it again
++        powerTriggerPending = false;
++        if (programActive() || outputsWritten) {
++            programStop(nowMs);
++        }
++    }
++
 +    // 1. hard inhibits
 +    if (ARMING_FLAG(ARMED)
 +        || featureIsEnabled(FEATURE_3D)
@@ -484,7 +539,9 @@ index 0000000..5daaf70
 +        powerTriggerPending = false;
 +        if (rcBoxActive()) {
 +            if (!programActive()) {
-+                programStart(AUTOSTART_SOURCE_RCBOX, nowMs);
++                if (powerPresent) {
++                    programStart(AUTOSTART_SOURCE_RCBOX, nowMs);
++                }
 +            } else {
 +                source = AUTOSTART_SOURCE_RCBOX; // the switch now owns the running program
 +            }
@@ -502,10 +559,10 @@ index 0000000..5daaf70
 +            if (programActive()) {
 +                programStop(nowMs);
 +                beeperConfirmationBeeps(2);
-+            } else {
++            } else if (powerPresent) {
 +                programStart(AUTOSTART_SOURCE_BUTTON, nowMs);
 +            }
-+        } else if (powerTriggerPending) {
++        } else if (powerTriggerPending && powerPresent) {
 +            powerTriggerPending = false;
 +            programStart(AUTOSTART_SOURCE_POWER, nowMs);
 +        }
@@ -519,7 +576,7 @@ index 0000000..5daaf70
 +        break;
 +
 +    case AUTOSTART_STATE_DELAY:
-+        if (uptimeReached && cmpTimeMs(nowMs, stateStartMs) >= (timeDelta_t)(cfg->delaySeconds * 1000U)) {
++        if (escHadTimeToArm(nowMs) && cmpTimeMs(nowMs, stateStartMs) >= (timeDelta_t)(cfg->delaySeconds * 1000U)) {
 +            state = AUTOSTART_STATE_RAMP;
 +            stateStartMs = nowMs;
 +            beeperConfirmationBeeps(3);
@@ -712,10 +769,10 @@ index e816db0..b166d96 100644
  #endif
 diff --git a/src/main/pg/autostart.c b/src/main/pg/autostart.c
 new file mode 100644
-index 0000000..96abdf0
+index 0000000..cdf39fc
 --- /dev/null
 +++ b/src/main/pg/autostart.c
-@@ -0,0 +1,72 @@
+@@ -0,0 +1,76 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -770,11 +827,14 @@ index 0000000..96abdf0
 +#ifndef AUTOSTART_DEFAULT_RC_BOX
 +#define AUTOSTART_DEFAULT_RC_BOX 255            // PERMANENT_ID_NONE
 +#endif
++#ifndef AUTOSTART_DEFAULT_VBAT_MIN_DV
++#define AUTOSTART_DEFAULT_VBAT_MIN_DV 60        // 6.0 V: any 2S+ battery, never the USB 5 V back-feed
++#endif
 +#ifndef AUTOSTART_BUTTON_PIN
 +#define AUTOSTART_BUTTON_PIN NONE
 +#endif
 +
-+PG_REGISTER_WITH_RESET_TEMPLATE(autostartConfig_t, autostartConfig, PG_AUTOSTART_CONFIG, 0);
++PG_REGISTER_WITH_RESET_TEMPLATE(autostartConfig_t, autostartConfig, PG_AUTOSTART_CONFIG, 1);
 +
 +PG_RESET_TEMPLATE(autostartConfig_t, autostartConfig,
 +    .mode = AUTOSTART_DEFAULT_MODE,
@@ -785,15 +845,16 @@ index 0000000..96abdf0
 +    .usbInhibit = AUTOSTART_DEFAULT_USB_INHIBIT,
 +    .rcBoxPermanentId = AUTOSTART_DEFAULT_RC_BOX,
 +    .buttonTag = IO_TAG(AUTOSTART_BUTTON_PIN),
++    .vbatMinDeciVolts = AUTOSTART_DEFAULT_VBAT_MIN_DV,
 +);
 +
 +#endif // USE_AUTOSTART
 diff --git a/src/main/pg/autostart.h b/src/main/pg/autostart.h
 new file mode 100644
-index 0000000..5311c8f
+index 0000000..962d4eb
 --- /dev/null
 +++ b/src/main/pg/autostart.h
-@@ -0,0 +1,54 @@
+@@ -0,0 +1,55 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -845,6 +906,7 @@ index 0000000..5311c8f
 +    uint8_t usbInhibit;         // 1 = never drive while a USB host has configured the VCP
 +    uint8_t rcBoxPermanentId;   // BOXUSER1..4 permanent id (40..43) that runs the program while the RX link is valid, 255 = none
 +    ioTag_t buttonTag;          // resource AUTOSTART 1 <pin>; button between pin and GND, internal pull-up
++    uint16_t vbatMinDeciVolts;  // battery counts as plugged in at or above this voltage, 0.1 V units; 0 = don't check
 +} autostartConfig_t;
 +
 +PG_DECLARE(autostartConfig_t, autostartConfig);
@@ -896,10 +958,10 @@ index 0de224c..5dc863d 100644
  		$(USER_DIR)/common/filter.c \
 diff --git a/src/test/unit/autostart_unittest.cc b/src/test/unit/autostart_unittest.cc
 new file mode 100644
-index 0000000..0bd0b10
+index 0000000..c2c578a
 --- /dev/null
 +++ b/src/test/unit/autostart_unittest.cc
-@@ -0,0 +1,417 @@
+@@ -0,0 +1,492 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -954,6 +1016,8 @@ index 0000000..0bd0b10
 +
 +    #include "fc/autostart.h"
 +
++    #include "sensors/battery.h"
++
 +    // ---- stubs / fakes ----
 +    static timeMs_t fakeMs;
 +    static bool fakePinHigh;        // pull-up: true = released
@@ -965,6 +1029,7 @@ index 0000000..0bd0b10
 +    static int beepCalls;
 +    static int pinInitCount;
 +    static uint8_t fakeIoRec;
++    static uint16_t fakeVbat;       // 0.01 V
 +
 +    uint8_t armingFlags = 0;
 +    uint8_t debugMode = DEBUG_NONE;
@@ -986,6 +1051,8 @@ index 0000000..0bd0b10
 +    bool usbCableIsInserted(void) { return fakeUsb; }
 +    bool IS_RC_MODE_ACTIVE(boxId_e boxId) { return boxId == fakeActiveBox; }
 +    bool featureIsEnabled(const uint32_t mask) { return (fakeFeatures & mask) != 0; }
++    bool isBatteryVoltageConfigured(void) { return true; }
++    uint16_t getBatteryVoltageLatest(void) { return fakeVbat; }
 +
 +    static const box_t testBoxes[] = {
 +        { .boxName = "ARM",   .boxId = BOXARM,   .permanentId = 0 },
@@ -1019,6 +1086,7 @@ index 0000000..0bd0b10
 +    cfg->usbInhibit = 1;
 +    cfg->rcBoxPermanentId = 255;
 +    cfg->buttonTag = 0;
++    cfg->vbatMinDeciVolts = 60;     // 6.0 V
 +
 +    fakeMs = 1500;          // init finishes ~1.5 s after power-on
 +    fakePinHigh = true;
@@ -1027,6 +1095,7 @@ index 0000000..0bd0b10
 +    fakeUsb = false;
 +    fakeActiveBox = (boxId_e)BOXID_NONE;
 +    fakeFeatures = 0;
++    fakeVbat = 2500;        // 6S battery present from power-on (battery-only use)
 +    beepCalls = 0;
 +    pinInitCount = 0;
 +    armingFlags = 0;
@@ -1315,5 +1384,73 @@ index 0000000..0bd0b10
 +    runUntil(25020);
 +    EXPECT_EQ(0, debug[0]);                     // IDLE
 +    EXPECT_EQ(0, debug[1]);
-+    EXPECT_EQ(1, debug[4]);                     // USB seen
++    EXPECT_EQ(1, debug[4] & 1);                 // USB seen
++    EXPECT_EQ(8, debug[4] & 8);                 // battery present
++    EXPECT_EQ(250, debug[5]);                   // 25.0 V
++}
++
++// Bench with USB: the board runs without a battery, the battery (and the ESC with it) comes later.
++TEST(AutostartTest, BatteryPluggedLaterCountsFromPlug)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    fakeUsb = true;
++    fakeVbat = 10;                              // USB only: 0.1 V on the battery pin
++    autostartInit();
++    runUntil(30000);
++    EXPECT_FALSE(autostartIsDrivingMotors());   // no battery, no program, ESC unpowered anyway
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++
++    fakeVbat = 2500;                            // battery plugged in at t = 30 s
++    runUntil(39980);
++    EXPECT_FALSE(autostartIsDrivingMotors());   // ESC sees stop frames for the whole 10 s
++    runUntil(40100);
++    EXPECT_TRUE(autostartIsDrivingMotors());    // ramp starts 10 s after the battery
++    runUntil(50100);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, BatteryUnplugStopsReplugRestarts)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartInit();
++    runUntil(25000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++
++    fakeVbat = 10;                              // battery unplugged, board stays on USB
++    runUntil(25400);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);      // not yet confirmed (500 ms)
++    runUntil(25600);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);       // stopped: the ESC must see stop frames when it wakes up
++    EXPECT_FALSE(autostartIsDrivingMotors());
++
++    runUntil(40000);
++    fakeVbat = 2500;                            // plugged back in
++    runUntil(49980);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++    runUntil(60200);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);      // the whole program ran again
++}
++
++TEST(AutostartTest, ShortVoltageDipIsIgnored)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartInit();
++    runUntil(25000);
++    fakeVbat = 0;                               // 200 ms ADC glitch / connector bounce
++    runUntil(25200);
++    fakeVbat = 2500;
++    runUntil(30000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, VbatCheckCanBeDisabled)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->vbatMinDeciVolts = 0;
++    fakeVbat = 0;
++    autostartInit();
++    runUntil(25000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
 +}

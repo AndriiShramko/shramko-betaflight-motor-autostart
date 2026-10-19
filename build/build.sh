@@ -18,7 +18,20 @@ if [ "$MODE" != "--stock" ]; then
   done
 fi
 
-make CONFIG="$CONFIG" CONFIG_DIR=/repo -j"$(nproc)" hex
+CFG_DIR=/repo
+if [ "$MODE" = "--stock" ]; then
+  # stock build: drop the project block (it references code that only exists with the patch)
+  CFG_DIR=/tmp/cfg
+  mkdir -p "$CFG_DIR/configs/$CONFIG"
+  sed '/---- Shramko Motor Autostart/,$d' "/repo/configs/$CONFIG/config.h" > "$CFG_DIR/configs/$CONFIG/config.h"
+fi
+
+# firmware `version` shows which commit of this repo was built (stock: plain upstream revision)
+REV="$(git -C /repo rev-parse --short=7 HEAD 2>/dev/null || echo local)"
+EXTRA=()
+[ "$MODE" != "--stock" ] && EXTRA=(REVISION="as-$REV")
+
+make CONFIG="$CONFIG" CONFIG_DIR="$CFG_DIR" "${EXTRA[@]}" -j"$(nproc)" hex
 
 mkdir -p /repo/out
 suffix="autostart"

@@ -1,0 +1,878 @@
+diff --git a/mk/source.mk b/mk/source.mk
+index 32e7c70..dbcc9a5 100644
+--- a/mk/source.mk
++++ b/mk/source.mk
+@@ -1,6 +1,7 @@
+ PG_SRC = \
+             pg/adc.c \
+             pg/alt_hold_multirotor.c \
++            pg/autostart.c \
+             pg/alt_hold_wing.c \
+             pg/autopilot_multirotor.c \
+             pg/autopilot_wing.c \
+@@ -116,6 +117,7 @@ COMMON_SRC = \
+             drivers/transponder_ir_arcitimer.c \
+             drivers/transponder_ir_ilap.c \
+             drivers/transponder_ir_erlt.c \
++            fc/autostart.c \
+             fc/board_info.c \
+             fc/dispatch.c \
+             fc/hardfaults.c \
+diff --git a/src/main/build/debug.c b/src/main/build/debug.c
+index 8ef550e..42790a2 100644
+--- a/src/main/build/debug.c
++++ b/src/main/build/debug.c
+@@ -127,4 +127,5 @@ const char * const debugModeNames[DEBUG_COUNT] = {
+     [DEBUG_CHIRP] = "CHIRP",
+     [DEBUG_FLASH_TEST_PRBS] = "FLASH_TEST_PRBS",
+     [DEBUG_MAVLINK_TELEMETRY] = "MAVLINK_TELEMETRY",
++    [DEBUG_AUTOSTART] = "AUTOSTART",
+ };
+diff --git a/src/main/build/debug.h b/src/main/build/debug.h
+index 42eb549..3d8dce7 100644
+--- a/src/main/build/debug.h
++++ b/src/main/build/debug.h
+@@ -129,6 +129,7 @@ typedef enum {
+     DEBUG_CHIRP,
+     DEBUG_FLASH_TEST_PRBS,
+     DEBUG_MAVLINK_TELEMETRY,
++    DEBUG_AUTOSTART,
+     DEBUG_COUNT
+ } debugType_e;
+ 
+diff --git a/src/main/cli/cli.c b/src/main/cli/cli.c
+index 33f5e81..8f081bf 100644
+--- a/src/main/cli/cli.c
++++ b/src/main/cli/cli.c
+@@ -128,6 +128,7 @@ bool cliMode = false;
+ #include "osd/osd.h"
+ 
+ #include "pg/adc.h"
++#include "pg/autostart.h"
+ #include "pg/beeper.h"
+ #include "pg/beeper_dev.h"
+ #include "pg/board.h"
+@@ -5203,6 +5204,9 @@ const cliResourceValue_t resourceTable[] = {
+     DEFA( OWNER_PULLUP,        PG_PULLUP_CONFIG,   pinPullUpDownConfig_t, ioTag, PIN_PULL_UP_DOWN_COUNT ),
+     DEFA( OWNER_PULLDOWN,      PG_PULLDOWN_CONFIG, pinPullUpDownConfig_t, ioTag, PIN_PULL_UP_DOWN_COUNT ),
+ #endif
++#ifdef USE_AUTOSTART
++    DEFS( OWNER_AUTOSTART,     PG_AUTOSTART_CONFIG, autostartConfig_t, buttonTag ),
++#endif
+ };
+ 
+ #undef DEFS
+diff --git a/src/main/cli/settings.c b/src/main/cli/settings.c
+index 1c9b159..6d622f6 100644
+--- a/src/main/cli/settings.c
++++ b/src/main/cli/settings.c
+@@ -79,6 +79,7 @@
+ 
+ #include "pg/adc.h"
+ #include "pg/alt_hold.h"
++#include "pg/autostart.h"
+ #include "pg/autopilot.h"
+ #include "pg/beeper.h"
+ #include "pg/beeper_dev.h"
+@@ -608,6 +609,13 @@ const char* const lookupTableYawType[] = {
+ };
+ #endif // USE_WING
+ 
++#ifdef USE_AUTOSTART
++// order must match autostartMode_e (pg/autostart.h)
++static const char * const lookupTableAutostartMode[] = {
++    "OFF", "POWER", "BUTTON",
++};
++#endif
++
+ #define LOOKUP_TABLE_ENTRY(name) { name, ARRAYLEN(name) }
+ 
+ const lookupTableEntry_t lookupTables[] = {
+@@ -741,6 +749,9 @@ const lookupTableEntry_t lookupTables[] = {
+     LOOKUP_TABLE_ENTRY(lookupTableTpaSpeedType),
+     LOOKUP_TABLE_ENTRY(lookupTableYawType),
+ #endif // USE_WING
++#ifdef USE_AUTOSTART
++    LOOKUP_TABLE_ENTRY(lookupTableAutostartMode),
++#endif
+ };
+ 
+ #undef LOOKUP_TABLE_ENTRY
+@@ -1838,6 +1849,17 @@ const clivalue_t valueTable[] = {
+ #endif
+ #endif
+ 
++// PG_AUTOSTART_CONFIG
++#ifdef USE_AUTOSTART
++    { "autostart_mode",        VAR_UINT8  | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_AUTOSTART_MODE }, PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, mode) },
++    { "autostart_delay",       VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 0, 600 },  PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, delaySeconds) },
++    { "autostart_ramp",        VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 0, 6000 }, PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, rampDeciseconds) },
++    { "autostart_throttle",    VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 100 },  PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, throttlePercent) },
++    { "autostart_motors",      VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 1, 255 },  PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, motorMask) },
++    { "autostart_usb_inhibit", VAR_UINT8  | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_OFF_ON }, PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, usbInhibit) },
++    { "autostart_box",         VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 255 },  PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, rcBoxPermanentId) },
++#endif
++
+ //PG USB
+ #ifdef USE_USB_CDC_HID
+     { "usb_hid_cdc", VAR_UINT8 | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_OFF_ON }, PG_USB_CONFIG, offsetof(usbDev_t, type) },
+diff --git a/src/main/cli/settings.h b/src/main/cli/settings.h
+index 763643e..e022d39 100644
+--- a/src/main/cli/settings.h
++++ b/src/main/cli/settings.h
+@@ -152,6 +152,9 @@ typedef enum {
+     TABLE_TPA_SPEED_TYPE,
+     TABLE_YAW_TYPE,
+ #endif // USE_WING
++#ifdef USE_AUTOSTART
++    TABLE_AUTOSTART_MODE,
++#endif
+     LOOKUP_TABLE_COUNT
+ } lookupTableIndex_e;
+ 
+diff --git a/src/main/drivers/resource.c b/src/main/drivers/resource.c
+index e6de4be..efc66b7 100644
+--- a/src/main/drivers/resource.c
++++ b/src/main/drivers/resource.c
+@@ -121,6 +121,7 @@ static const char * const ownerNames[] = {
+     "GYRO_CLKIN",
+     [OWNER_PIOUART_TX] = "PIOUART_TX",
+     [OWNER_PIOUART_RX] = "PIOUART_RX",
++    [OWNER_AUTOSTART] = "AUTOSTART",
+     // Keep in sync with resourceOwner_e.
+ };
+ 
+diff --git a/src/main/drivers/resource.h b/src/main/drivers/resource.h
+index e4267ea..a3c40a6 100644
+--- a/src/main/drivers/resource.h
++++ b/src/main/drivers/resource.h
+@@ -117,6 +117,7 @@ typedef enum {
+     OWNER_GYRO_CLKIN,
+     OWNER_PIOUART_TX,            // TX must be just before RX
+     OWNER_PIOUART_RX,
++    OWNER_AUTOSTART,
+     OWNER_TOTAL_COUNT
+ } resourceOwner_e;
+ 
+diff --git a/src/main/fc/autostart.c b/src/main/fc/autostart.c
+new file mode 100644
+index 0000000..5daaf70
+--- /dev/null
++++ b/src/main/fc/autostart.c
+@@ -0,0 +1,392 @@
++/*
++ * This file is part of Betaflight.
++ *
++ * Betaflight is free software. You can redistribute this software
++ * and/or modify this software under the terms of the GNU General
++ * Public License as published by the Free Software Foundation,
++ * either version 3 of the License, or (at your option) any later
++ * version.
++ *
++ * Betaflight is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
++ *
++ * See the GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this software.
++ *
++ * If not, see <http://www.gnu.org/licenses/>.
++ */
++
++/*
++ * Shramko Motor Autostart (author: Andrii Shramko).
++ *
++ * Arbitration, evaluated every tick (50 Hz), highest priority first:
++ *   1. ARMED, FEATURE_3D, or (autostart_usb_inhibit and a USB host has configured the VCP)
++ *      -> program stopped, our motor_disarmed[] entries released, boot trigger consumed.
++ *   2. RX link valid for AUTOSTART_RX_CONFIRM_MS -> stock Betaflight owns the motors:
++ *      program stopped, unless autostart_box (BOXUSER1..4) is active, in which case the
++ *      same program (delay -> ramp -> hold) runs while the box stays active.
++ *   3. No RX link -> button click toggles the program; mode POWER starts it once at boot.
++ *      A program that was started by the RC box is stopped when the link is lost.
++ *
++ * Output: motor_disarmed[] (flight/mixer.c applyMixToMotors() copies it to motor[] while
++ * disarmed), i.e. exactly what MSP_SET_MOTOR / the CLI "motor" command write.
++ */
++
++#include <math.h>
++#include <stdbool.h>
++#include <stdint.h>
++
++#include "platform.h"
++
++#ifdef USE_AUTOSTART
++
++#include "common/filter.h"      // pt1Filter_t, needed by flight/mixer_init.h
++#include "common/maths.h"
++#include "common/time.h"
++#include "common/utils.h"
++
++#include "build/debug.h"
++
++#include "config/feature.h"
++
++#include "drivers/io.h"
++#include "drivers/motor.h"
++#include "drivers/time.h"
++#ifdef USE_VCP
++#include "drivers/usb_io.h"
++#endif
++
++#include "fc/rc_modes.h"
++#include "fc/runtime_config.h"
++
++#include "flight/mixer.h"
++#include "flight/mixer_init.h"
++
++#include "io/beeper.h"
++
++#include "msp/msp_box.h"
++
++#include "pg/autostart.h"
++
++#include "rx/rx.h"
++
++#include "fc/autostart.h"
++
++#define AUTOSTART_MIN_UPTIME_MS      3000    // never drive before 3 s uptime: ESC sees >= 3 s of stop frames, USB host can enumerate
++#define AUTOSTART_DEBOUNCE_MS        40      // button level must be stable this long
++#define AUTOSTART_RX_CONFIRM_MS      500     // RX link must stay valid this long before it takes over
++#define AUTOSTART_COUNTDOWN_BEEP_MS  1000    // one short beep per second during the delay
++
++typedef enum {
++    AUTOSTART_STATE_IDLE = 0,
++    AUTOSTART_STATE_DELAY,
++    AUTOSTART_STATE_RAMP,
++    AUTOSTART_STATE_RUN,
++} autostartState_e;
++
++typedef enum {
++    AUTOSTART_SOURCE_NONE = 0,
++    AUTOSTART_SOURCE_POWER,
++    AUTOSTART_SOURCE_BUTTON,
++    AUTOSTART_SOURCE_RCBOX,
++} autostartSource_e;
++
++static autostartState_e state = AUTOSTART_STATE_IDLE;
++static autostartSource_e source = AUTOSTART_SOURCE_NONE;
++static timeMs_t stateStartMs;
++static timeMs_t lastBeepMs;
++static bool powerTriggerPending;
++static bool outputsWritten;
++static bool uptimeReached;
++
++static bool rxSeen;
++static bool rxWasValid;
++static timeMs_t rxValidSinceMs;
++
++static uint8_t rcBoxId = BOXID_NONE;
++
++static int16_t commandedPermille;   // last commanded output, percent x10 (debug only)
++
++static IO_t buttonIo = IO_NONE;
++static bool buttonRawPressed;
++static bool buttonStablePressed;
++static timeMs_t buttonChangeMs;
++
++static int autostartMotorCount(void)
++{
++    return MIN((int)getMotorCount(), MAX_SUPPORTED_MOTORS);
++}
++
++// percent of the motor-test range: 0 % -> disarm value (DShot stop command / PWM mincommand),
++// 0.1..100 % -> external 1001..2000, converted by the active protocol like MSP_SET_MOTOR does.
++static void writeOutputs(float percent)
++{
++    const float pct = constrainf(percent, 0.0f, 100.0f);
++    commandedPermille = (int16_t)lrintf(pct * 10.0f);
++    const uint16_t external = PWM_RANGE_MIN + (uint16_t)lrintf(pct * (PWM_RANGE_MAX - PWM_RANGE_MIN) / 100.0f);
++    const float value = (external <= PWM_RANGE_MIN) ? mixerRuntime.disarmMotorOutput : motorConvertFromExternal(external);
++    const uint8_t mask = autostartConfig()->motorMask;
++
++    for (int i = 0; i < autostartMotorCount(); i++) {
++        if (mask & (1U << i)) {
++            motor_disarmed[i] = value;
++        }
++    }
++    outputsWritten = true;
++}
++
++static void releaseOutputs(void)
++{
++    if (!outputsWritten) {
++        return;
++    }
++    const uint8_t mask = autostartConfig()->motorMask;
++    for (int i = 0; i < autostartMotorCount(); i++) {
++        if (mask & (1U << i)) {
++            motor_disarmed[i] = mixerRuntime.disarmMotorOutput;
++        }
++    }
++    outputsWritten = false;
++    commandedPermille = 0;
++}
++
++static bool programActive(void)
++{
++    return state != AUTOSTART_STATE_IDLE;
++}
++
++static void programStart(autostartSource_e newSource, timeMs_t nowMs)
++{
++    source = newSource;
++    state = AUTOSTART_STATE_DELAY;
++    // power-on start counts the delay from the moment the MCU booted ("plug in, 1, 2, 3 ... 10"),
++    // a click or an RC switch counts it from the event itself
++    stateStartMs = (newSource == AUTOSTART_SOURCE_POWER) ? 0 : nowMs;
++    lastBeepMs = nowMs - AUTOSTART_COUNTDOWN_BEEP_MS; // first countdown beep on the next tick
++}
++
++static void programStop(timeMs_t nowMs)
++{
++    releaseOutputs();
++    source = AUTOSTART_SOURCE_NONE;
++    state = AUTOSTART_STATE_IDLE;
++    stateStartMs = nowMs;
++}
++
++// returns true once per press (falling edge to GND after AUTOSTART_DEBOUNCE_MS of stable level)
++static bool buttonClicked(timeMs_t nowMs)
++{
++    if (!buttonIo) {
++        return false;
++    }
++
++    const bool rawPressed = !IORead(buttonIo); // internal pull-up: released = high, pressed (to GND) = low
++
++    if (rawPressed != buttonRawPressed) {
++        buttonRawPressed = rawPressed;
++        buttonChangeMs = nowMs;
++        return false;
++    }
++
++    if (rawPressed != buttonStablePressed && cmpTimeMs(nowMs, buttonChangeMs) >= AUTOSTART_DEBOUNCE_MS) {
++        buttonStablePressed = rawPressed;
++        return rawPressed;
++    }
++
++    return false;
++}
++
++static bool usbHostPresent(void)
++{
++#ifdef USE_VCP
++    // no USB_DETECT pin on this board: true once the host has configured the VCP (see drivers/usb_io.c)
++    return usbCableIsInserted();
++#else
++    return false;
++#endif
++}
++
++static bool rcBoxActive(void)
++{
++    return rcBoxId != BOXID_NONE && IS_RC_MODE_ACTIVE((boxId_e)rcBoxId);
++}
++
++// debug_mode = AUTOSTART: [0] state, [1] commanded percent x10, [2] ms in current state / 10,
++// [3] uptime in 0.1 s, [4] USB host present, [5] RX link valid, [6] button pressed, [7] source
++
++static void autostartDebug(timeMs_t nowMs, bool rxValid)
++{
++    DEBUG_SET(DEBUG_AUTOSTART, 0, state);
++    DEBUG_SET(DEBUG_AUTOSTART, 1, commandedPermille);
++    DEBUG_SET(DEBUG_AUTOSTART, 2, (int16_t)MIN(cmpTimeMs(nowMs, stateStartMs) / 10, INT16_MAX));
++    DEBUG_SET(DEBUG_AUTOSTART, 3, (int16_t)MIN(nowMs / 100, (timeMs_t)INT16_MAX));
++    DEBUG_SET(DEBUG_AUTOSTART, 4, usbHostPresent());
++    DEBUG_SET(DEBUG_AUTOSTART, 5, rxValid);
++    DEBUG_SET(DEBUG_AUTOSTART, 6, buttonStablePressed);
++    DEBUG_SET(DEBUG_AUTOSTART, 7, source);
++}
++
++bool autostartIsEnabled(void)
++{
++    return autostartConfig()->mode != AUTOSTART_MODE_OFF;
++}
++
++bool autostartIsDrivingMotors(void)
++{
++    return outputsWritten;
++}
++
++// While this build runs receiverless (no RX link confirmed since boot) the stock RX_LOST
++// beeper would sound forever and, having priority 1, would mask the countdown beeps.
++bool autostartSuppressRxLostBeeper(void)
++{
++    return autostartIsEnabled() && !rxSeen;
++}
++
++void autostartInit(void)
++{
++    const autostartConfig_t *cfg = autostartConfig();
++
++    state = AUTOSTART_STATE_IDLE;
++    source = AUTOSTART_SOURCE_NONE;
++    outputsWritten = false;
++    uptimeReached = false;
++    rxSeen = false;
++    rxWasValid = false;
++    powerTriggerPending = (cfg->mode == AUTOSTART_MODE_POWER);
++
++    rcBoxId = BOXID_NONE;
++    if (cfg->rcBoxPermanentId != PERMANENT_ID_NONE) {
++        const box_t *box = findBoxByPermanentId(cfg->rcBoxPermanentId);
++        // only the otherwise unused user boxes are accepted, so no flight function is overloaded
++        if (box && box->boxId >= BOXUSER1 && box->boxId <= BOXUSER4) {
++            rcBoxId = box->boxId;
++        }
++    }
++
++    buttonIo = IO_NONE;
++    if (autostartIsEnabled() && cfg->buttonTag) {
++        const IO_t io = IOGetByTag(cfg->buttonTag);
++        // never take a pin another driver (UART, motor, LED strip...) already owns
++        if (io && IOIsFreeOrPreinit(io)) {
++            IOInit(io, OWNER_AUTOSTART, 0);
++            IOConfigGPIO(io, IOCFG_IPU);
++            buttonIo = io;
++            // a button held during boot is not a click: start from the current level
++            buttonRawPressed = !IORead(io);
++            buttonStablePressed = buttonRawPressed;
++            buttonChangeMs = millis();
++        }
++    }
++}
++
++void autostartUpdate(timeUs_t currentTimeUs)
++{
++    UNUSED(currentTimeUs);
++
++    const autostartConfig_t *cfg = autostartConfig();
++    const timeMs_t nowMs = millis();
++
++    if (!uptimeReached && nowMs >= AUTOSTART_MIN_UPTIME_MS) {
++        uptimeReached = true;
++    }
++
++    // sample every tick so the debounce state is current
++    const bool clicked = buttonClicked(nowMs);
++
++    // 1. hard inhibits
++    if (ARMING_FLAG(ARMED)
++        || featureIsEnabled(FEATURE_3D)
++        || (cfg->usbInhibit && usbHostPresent())) {
++        if (programActive() || outputsWritten) {
++            programStop(nowMs);
++        }
++        powerTriggerPending = false;
++        autostartDebug(nowMs, rxAreFlightChannelsValid());
++        return;
++    }
++
++    // 2. RX link arbitration
++    const bool rxValidNow = rxAreFlightChannelsValid();
++    if (rxValidNow && !rxWasValid) {
++        rxValidSinceMs = nowMs;
++    }
++    rxWasValid = rxValidNow;
++    const bool rxConfirmed = rxValidNow && cmpTimeMs(nowMs, rxValidSinceMs) >= AUTOSTART_RX_CONFIRM_MS;
++
++    if (rxConfirmed) {
++        rxSeen = true;
++        powerTriggerPending = false;
++        if (rcBoxActive()) {
++            if (!programActive()) {
++                programStart(AUTOSTART_SOURCE_RCBOX, nowMs);
++            } else {
++                source = AUTOSTART_SOURCE_RCBOX; // the switch now owns the running program
++            }
++        } else if (programActive()) {
++            programStop(nowMs);
++        }
++    } else if (!rxValidNow) {
++        // 3. no RX link
++        if (programActive() && source == AUTOSTART_SOURCE_RCBOX) {
++            programStop(nowMs); // link lost while the RC switch was running the program
++        }
++
++        if (clicked) {
++            powerTriggerPending = false;
++            if (programActive()) {
++                programStop(nowMs);
++                beeperConfirmationBeeps(2);
++            } else {
++                programStart(AUTOSTART_SOURCE_BUTTON, nowMs);
++            }
++        } else if (powerTriggerPending) {
++            powerTriggerPending = false;
++            programStart(AUTOSTART_SOURCE_POWER, nowMs);
++        }
++    }
++    // else: an RX link is appearing but not yet confirmed - start nothing new, keep the current program
++
++    // 4. run the program
++    switch (state) {
++    case AUTOSTART_STATE_IDLE:
++    default:
++        break;
++
++    case AUTOSTART_STATE_DELAY:
++        if (uptimeReached && cmpTimeMs(nowMs, stateStartMs) >= (timeDelta_t)(cfg->delaySeconds * 1000U)) {
++            state = AUTOSTART_STATE_RAMP;
++            stateStartMs = nowMs;
++            beeperConfirmationBeeps(3);
++        } else if (cmpTimeMs(nowMs, lastBeepMs) >= AUTOSTART_COUNTDOWN_BEEP_MS) {
++            lastBeepMs = nowMs;
++            beeperConfirmationBeeps(1);
++        }
++        break;
++
++    case AUTOSTART_STATE_RAMP: {
++        const timeDelta_t rampMs = (timeDelta_t)(cfg->rampDeciseconds * 100U);
++        const timeDelta_t elapsedMs = cmpTimeMs(nowMs, stateStartMs);
++        if (rampMs <= 0 || elapsedMs >= rampMs) {
++            state = AUTOSTART_STATE_RUN;
++            stateStartMs = nowMs;
++            writeOutputs(cfg->throttlePercent);
++        } else {
++            writeOutputs((float)cfg->throttlePercent * (float)elapsedMs / (float)rampMs);
++        }
++        break;
++    }
++
++    case AUTOSTART_STATE_RUN:
++        // re-written every tick: survives cliExit()/MSP writes resetting motor_disarmed[]
++        writeOutputs(cfg->throttlePercent);
++        break;
++    }
++
++    autostartDebug(nowMs, rxValidNow);
++}
++
++#endif // USE_AUTOSTART
+diff --git a/src/main/fc/autostart.h b/src/main/fc/autostart.h
+new file mode 100644
+index 0000000..62d50b8
+--- /dev/null
++++ b/src/main/fc/autostart.h
+@@ -0,0 +1,42 @@
++/*
++ * This file is part of Betaflight.
++ *
++ * Betaflight is free software. You can redistribute this software
++ * and/or modify this software under the terms of the GNU General
++ * Public License as published by the Free Software Foundation,
++ * either version 3 of the License, or (at your option) any later
++ * version.
++ *
++ * Betaflight is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
++ *
++ * See the GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this software.
++ *
++ * If not, see <http://www.gnu.org/licenses/>.
++ */
++
++/*
++ * Shramko Motor Autostart (author: Andrii Shramko).
++ * Receiverless "blower" program: after boot (or a button click) wait
++ * autostart_delay seconds, ramp the selected motors linearly to
++ * autostart_throttle percent over autostart_ramp, then hold until power
++ * is removed. Output goes through motor_disarmed[], the same path the
++ * Configurator motor test (MSP_SET_MOTOR) uses, so DShot/PWM and the
++ * ESC stop-command-at-boot behaviour are unchanged.
++ */
++
++#pragma once
++
++#include <stdbool.h>
++
++#include "common/time.h"
++
++void autostartInit(void);
++void autostartUpdate(timeUs_t currentTimeUs);
++bool autostartIsEnabled(void);
++bool autostartIsDrivingMotors(void);
++bool autostartSuppressRxLostBeeper(void);
+diff --git a/src/main/fc/init.c b/src/main/fc/init.c
+index 69c7357..35dd615 100644
+--- a/src/main/fc/init.c
++++ b/src/main/fc/init.c
+@@ -84,6 +84,7 @@
+ #include "drivers/vtx_rtc6705.h"
+ #include "drivers/vtx_table.h"
+ 
++#include "fc/autostart.h"
+ #include "fc/board_info.h"
+ #include "fc/dispatch.h"
+ #include "fc/gps_lap_timer.h"
+@@ -1002,6 +1003,10 @@ void initPhase3(void)
+ 
+     debugInit();
+ 
++#ifdef USE_AUTOSTART
++    autostartInit();
++#endif
++
+     unusedPinsInit();
+ 
+     tasksInit();
+diff --git a/src/main/fc/tasks.c b/src/main/fc/tasks.c
+index 5be00a3..892b2e2 100644
+--- a/src/main/fc/tasks.c
++++ b/src/main/fc/tasks.c
+@@ -47,6 +47,7 @@
+ #include "drivers/vtx_common.h"
+ 
+ #include "config/config.h"
++#include "fc/autostart.h"
+ #include "fc/core.h"
+ #include "fc/rc.h"
+ #include "fc/dispatch.h"
+@@ -478,6 +479,10 @@ task_attribute_t task_attributes[TASK_COUNT] = {
+ #ifdef USE_GIMBAL
+     [TASK_GIMBAL] = DEFINE_TASK("GIMBAL", NULL, NULL, gimbalUpdate, TASK_PERIOD_HZ(100), TASK_PRIORITY_MEDIUM),
+ #endif
++
++#ifdef USE_AUTOSTART
++    [TASK_AUTOSTART] = DEFINE_TASK("AUTOSTART", NULL, NULL, autostartUpdate, TASK_PERIOD_HZ(50), TASK_PRIORITY_LOW),
++#endif
+ };
+ 
+ task_t *getTask(unsigned taskId)
+@@ -633,6 +638,10 @@ void tasksInit(void)
+     pinioBoxTaskControl();
+ #endif
+ 
++#ifdef USE_AUTOSTART
++    setTaskEnabled(TASK_AUTOSTART, autostartIsEnabled());
++#endif
++
+ #ifdef USE_CMS
+ #ifdef USE_MSP_DISPLAYPORT
+     setTaskEnabled(TASK_CMS, true);
+diff --git a/src/main/flight/failsafe.c b/src/main/flight/failsafe.c
+index 58d3fde..bad5313 100644
+--- a/src/main/flight/failsafe.c
++++ b/src/main/flight/failsafe.c
+@@ -35,6 +35,7 @@
+ #include "drivers/usb_io.h"
+ 
+ #include "config/config.h"
++#include "fc/autostart.h"
+ #include "fc/core.h"
+ #include "fc/rc_controls.h"
+ #include "fc/rc_modes.h"
+@@ -249,7 +250,11 @@ FAST_CODE_NOINLINE void failsafeUpdateState(void)
+     }
+ 
+     // Beep RX lost whenever no RC data is received and the USB cable is not connected
+-    if (!receivingRxData && !usbCableIsInserted()) {
++    if (!receivingRxData && !usbCableIsInserted()
++#ifdef USE_AUTOSTART
++        && !autostartSuppressRxLostBeeper() // receiverless autostart build, no RX link seen since boot
++#endif
++        ) {
+         beeperMode = BEEPER_RX_LOST;
+     }
+ 
+diff --git a/src/main/msp/msp_box.c b/src/main/msp/msp_box.c
+index e816db0..b166d96 100644
+--- a/src/main/msp/msp_box.c
++++ b/src/main/msp/msp_box.c
+@@ -40,6 +40,7 @@
+ 
+ #include "telemetry/telemetry.h"
+ 
++#include "pg/autostart.h"
+ #include "pg/piniobox.h"
+ 
+ #include "msp_box.h"
+@@ -345,6 +346,15 @@ void initActiveBoxIds(void)
+     }
+ #endif
+ 
++#ifdef USE_AUTOSTART
++    if (autostartConfig()->mode != AUTOSTART_MODE_OFF && autostartConfig()->rcBoxPermanentId != PERMANENT_ID_NONE) {
++        const box_t *box = findBoxByPermanentId(autostartConfig()->rcBoxPermanentId);
++        if (box && box->boxId >= BOXUSER1 && box->boxId <= BOXUSER4) {
++            BME(box->boxId);
++        }
++    }
++#endif
++
+ #if defined(USE_PID_AUDIO)
+     BME(BOXPIDAUDIO);
+ #endif
+diff --git a/src/main/pg/autostart.c b/src/main/pg/autostart.c
+new file mode 100644
+index 0000000..96abdf0
+--- /dev/null
++++ b/src/main/pg/autostart.c
+@@ -0,0 +1,72 @@
++/*
++ * This file is part of Betaflight.
++ *
++ * Betaflight is free software. You can redistribute this software
++ * and/or modify this software under the terms of the GNU General
++ * Public License as published by the Free Software Foundation,
++ * either version 3 of the License, or (at your option) any later
++ * version.
++ *
++ * Betaflight is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
++ *
++ * See the GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this software.
++ *
++ * If not, see <http://www.gnu.org/licenses/>.
++ */
++
++#include "platform.h"
++
++#ifdef USE_AUTOSTART
++
++#include "drivers/io.h"
++
++#include "pg/pg_ids.h"
++
++#include "autostart.h"
++
++// Generic default is OFF so that a build that merely compiles this file never spins a motor.
++// The project board config (config.h) sets AUTOSTART_DEFAULT_MODE AUTOSTART_MODE_POWER.
++#ifndef AUTOSTART_DEFAULT_MODE
++#define AUTOSTART_DEFAULT_MODE AUTOSTART_MODE_OFF
++#endif
++#ifndef AUTOSTART_DEFAULT_DELAY_S
++#define AUTOSTART_DEFAULT_DELAY_S 10
++#endif
++#ifndef AUTOSTART_DEFAULT_RAMP_DS
++#define AUTOSTART_DEFAULT_RAMP_DS 100           // 10.0 s
++#endif
++#ifndef AUTOSTART_DEFAULT_THROTTLE_PCT
++#define AUTOSTART_DEFAULT_THROTTLE_PCT 15
++#endif
++#ifndef AUTOSTART_DEFAULT_MOTOR_MASK
++#define AUTOSTART_DEFAULT_MOTOR_MASK 0x01       // motor 1 only
++#endif
++#ifndef AUTOSTART_DEFAULT_USB_INHIBIT
++#define AUTOSTART_DEFAULT_USB_INHIBIT 1
++#endif
++#ifndef AUTOSTART_DEFAULT_RC_BOX
++#define AUTOSTART_DEFAULT_RC_BOX 255            // PERMANENT_ID_NONE
++#endif
++#ifndef AUTOSTART_BUTTON_PIN
++#define AUTOSTART_BUTTON_PIN NONE
++#endif
++
++PG_REGISTER_WITH_RESET_TEMPLATE(autostartConfig_t, autostartConfig, PG_AUTOSTART_CONFIG, 0);
++
++PG_RESET_TEMPLATE(autostartConfig_t, autostartConfig,
++    .mode = AUTOSTART_DEFAULT_MODE,
++    .delaySeconds = AUTOSTART_DEFAULT_DELAY_S,
++    .rampDeciseconds = AUTOSTART_DEFAULT_RAMP_DS,
++    .throttlePercent = AUTOSTART_DEFAULT_THROTTLE_PCT,
++    .motorMask = AUTOSTART_DEFAULT_MOTOR_MASK,
++    .usbInhibit = AUTOSTART_DEFAULT_USB_INHIBIT,
++    .rcBoxPermanentId = AUTOSTART_DEFAULT_RC_BOX,
++    .buttonTag = IO_TAG(AUTOSTART_BUTTON_PIN),
++);
++
++#endif // USE_AUTOSTART
+diff --git a/src/main/pg/autostart.h b/src/main/pg/autostart.h
+new file mode 100644
+index 0000000..5311c8f
+--- /dev/null
++++ b/src/main/pg/autostart.h
+@@ -0,0 +1,54 @@
++/*
++ * This file is part of Betaflight.
++ *
++ * Betaflight is free software. You can redistribute this software
++ * and/or modify this software under the terms of the GNU General
++ * Public License as published by the Free Software Foundation,
++ * either version 3 of the License, or (at your option) any later
++ * version.
++ *
++ * Betaflight is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
++ *
++ * See the GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this software.
++ *
++ * If not, see <http://www.gnu.org/licenses/>.
++ */
++
++/*
++ * Shramko Motor Autostart - configuration (parameter group).
++ * Author: Andrii Shramko. Drives selected motor outputs through the
++ * disarmed "motor test" path (motor_disarmed[]) without a receiver.
++ */
++
++#pragma once
++
++#include <stdint.h>
++
++#include "drivers/io_types.h"
++
++#include "pg/pg.h"
++
++typedef enum {
++    AUTOSTART_MODE_OFF = 0,     // feature disabled (stock Betaflight behaviour)
++    AUTOSTART_MODE_POWER,       // program starts automatically after boot
++    AUTOSTART_MODE_BUTTON,      // program starts on a button click
++    AUTOSTART_MODE_COUNT
++} autostartMode_e;
++
++typedef struct autostartConfig_s {
++    uint8_t mode;               // autostartMode_e
++    uint16_t delaySeconds;      // delay after boot / click before the ramp starts, 0..600 s
++    uint16_t rampDeciseconds;   // ramp time 0 -> target, 0.1 s units, 0..6000 (0..600 s)
++    uint8_t throttlePercent;    // target, % of the motor-test range (1000..2000 us external), 0..100
++    uint8_t motorMask;          // bit0 = motor 1, bit1 = motor 2, ...
++    uint8_t usbInhibit;         // 1 = never drive while a USB host has configured the VCP
++    uint8_t rcBoxPermanentId;   // BOXUSER1..4 permanent id (40..43) that runs the program while the RX link is valid, 255 = none
++    ioTag_t buttonTag;          // resource AUTOSTART 1 <pin>; button between pin and GND, internal pull-up
++} autostartConfig_t;
++
++PG_DECLARE(autostartConfig_t, autostartConfig);
+diff --git a/src/main/pg/pg_ids.h b/src/main/pg/pg_ids.h
+index ee9fee1..c7a8899 100644
+--- a/src/main/pg/pg_ids.h
++++ b/src/main/pg/pg_ids.h
+@@ -160,6 +160,9 @@
+ #define PG_GIMBAL_TRACK_CONFIG      559
+ #define PG_OPTICALFLOW_CONFIG       560
+ 
++// fork-specific parameter groups (kept far away from the upstream 5xx sequence)
++#define PG_AUTOSTART_CONFIG         4000 // Shramko Motor Autostart
++
+ 
+ // OSD configuration (subject to change)
+ #define PG_OSD_FONT_CONFIG 2047
+diff --git a/src/main/scheduler/scheduler.h b/src/main/scheduler/scheduler.h
+index e9e55c9..75f92fd 100644
+--- a/src/main/scheduler/scheduler.h
++++ b/src/main/scheduler/scheduler.h
+@@ -191,6 +191,9 @@ typedef enum {
+ #ifdef USE_GIMBAL
+     TASK_GIMBAL,
+ #endif
++#ifdef USE_AUTOSTART
++    TASK_AUTOSTART,
++#endif
+ 
+     /* Count of real tasks */
+     TASK_COUNT,

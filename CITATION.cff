@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+message: "If you use this firmware or its ideas, please cite it as below."
+title: "Shramko Motor Autostart: Betaflight firmware that spins a motor on power-up without a receiver"
+abstract: "A small module for Betaflight 2025.12.1 that turns a flight controller into a standalone motor driver: after power-on it waits a configurable delay, ramps the ESC linearly to a configurable throttle over a configurable time and holds it - no transmitter, receiver or switch. Optional momentary button on two pads (internal pull-up), optional RC receiver / AUX switch, DShot or PWM, all settings in the Betaflight CLI."
+authors:
+  - family-names: Shramko
+    given-names: Andrii
+    email: zmei116@gmail.com
+    website: "https://www.linkedin.com/in/andrii-shramko/"
+repository-code: "https://github.com/AndriiShramko/shramko-betaflight-motor-autostart"
+license: GPL-3.0-or-later
+version: 1.0.0
+date-released: 2026-10-19
+keywords:
+  - betaflight
+  - flight controller
+  - esc
+  - dshot
+  - blheli_32
+  - motor autostart
+  - no receiver
+  - blower
+  - fan controller
+  - stm32f405

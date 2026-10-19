@@ -1,0 +1,20 @@
+Shramko Motor Autostart
+Copyright (C) 2026 Andrii Shramko <zmei116@gmail.com>
+https://github.com/AndriiShramko/shramko-betaflight-motor-autostart
+
+This project is a patch set and board configuration for Betaflight
+(https://github.com/betaflight/betaflight), tag 2025.12.1, which is free
+software under the GNU General Public License v3. The patch, the board
+configuration and the firmware built from them are distributed under the
+same license (GPL-3.0-or-later, see LICENSE). The host-side tools in tools/
+are also GPL-3.0-or-later.
+
+Credits
+- Betaflight and all its contributors - the flight-controller firmware this
+  builds on.
+- configs/HGLRC_F405_S8/config.h is derived from configs/HGLR/HGLRC_F405_S in
+  https://github.com/betaflight/config (GPL-3.0) and reconstructed from the
+  vendor firmware's `dump hardware`.
+
+Not affiliated with Betaflight, HGLRC, Flycolor or SpeedyBee. All trademarks
+belong to their owners.

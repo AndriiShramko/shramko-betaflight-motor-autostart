@@ -1,0 +1,6 @@
+out/
+*.hex
+*.bin
+*.elf
+__pycache__/
+docs/research-*.json

@@ -1,0 +1,55 @@
+diff all
+
+# version
+# Betaflight / STM32F405 (F405) 2025.12.1 Oct 19 2026 / 19:06:17 (norevision) MSP API: 1.47
+# config rev: 
+
+# start the command batch
+batch start
+
+# reset configuration to default settings
+defaults nosave
+
+board_name HGLRC_F405_S8
+manufacturer_id HGLR
+mcu_id <removed before publishing>
+signature 
+
+# feature
+feature TELEMETRY
+feature LED_STRIP
+feature OSD
+
+# master
+set blackbox_sample_rate = 1/2
+set dshot_bidir = ON
+set motor_pwm_protocol = DSHOT300
+set pid_process_denom = 2
+set debug_mode = AUTOSTART
+set autostart_usb_inhibit = OFF
+
+profile 0
+
+profile 1
+
+profile 2
+
+profile 3
+
+# restore original profile selection
+profile 0
+
+rateprofile 0
+
+rateprofile 1
+
+rateprofile 2
+
+rateprofile 3
+
+# restore original rateprofile selection
+rateprofile 0
+
+# save configuration
+save
+# 

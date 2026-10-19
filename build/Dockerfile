@@ -13,3 +13,5 @@ WORKDIR /bf
 RUN mkdir -p downloads && curl -fL -o downloads/arm-gnu-toolchain-13.3.rel1-x86_64-arm-none-eabi.tar.xz \n    https://developer.arm.com/-/media/Files/downloads/gnu/13.3.rel1/binrel/arm-gnu-toolchain-13.3.rel1-x86_64-arm-none-eabi.tar.xz
 RUN make arm_sdk_install && ls tools && tools/*/bin/arm-none-eabi-gcc --version | head -1
 RUN git config --global --add safe.directory '*'
+# unit tests (Betaflight src/test uses clang + googletest)
+RUN apt-get update && apt-get install -y --no-install-recommends clang libclang-rt-18-dev libblocksruntime-dev && rm -rf /var/lib/apt/lists/*

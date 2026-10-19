@@ -87,7 +87,7 @@ Details and sources: [docs/wiring.md](docs/wiring.md).
 | `autostart_mode = OFF` | motor stays at stop (negative control) |
 | Bidirectional DShot ON | same curve; telemetry correctly reports "no ESC" |
 
-Raw data: [docs/selftest/](docs/selftest/). Unit tests run in the Betaflight test harness (see `patches/`).
+Raw data: [docs/selftest/](docs/selftest/). 17 unit tests of the state machine (Betaflight googletest harness) + regression tests of the touched modules: `docker run --rm -v "$PWD:/repo" shramko-bf-build:2025.12.1 bash /repo/build/test.sh`.
 
 ## Build from source
 

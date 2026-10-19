@@ -876,3 +876,444 @@ index e9e55c9..75f92fd 100644
  
      /* Count of real tasks */
      TASK_COUNT,
+diff --git a/src/test/Makefile b/src/test/Makefile
+index 0de224c..5dc863d 100644
+--- a/src/test/Makefile
++++ b/src/test/Makefile
+@@ -47,6 +47,13 @@ althold_unittest_SRC := \
+ althold_unittest_DEFINES := \
+ 		USE_ALTITUDE_HOLD= \
+ 
++autostart_unittest_SRC := \
++		$(USER_DIR)/fc/autostart.c \
++		$(USER_DIR)/pg/autostart.c
++
++autostart_unittest_DEFINES := \
++		USE_AUTOSTART=
++
+ arming_prevention_unittest_SRC := \
+ 		$(USER_DIR)/common/bitarray.c \
+ 		$(USER_DIR)/common/filter.c \
+diff --git a/src/test/unit/autostart_unittest.cc b/src/test/unit/autostart_unittest.cc
+new file mode 100644
+index 0000000..0bd0b10
+--- /dev/null
++++ b/src/test/unit/autostart_unittest.cc
+@@ -0,0 +1,417 @@
++/*
++ * This file is part of Betaflight.
++ *
++ * Betaflight is free software. You can redistribute this software
++ * and/or modify this software under the terms of the GNU General
++ * Public License as published by the Free Software Foundation,
++ * either version 3 of the License, or (at your option) any later
++ * version.
++ *
++ * Betaflight is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
++ *
++ * See the GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public
++ * License along with this software.
++ *
++ * If not, see <http://www.gnu.org/licenses/>.
++ */
++
++// Shramko Motor Autostart - state machine tests (fc/autostart.c) with all hardware stubbed.
++
++#include <stdint.h>
++#include <stdbool.h>
++#include <string.h>
++
++extern "C" {
++    #include "platform.h"
++
++    #include "build/debug.h"
++
++    #include "common/filter.h"
++    #include "common/time.h"
++
++    #include "config/feature.h"
++
++    #include "drivers/io.h"
++    #include "drivers/motor.h"
++
++    #include "fc/rc_modes.h"
++    #include "fc/runtime_config.h"
++
++    #include "flight/mixer.h"
++    #include "flight/mixer_init.h"
++
++    #include "msp/msp_box.h"
++
++    #include "pg/pg.h"
++    #include "pg/pg_ids.h"
++    #include "pg/autostart.h"
++
++    #include "fc/autostart.h"
++
++    // ---- stubs / fakes ----
++    static timeMs_t fakeMs;
++    static bool fakePinHigh;        // pull-up: true = released
++    static bool fakePinFree;
++    static bool fakeRxValid;
++    static bool fakeUsb;
++    static boxId_e fakeActiveBox;
++    static uint32_t fakeFeatures;
++    static int beepCalls;
++    static int pinInitCount;
++    static uint8_t fakeIoRec;
++
++    uint8_t armingFlags = 0;
++    uint8_t debugMode = DEBUG_NONE;
++    int16_t debug[DEBUG16_VALUE_COUNT];
++    float motor_disarmed[MAX_SUPPORTED_MOTORS];
++    mixerRuntime_t mixerRuntime;
++
++    timeMs_t millis(void) { return fakeMs; }
++    bool IORead(IO_t io) { UNUSED(io); return fakePinHigh; }
++    IO_t IOGetByTag(ioTag_t tag) { return tag ? (IO_t)&fakeIoRec : IO_NONE; }
++    void IOInit(IO_t io, resourceOwner_e owner, uint8_t index) { UNUSED(io); UNUSED(owner); UNUSED(index); pinInitCount++; }
++    void IOConfigGPIO(IO_t io, ioConfig_t cfg) { UNUSED(io); UNUSED(cfg); }
++    bool IOIsFreeOrPreinit(IO_t io) { UNUSED(io); return fakePinFree; }
++    // PWM-like conversion (external us == motor value) so outputs can be checked directly
++    float motorConvertFromExternal(uint16_t externalValue) { return externalValue; }
++    uint8_t getMotorCount(void) { return 4; }
++    void beeperConfirmationBeeps(uint8_t beepCount) { UNUSED(beepCount); beepCalls++; }
++    bool rxAreFlightChannelsValid(void) { return fakeRxValid; }
++    bool usbCableIsInserted(void) { return fakeUsb; }
++    bool IS_RC_MODE_ACTIVE(boxId_e boxId) { return boxId == fakeActiveBox; }
++    bool featureIsEnabled(const uint32_t mask) { return (fakeFeatures & mask) != 0; }
++
++    static const box_t testBoxes[] = {
++        { .boxName = "ARM",   .boxId = BOXARM,   .permanentId = 0 },
++        { .boxName = "USER3", .boxId = BOXUSER3, .permanentId = 42 },
++    };
++    const box_t *findBoxByPermanentId(uint8_t permanentId)
++    {
++        for (unsigned i = 0; i < sizeof(testBoxes) / sizeof(testBoxes[0]); i++) {
++            if (testBoxes[i].permanentId == permanentId) {
++                return &testBoxes[i];
++            }
++        }
++        return NULL;
++    }
++}
++
++#include "unittest_macros.h"
++#include "gtest/gtest.h"
++
++#define DISARM 1000.0f
++#define OTHER  1234.0f   // value a motor test left on motor 2; must never be touched
++
++static void setDefaults(autostartMode_e mode)
++{
++    autostartConfig_t *cfg = autostartConfigMutable();
++    cfg->mode = mode;
++    cfg->delaySeconds = 10;
++    cfg->rampDeciseconds = 100;
++    cfg->throttlePercent = 15;
++    cfg->motorMask = 0x01;
++    cfg->usbInhibit = 1;
++    cfg->rcBoxPermanentId = 255;
++    cfg->buttonTag = 0;
++
++    fakeMs = 1500;          // init finishes ~1.5 s after power-on
++    fakePinHigh = true;
++    fakePinFree = true;
++    fakeRxValid = false;
++    fakeUsb = false;
++    fakeActiveBox = (boxId_e)BOXID_NONE;
++    fakeFeatures = 0;
++    beepCalls = 0;
++    pinInitCount = 0;
++    armingFlags = 0;
++    debugMode = DEBUG_NONE;
++    memset(debug, 0, sizeof(debug));
++    mixerRuntime.disarmMotorOutput = DISARM;
++    for (int i = 0; i < MAX_SUPPORTED_MOTORS; i++) {
++        motor_disarmed[i] = DISARM;
++    }
++    motor_disarmed[1] = OTHER;
++}
++
++// advance time in 20 ms ticks (50 Hz task) up to and including targetMs
++static void runUntil(timeMs_t targetMs)
++{
++    while (fakeMs < targetMs) {
++        fakeMs += 20;
++        autostartUpdate(fakeMs * 1000);
++    }
++}
++
++TEST(AutostartTest, PowerModeDelayThenLinearRampThenHold)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartInit();
++    ASSERT_TRUE(autostartIsEnabled());
++
++    autostartUpdate(fakeMs * 1000);            // first tick at t = 1.5 s; the 10 s count started at power-on (t = 0)
++    runUntil(9980);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);       // still waiting
++    EXPECT_FALSE(autostartIsDrivingMotors());
++    EXPECT_GT(beepCalls, 5);                    // countdown beeps
++
++    runUntil(10040);                            // 10 s after power-on -> ramp started
++    EXPECT_TRUE(autostartIsDrivingMotors());
++    runUntil(15020);                            // half of the 10 s ramp
++    EXPECT_NEAR(1075.0f, motor_disarmed[0], 1.0f);   // 7.5 % -> 1075 us
++    runUntil(20040);                            // ramp complete 20 s after power-on
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);      // 15 % -> 1150 us
++    runUntil(600000);                           // keeps running
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++    EXPECT_EQ(OTHER, motor_disarmed[1]);        // masked-out motor untouched
++    EXPECT_EQ(DISARM, motor_disarmed[2]);
++}
++
++TEST(AutostartTest, RampIsMonotonic)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartInit();
++    float last = 0.0f;
++    for (timeMs_t t = 1520; t < 30000; t += 20) {
++        runUntil(t);
++        if (autostartIsDrivingMotors()) {
++            EXPECT_GE(motor_disarmed[0], last);
++            last = motor_disarmed[0];
++        }
++    }
++    EXPECT_EQ(1150.0f, last);
++}
++
++TEST(AutostartTest, UsbHostInhibitsAndLatches)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartInit();
++    runUntil(25000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++
++    fakeUsb = true;                             // laptop plugged in while running
++    runUntil(25020);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);       // immediate stop
++    EXPECT_FALSE(autostartIsDrivingMotors());
++
++    fakeUsb = false;                            // unplugged again: no automatic restart
++    runUntil(60000);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, UsbConnectedAtBootNeverSpins)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartInit();
++    autostartUpdate(fakeMs * 1000);
++    fakeUsb = true;                             // host enumerates during the countdown
++    runUntil(60000);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++}
++
++TEST(AutostartTest, UsbInhibitOffRunsOnBench)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    fakeUsb = true;
++    autostartInit();
++    runUntil(25000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, ReceiverTakesOverAndLatches)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartInit();
++    runUntil(15000);                            // ramping
++    EXPECT_TRUE(autostartIsDrivingMotors());
++
++    fakeRxValid = true;                         // receiver link comes up
++    runUntil(15400);
++    EXPECT_TRUE(autostartIsDrivingMotors());    // not yet confirmed (500 ms)
++    runUntil(15560);
++    EXPECT_FALSE(autostartIsDrivingMotors());   // confirmed -> stock Betaflight owns the motors
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++    EXPECT_FALSE(autostartSuppressRxLostBeeper());
++
++    fakeRxValid = false;                        // link lost: no automatic restart
++    runUntil(60000);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, ShortRxGlitchIsIgnored)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartInit();
++    EXPECT_TRUE(autostartSuppressRxLostBeeper());
++    runUntil(25000);
++    fakeRxValid = true;
++    runUntil(25200);                            // 200 ms glitch
++    fakeRxValid = false;
++    runUntil(26000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++    EXPECT_TRUE(autostartSuppressRxLostBeeper());
++}
++
++TEST(AutostartTest, ButtonModeClickStartsSecondClickStops)
++{
++    setDefaults(AUTOSTART_MODE_BUTTON);
++    autostartConfigMutable()->buttonTag = 1;
++    autostartInit();
++    EXPECT_EQ(1, pinInitCount);
++    runUntil(30000);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);       // waits for a click
++
++    fakePinHigh = false;                        // press
++    runUntil(30100);
++    fakePinHigh = true;                         // release
++    runUntil(30200);
++    runUntil(30100 + 10000 + 10000 + 200);      // delay + ramp
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++
++    fakePinHigh = false;                        // second click -> immediate stop
++    runUntil(50500);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++    fakePinHigh = true;
++    runUntil(80000);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, BounceAndHeldAtBootAreNotClicks)
++{
++    setDefaults(AUTOSTART_MODE_BUTTON);
++    autostartConfigMutable()->buttonTag = 1;
++    fakePinHigh = false;                        // button held while powering up
++    autostartInit();
++    runUntil(30000);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++    fakePinHigh = true;
++    runUntil(30100);
++
++    fakePinHigh = false;                        // low for two 20 ms samples: shorter than the 40 ms debounce
++    runUntil(30140);
++    fakePinHigh = true;
++    runUntil(60000);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, OwnedPinIsNotTaken)
++{
++    setDefaults(AUTOSTART_MODE_BUTTON);
++    autostartConfigMutable()->buttonTag = 1;
++    fakePinFree = false;                        // e.g. still used by a UART
++    autostartInit();
++    EXPECT_EQ(0, pinInitCount);
++    fakePinHigh = false;
++    runUntil(60000);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++}
++
++TEST(AutostartTest, ArmingStopsProgram)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartInit();
++    runUntil(25000);
++    ENABLE_ARMING_FLAG(ARMED);
++    runUntil(25020);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++    DISABLE_ARMING_FLAG(ARMED);
++    runUntil(60000);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, Feature3dBlocksProgram)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    fakeFeatures = FEATURE_3D;
++    autostartInit();
++    runUntil(60000);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++}
++
++TEST(AutostartTest, MinimumUptimeHoldWithZeroDelay)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->delaySeconds = 0;
++    autostartConfigMutable()->rampDeciseconds = 0;
++    autostartInit();
++    runUntil(2980);
++    EXPECT_FALSE(autostartIsDrivingMotors());   // nothing before 3 s uptime
++    runUntil(3060);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, RcBoxRunsProgramOnlyWithLink)
++{
++    setDefaults(AUTOSTART_MODE_BUTTON);
++    autostartConfigMutable()->rcBoxPermanentId = 42;  // BOXUSER3
++    autostartConfigMutable()->delaySeconds = 2;
++    autostartConfigMutable()->rampDeciseconds = 10;
++    autostartInit();
++
++    fakeRxValid = true;
++    runUntil(5000);
++    EXPECT_FALSE(autostartIsDrivingMotors());   // link, switch off -> stock behaviour
++
++    fakeActiveBox = BOXUSER3;                   // switch on
++    runUntil(9000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++
++    fakeActiveBox = (boxId_e)BOXID_NONE;        // switch off
++    runUntil(9040);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++
++    fakeActiveBox = BOXUSER3;                   // on again, then the link drops
++    runUntil(14000);
++    EXPECT_TRUE(autostartIsDrivingMotors());
++    fakeRxValid = false;
++    runUntil(14040);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++}
++
++TEST(AutostartTest, NonUserBoxIsRejected)
++{
++    setDefaults(AUTOSTART_MODE_BUTTON);
++    autostartConfigMutable()->rcBoxPermanentId = 0;   // ARM box must not be accepted
++    autostartInit();
++    fakeRxValid = true;
++    fakeActiveBox = BOXARM;
++    runUntil(60000);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++}
++
++TEST(AutostartTest, OffModeIsInert)
++{
++    setDefaults(AUTOSTART_MODE_OFF);
++    autostartInit();
++    EXPECT_FALSE(autostartIsEnabled());
++    EXPECT_FALSE(autostartSuppressRxLostBeeper());
++}
++
++TEST(AutostartTest, DebugChannelReportsStateAndTiming)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    runUntil(5000);
++    EXPECT_EQ(1, debug[0]);                     // DELAY
++    EXPECT_EQ(500, debug[2]);                   // 5000 ms since power-on, /10
++    EXPECT_EQ(50, debug[3]);                    // uptime 5.0 s
++    EXPECT_EQ(1, debug[7]);                     // source POWER
++    runUntil(15020);
++    EXPECT_EQ(2, debug[0]);                     // RAMP
++    EXPECT_NEAR(75, debug[1], 1);               // 7.5 % x10
++    runUntil(25000);
++    EXPECT_EQ(3, debug[0]);                     // RUN
++    EXPECT_EQ(150, debug[1]);                   // 15.0 %
++    fakeUsb = true;                             // computer plugged in, inhibit ON
++    runUntil(25020);
++    EXPECT_EQ(0, debug[0]);                     // IDLE
++    EXPECT_EQ(0, debug[1]);
++    EXPECT_EQ(1, debug[4]);                     // USB seen
++}

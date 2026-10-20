@@ -76,7 +76,7 @@ export const initFeedback = () => {
                 website: hp.value,
                 t: Date.now() - openedAt
             });
-            status.textContent = t('ui.fbOk', { id: r.id });
+            status.textContent = r?.id ? t('ui.fbOk', { id: r.id }) : t('ui.fbOkPlain');
             msg.value = '';
         } catch {
             status.textContent = t('ui.fbFail');

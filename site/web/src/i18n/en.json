@@ -175,6 +175,7 @@
   "ui.fbEmpty": "Write a few words first.",
   "ui.fbSending": "Sending…",
   "ui.fbOk": "Thank you! Your report number: {id}. Mention it if you write again.",
+  "ui.fbOkPlain": "Thank you! Your message was sent.",
   "ui.fbFail": "Sending didn't work this time. Your text is still here — please try again in a moment.",
   "ui.leadNeed": "To send, add {missing}.",
   "ui.leadNeedRole": "who you are",

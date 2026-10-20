@@ -9,6 +9,8 @@
 //   setDiagnostic(key, val)  facts for a bug report, e.g. setDiagnostic('fc', { board, firmware })
 //   showSiteError(err)       show the banner for an error the tool caught itself
 
+import { t } from './i18n';
+
 const ERRORS_KEPT = 20;
 const LOG_KEPT = 300;
 const errors: string[] = [];
@@ -99,9 +101,14 @@ const initBanner = () => {
         box.hidden = true;
     });
     document.getElementById('site-error-reload')?.addEventListener('click', () => location.reload());
-    document.getElementById('site-error-copy')?.addEventListener('click', () => {
+    const copy = document.getElementById('site-error-copy');
+    copy?.addEventListener('click', () => {
         const text = [`release ${getRelease()}`, location.pathname, navigator.userAgent, ...recentErrors()].join('\n');
-        navigator.clipboard?.writeText(text).catch(() => undefined);
+        navigator.clipboard?.writeText(text).then(() => {
+            const old = copy.textContent;
+            copy.textContent = t('ui.copied');
+            setTimeout(() => { copy.textContent = old; }, 1500);
+        }).catch(() => undefined);
     });
     document.getElementById('site-error-report')?.addEventListener('click', () => {
         box.hidden = true;

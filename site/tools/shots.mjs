@@ -1,6 +1,7 @@
 // Screenshots + click checks of a built site (desktop 1440 and phone 375), for review before a hand-off.
 //   node tools/shots.mjs <distDir> <outDir> [--base https://autostart.flyreelstudio.eu]
-// Without --base it serves <distDir> itself (/api/* answers 204, /go/* answers 302 to "#go-<slug>").
+// Without --base it serves <distDir> itself (/api/* answers 204, /go/* answers 302 to "#go-<slug>"),
+// or, with SMA_API=http://127.0.0.1:<port>, proxies /api/* and /go/* to a real local api/server.py.
 // Checks: page errors and console errors, horizontal overflow, closed dialogs not visible, every
 // external link opens in a new tab, the language switch, the Feedback dialog, the configurator mount,
 // and the error banner both ways (a foreign script's error: no banner; ours: banner).
@@ -22,8 +23,18 @@ const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.
 let server = null;
 let base = baseArg;
 if (!base) {
+    // SMA_API=http://127.0.0.1:8099: /api/* and /go/* go to a real local API (python api/server.py)
+    const api = process.env.SMA_API ? new URL(process.env.SMA_API) : null;
     server = http.createServer((req, res) => {
         const url = new URL(req.url, 'http://x');
+        if (api && (url.pathname.startsWith('/api/') || url.pathname.startsWith('/go/'))) {
+            const up = http.request({ host: api.hostname, port: api.port, path: req.url, method: req.method, headers: { ...req.headers, 'x-real-ip': '203.0.113.9', 'x-forwarded-for': '203.0.113.9' } }, (r) => {
+                res.writeHead(r.statusCode ?? 502, r.headers);
+                r.pipe(res);
+            });
+            up.on('error', () => { res.writeHead(502); res.end(); });
+            return req.pipe(up);
+        }
         if (url.pathname.startsWith('/api/')) { res.writeHead(204); return res.end(); }
         if (url.pathname.startsWith('/go/')) { res.writeHead(302, { location: `/en/#go-${url.pathname.slice(4)}` }); return res.end(); }
         let p = join(dist, decodeURIComponent(url.pathname));
@@ -111,7 +122,9 @@ for (const lang of ['en', 'ru', 'es', 'pl']) {
     await page.fill('#fb textarea[name=message]', 'shots.mjs test message');
     await page.click('#fb-send');
     await page.waitForFunction(() => /R-|number|Thank/i.test(document.querySelector('#fb .form-status')?.textContent ?? '') || /didn't work/.test(document.querySelector('#fb .form-status')?.textContent ?? ''), null, { timeout: 8000 }).catch(() => undefined);
-    notes.push(`feedback send (static server answers 204, no JSON): status "${(await page.locator('#fb .form-status').textContent())?.trim()}"`);
+    const fbStatus = (await page.locator('#fb .form-status').textContent())?.trim() ?? '';
+    if (process.env.SMA_API && !/R-\d{8}-\d{4}/.test(fbStatus)) fail(`feedback through the real API: no report id in "${fbStatus}"`);
+    notes.push(`feedback send (${process.env.SMA_API ? 'real local API' : 'static stub, no JSON'}): status "${fbStatus}"`);
     await page.click('#fb-close');
     if (await page.locator('#fb').isVisible()) fail('feedback: dialog did not close');
 

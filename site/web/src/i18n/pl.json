@@ -175,6 +175,7 @@
   "ui.fbEmpty": "Napisz najpierw kilka słów.",
   "ui.fbSending": "Wysyłanie…",
   "ui.fbOk": "Dziękujemy! Numer zgłoszenia: {id}. Podaj go, jeśli napiszesz ponownie.",
+  "ui.fbOkPlain": "Dziękujemy! Wiadomość została wysłana.",
   "ui.fbFail": "Tym razem nie udało się wysłać. Tekst został — spróbuj ponownie za chwilę.",
   "ui.leadNeed": "Aby wysłać, dodaj {missing}.",
   "ui.leadNeedRole": "kim jesteś",

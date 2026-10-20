@@ -1,0 +1,81 @@
+# Shramko Motor Autostart on the hub, in its own directory ($SMA_BASE in deploy/hub.env).
+# Two containers, no host ports:
+#   sma-web  nginx:alpine serves the static release (releases/current) behind nginx-proxy + acme
+#   sma-api  a tiny stdlib python API (feedback, reports, counters, /go/ redirects, health),
+#            internal network only
+# The web-proxy network is external: never created, changed or removed from here. Neighbours are
+# never touched. First certificate: add compose.staging.yml (Let's Encrypt staging), see README.
+name: sma   # Shramko Motor Autostart
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+  sma-web:
+    image: nginx:1.29-alpine
+    container_name: sma-web
+    restart: unless-stopped
+    volumes:
+      - ./releases:/srv/releases:ro
+      # single-file bind mount: write changes IN PLACE (deploy.sh --sync-config does), a file
+      # replaced by a new inode is only seen after `docker restart sma-web`
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    environment:
+      VIRTUAL_HOST: autostart.flyreelstudio.eu
+      VIRTUAL_PORT: "80"
+      LETSENCRYPT_HOST: autostart.flyreelstudio.eu
+      LETSENCRYPT_EMAIL: zmei116@gmail.com
+    networks: [web-proxy, sma-internal]
+    mem_limit: 96m
+    memswap_limit: 96m
+    cpus: 0.5
+    pids_limit: 64
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  sma-api:
+    image: python:3.12-alpine
+    container_name: sma-api
+    restart: unless-stopped
+    command: ["python", "-u", "/app/server.py"]
+    read_only: true
+    tmpfs: ["/tmp:size=8m"]
+    volumes:
+      - ./api:/app:ro
+      - ./data:/data
+    # TG_BOT_TOKEN, TG_CHAT_ID: secrets, only on the hub (never in git); see README "First deploy"
+    env_file: [config.env]
+    environment:
+      SMA_DATA_DIR: /data
+      SMA_SITE_TAG: autostart
+      SMA_PORT: "8090"
+      PYTHONDONTWRITEBYTECODE: "1"
+    networks: [sma-internal]
+    mem_limit: 64m
+    memswap_limit: 64m
+    cpus: 0.25
+    pids_limit: 32
+    security_opt: ["no-new-privileges:true"]
+    logging: *logging
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8090/api/health', timeout=4).status == 200 else 1)"]
+      interval: 30s
+      timeout: 6s
+      retries: 3
+      start_period: 10s
+
+networks:
+  web-proxy:
+    external: true
+  sma-internal:
+    name: sma-internal
+    driver: bridge

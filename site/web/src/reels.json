@@ -70,6 +70,16 @@
       "transcript": "Three solder joints, on the board's stock cable. ESC signal, ground, and battery plus. The ESC's yellow goes to the white wire, black to black, and a new thin red wire to red. First power-up with no propeller: 3 rising tones, then a low and a high one, means it's wired right. Max 8S on the red wire, and this pin map is for this one board only. Free and open source, on GitHub."
     },
     {
+      "key": "r02",
+      "id": "ma-r02",
+      "file": "/video/ma-r02-720.mp4",
+      "poster": "/video/ma-r02-poster.webp",
+      "seconds": 44.88,
+      "uploadDate": "2026-10-21",
+      "voice": "en",
+      "transcript": "Set up the motor start program in your browser. No app to install. No CLI commands to type and no code to write. Flash the firmware once, plug the board into USB, press Connect in Chrome. Watch it live: waiting, speeding up, running, and a STOP motor button. Press Change settings. Then pick: wait before start, power, how long, gusts, battery. Everything else is under More settings. Press Save to board: the page reads every value back to check it. No board yet? There's a demo mode with a simulated board. Chrome, Edge or Opera on a computer. iPhones can't connect. Free and open source, on GitHub."
+    },
+    {
       "key": "r05",
       "id": "ma-r05",
       "file": "/video/ma-r05-720.mp4",

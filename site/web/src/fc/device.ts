@@ -183,9 +183,11 @@ export class AutostartDevice {
         if (this.busy) throw new FcError('busy-op', 'another operation is still running');
         if (this.phase !== 'ready') throw new FcError('not-open', `board not ready (${this.phase})`);
         this.busy = true;
-        await this.stopLive();
+        // the phase first (synchronously): a STOP pressed while the last live poll finishes is then queued for
+        // after the reboot or answered by the CLI, never sent as MSP into a CLI that is being opened
         this.setPhase(phase);
         try {
+            await this.stopLive();
             return await fn();
         } finally {
             this.busy = false;
@@ -426,11 +428,16 @@ export class AutostartDevice {
     private async afterReconnect() {
         this.cli.reset();
         await sleep(150);
-        if (this.stopAfterReconnect) {
-            this.stopAfterReconnect = false;
-            await this.sendStop();
-        }
+        await this.flushStop();
         await this.identifyWithRecovery();
+        // a STOP pressed while the board was being identified (the phase still says reconnecting)
+        await this.flushStop();
+    }
+
+    private async flushStop() {
+        if (!this.stopAfterReconnect) return;
+        this.stopAfterReconnect = false;
+        await this.sendStop();
     }
 
     // ---------- motor ----------
@@ -445,7 +452,9 @@ export class AutostartDevice {
      * In the CLI the program is already stopped; while rebooting the stop is sent as soon as the board is back.
      */
     async stopMotor(): Promise<'sent' | 'already-stopped' | 'queued'> {
-        if (this.cli.active || this.phase === 'reading') {
+        // reading / writing: the CLI is open or about to be (it stops the program); MSP written now would land
+        // in the CLI's line buffer and break the command being typed
+        if (this.cli.active || this.phase === 'reading' || this.phase === 'writing') {
             this.stopAfterReconnect = true; // in case a reboot follows
             return 'already-stopped';
         }
@@ -459,8 +468,11 @@ export class AutostartDevice {
 
     /** Reboot the board: the program starts again from the beginning (countdown, ramp). */
     async restartProgram(): Promise<void> {
+        if (this.busy) throw new FcError('busy-op', 'another operation is still running');
+        // forget an older queued stop now, before the phase changes: a STOP pressed from here on is kept and sent
+        // right after the reboot (the reboot itself would clear the hold and run the program)
+        this.stopAfterReconnect = false;
         await this.exclusive('rebooting', async () => {
-            this.stopAfterReconnect = false;
             await this.expectReboot(async () => {
                 await this.msp.ask(MSP.REBOOT, Uint8Array.of(0), { retries: 1, timeoutMs: 500 }).catch(e => {
                     if (!isFcError(e, 'timeout') && !isFcError(e, 'lost')) throw e;

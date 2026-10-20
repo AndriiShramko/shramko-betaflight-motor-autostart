@@ -653,10 +653,19 @@ export class MockSerial extends EventTarget implements SerialLike {
     }
 }
 
-/** URL switches for demos and the browser tests: ?mock=1&mockFw=1.0&mockInvalid=autostart_delay&mockNoReturn=1&mockReboot=300&mockSpeed=4 */
+/**
+ * URL switches for demos and the browser tests: ?mock=1&mockFw=1.0&mockInvalid=autostart_delay&mockNoReturn=1&mockReboot=300&mockSpeed=4
+ * and mockSet=autostart_delay:45,autostart_throttle:22 (values stored on the emulated board).
+ */
 export const mockOptionsFromQuery = (q: URLSearchParams): MockOptions => {
     const num = (k: string) => (q.has(k) && Number.isFinite(Number(q.get(k))) ? Number(q.get(k)) : undefined);
     const fw = q.get('mockFw');
+    const flash: Record<string, string> = {};
+    for (const pair of (q.get('mockSet') ?? '').split(',')) {
+        const [k, v] = pair.split(':');
+        if (k && v !== undefined) flash[k.trim()] = v.trim();
+    }
+    if (q.has('mockScale')) flash.vbat_scale = String(Number(q.get('mockScale')));
     return {
         firmware: fw === '1.0' || fw === 'stock' || fw === 'inav' ? fw : '1.1',
         rebootMs: num('mockReboot'),
@@ -666,6 +675,6 @@ export const mockOptionsFromQuery = (q: URLSearchParams): MockOptions => {
         neverReturnAfterReboot: q.get('mockNoReturn') === '1',
         saveIgnores: q.get('mockSaveIgnores')?.split(',').filter(Boolean),
         busy: q.get('mockBusy') === '1',
-        flash: q.has('mockScale') ? { vbat_scale: Number(q.get('mockScale')) } : undefined
+        flash: Object.keys(flash).length ? flash : undefined
     };
 };

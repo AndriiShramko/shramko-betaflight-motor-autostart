@@ -90,6 +90,109 @@ const initConsent = () => {
     ask();
 };
 
+// phones (< 760 px): the nav links live in a native <details> menu; it closes when a link is chosen,
+// on Esc (focus back to its summary) and on a click outside it
+const initMenu = () => {
+    const menu = document.querySelector<HTMLDetailsElement>('details.menu');
+    const summary = menu?.querySelector<HTMLElement>('summary');
+    if (!menu || !summary) return;
+    menu.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => {
+        menu.open = false;
+    }));
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape' || !menu.open) return;
+        menu.open = false;
+        summary.focus();
+    });
+    document.addEventListener('click', (e) => {
+        if (menu.open && !menu.contains(e.target as Node)) menu.open = false;
+    });
+};
+
+// The header keeps one row: when its nav would wrap (windows between phone and wide desktop, longer words in
+// es/pl/ru) the links move into the Menu, as on phones. The measured height of the sticky header becomes
+// html scroll-padding-top (--top-h), so a #jump or a focused control never comes to rest under it; a header
+// that scrolls away (phones, a phone held sideways) reserves nothing.
+const initHeader = () => {
+    const top = document.querySelector<HTMLElement>('header.top');
+    const nav = top?.querySelector<HTMLElement>('.nav');
+    const brand = top?.querySelector<HTMLElement>('.brand');
+    if (!top || !nav || !brand) return;
+    const setHeight = () => {
+        const sticky = getComputedStyle(top).position === 'sticky';
+        document.documentElement.style.setProperty('--top-h', `${sticky ? Math.ceil(top.getBoundingClientRect().height) : 0}px`);
+    };
+    const navFits = () => {
+        top.classList.remove('compact');
+        if (getComputedStyle(nav).display === 'none') return true; // narrow screens: the CSS shows the Menu already
+        const b = brand.getBoundingClientRect();
+        const onBrandRow = (el: Element | null) => {
+            if (!el) return true;
+            const r = el.getBoundingClientRect();
+            return r.top < b.bottom - 2 && r.bottom > b.top + 2;
+        };
+        return [...nav.children, top.querySelector('.langs')].every(onBrandRow);
+    };
+    const layout = () => {
+        top.classList.toggle('compact', !navFits());
+        setHeight();
+    };
+    layout();
+    window.addEventListener('resize', layout);
+    document.fonts?.ready.then(layout).catch(() => undefined);
+    if (typeof ResizeObserver === 'function') new ResizeObserver(setHeight).observe(top);
+};
+
+// A #hash that points at folded content (the DFU fix, Technical details, an FAQ answer, the agent prompt,
+// or anything inside a <details>) opens every closed <details> around it first, then the page scrolls there.
+const targetOf = (hash: string): HTMLElement | null => {
+    const id = hash.replace(/^#/, '');
+    if (!id) return null;
+    try {
+        return document.getElementById(decodeURIComponent(id));
+    } catch {
+        return document.getElementById(id);
+    }
+};
+/** opens the <details> the element is (or sits in), outermost included; true when something opened */
+const unfold = (el: HTMLElement) => {
+    let opened = false;
+    for (let d = el.closest('details'); d; d = d.parentElement?.closest('details') ?? null) {
+        if (!d.open) {
+            d.open = true;
+            opened = true;
+        }
+    }
+    return opened;
+};
+const revealHash = () => {
+    const el = targetOf(location.hash);
+    if (!el) return false;
+    if (unfold(el)) el.scrollIntoView({ block: 'start' });
+    return true;
+};
+const initFoldedTargets = () => {
+    // a click on an in-page link: open first, then the browser's own jump lands on visible content
+    document.addEventListener('click', (e) => {
+        const a = (e.target as Element | null)?.closest?.('a[href^="#"]');
+        const el = a ? targetOf(a.getAttribute('href') ?? '') : null;
+        if (el) unfold(el);
+    });
+    // back/forward, an edited address, a link from another page
+    window.addEventListener('hashchange', () => revealHash());
+    return revealHash();
+};
+
+// the connected board already has the module: Step 1 says so (the configurator sends 'sma:board')
+const initFirmwareBadge = () => {
+    const badge = document.querySelector<HTMLElement>('[data-fw-found]');
+    if (!badge) return;
+    window.addEventListener('sma:board', (e) => {
+        const d = (e as CustomEvent<{ connected?: boolean; module?: boolean }>).detail;
+        badge.hidden = !(d?.connected && d.module);
+    });
+};
+
 // phones: the floating Feedback button steps aside while the hero's call-to-action buttons are on
 // screen (it would cover them), and comes back as soon as they scroll away
 const initFeedbackButtonPlacement = () => {
@@ -122,12 +225,21 @@ const mountConfigurator = async () => {
 
 const main = async () => {
     initLangSwitch();
+    initHeader();
+    initMenu();
+    const hashFound = initFoldedTargets();
+    initFirmwareBadge();
     await loadStrings();
     initCopyButtons();
     initFeedback();
     initFeedbackButtonPlacement();
     initConsent();
     await mountConfigurator();
+    // a deep link into the configurator (#tool-connect, #tool-status …) exists only after the mount
+    if (!hashFound && targetOf(location.hash)) {
+        revealHash();
+        targetOf(location.hash)?.scrollIntoView({ block: 'start' });
+    }
     const rel = await loadRelease();
     const el = document.getElementById('release');
     if (el) el.textContent = `release ${rel}`;

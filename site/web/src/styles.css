@@ -24,7 +24,8 @@ dialog:not([open]) { display: none !important; }
 }
 
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; scroll-padding-top: 72px; }
+/* --top-h: the sticky header's measured height (main.ts; 0 when the header scrolls away) */
+html { scroll-behavior: smooth; scroll-padding-top: calc(var(--top-h, 64px) + 8px); }
 body {
     margin: 0;
     background: var(--bg);
@@ -59,6 +60,27 @@ code { font-family: var(--mono); font-size: .88em; background: var(--bg2); borde
 .nav { display: flex; gap: 18px; margin-left: auto; flex-wrap: wrap; }
 .nav a { color: var(--muted); text-decoration: none; }
 .nav a:hover { color: var(--text); }
+/* phones: the same links in a native <details> menu (main.ts closes it on a link click and on Esc) */
+.menu { display: none; }
+.menu > summary {
+    list-style: none; display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 6px 14px;
+    border: 1px solid var(--line2); border-radius: 10px; color: var(--text); font-weight: 600; cursor: pointer;
+}
+.menu > summary::-webkit-details-marker { display: none; }
+.menu > summary svg { color: var(--accent); flex: none; }
+.menu[open] > summary { background: var(--card); border-color: var(--accent); }
+.menu-nav {
+    position: absolute; left: clamp(16px, 4vw, 40px); right: clamp(16px, 4vw, 40px); top: calc(100% + 6px); z-index: 25;
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 2px; padding: 6px;
+    background: var(--card); border: 1px solid var(--line2); border-radius: var(--radius); box-shadow: 0 14px 34px rgba(0, 0, 0, .55);
+}
+.menu-nav a { display: flex; align-items: center; min-height: 44px; padding: 6px 12px; border-radius: 8px; color: var(--text); text-decoration: none; }
+.menu-nav a:hover { background: var(--bg2); color: var(--text); }
+/* the nav would wrap onto a second header row (main.ts measures it): the links go into the Menu, as on phones */
+.top.compact { gap: 0 8px; justify-content: flex-end; }
+.top.compact .nav { display: none; }
+.top.compact .menu { display: block; margin-left: auto; }
+.top.compact .brand { margin-right: auto; }
 .langs { display: flex; gap: 4px; }
 .langs a { color: var(--muted); text-decoration: none; padding: 6px 8px; border-radius: 8px; min-height: 44px; min-width: 44px; justify-content: center; display: inline-flex; align-items: center; }
 .langs a:hover { color: var(--text); }
@@ -69,7 +91,7 @@ main { max-width: 1080px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 40px); }
 /* ---------- hero */
 .hero { padding: clamp(36px, 7vw, 76px) 0 28px; display: grid; grid-template-columns: minmax(0, 1fr) 320px; column-gap: 40px; align-items: center; }
 .hero-main, .hero-art { min-width: 0; }
-.hero > .chips, .hero > .measured { grid-column: 1 / -1; }
+.hero > .chips { grid-column: 1 / -1; }
 .hero-art svg { display: block; width: 100%; height: auto; }
 .hero-art .axis { stroke: var(--line2); stroke-width: 1.5; }
 .hero-art .grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 5; }
@@ -79,6 +101,7 @@ main { max-width: 1080px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 40px); }
 .hero-art text { fill: var(--muted); font: 12px var(--mono); }
 .hero-art .st { fill: var(--accent); font-size: 11px; }
 .eyebrow { color: var(--accent); font-weight: 600; letter-spacing: .02em; margin-bottom: .5em; }
+.sub { font-size: clamp(1.15rem, 2.3vw, 1.45rem); font-weight: 650; line-height: 1.35; color: var(--text); max-width: 720px; margin: -.15em 0 .5em; }
 .lead { font-size: 1.15rem; color: var(--text2); max-width: 780px; }
 .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 22px 0 6px; }
 .byline { display: inline-flex; align-items: center; gap: 10px; margin-top: 14px; color: var(--text2); text-decoration: none; min-height: 44px; }
@@ -86,7 +109,11 @@ main { max-width: 1080px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 40px); }
 .byline:hover span { color: var(--text); text-decoration: underline; }
 .chips { list-style: none; padding: 0; margin: 16px 0 0; display: flex; flex-wrap: wrap; gap: 8px; }
 .chips li { border: 1px solid var(--line); background: var(--bg2); border-radius: 999px; padding: 6px 14px; font-size: .9rem; }
-.measured { margin-top: 26px; }
+.measured { margin: 18px 0 12px; }
+.measured h3 { margin-bottom: .7em; }
+.measured p:last-child { margin: 0; }
+/* two tiles per row on a phone (the card leaves ~309 px at 375) */
+.measured .facts { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
 .facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 0 0 10px; }
 .facts div { background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; padding: 10px 14px; min-width: 0; }
 .facts dt { color: var(--muted); font-size: .82rem; }
@@ -132,17 +159,31 @@ legend { color: var(--accent); font-weight: 700; padding: 0 6px; }
 table { border-collapse: collapse; width: 100%; }
 
 /* ---------- configurator mount */
-.tool { margin: 12px 0 56px; padding: clamp(18px, 3vw, 28px); border: 1px solid var(--line2); border-radius: calc(var(--radius) + 4px); background: linear-gradient(180deg, rgba(61, 220, 151, .05), rgba(61, 220, 151, 0) 220px), var(--bg2); scroll-margin-top: 72px; }
+.tool { margin: 12px 0 56px; padding: clamp(18px, 3vw, 28px); border: 1px solid var(--line2); border-radius: calc(var(--radius) + 4px); background: linear-gradient(180deg, rgba(61, 220, 151, .05), rgba(61, 220, 151, 0) 220px), var(--bg2); }
 .tool > h2 { margin-bottom: .3em; }
 .tool-fallback p:last-child { margin-bottom: 0; }
 
 /* ---------- sections */
 .section { padding: 44px 0; border-top: 1px solid var(--line); }
+.sec-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin: 0 0 .6em; }
+.sec-head h2 { margin: 0; }
+.step-no { color: var(--accent); }
+.found { margin: 0; display: inline-flex; align-items: center; min-height: 32px; padding: 4px 12px; border-radius: 999px; background: rgba(89, 212, 138, .1); border: 1px solid rgba(89, 212, 138, .45); color: #c9f5da; font-weight: 600; font-size: .9rem; }
+/* folded content (still in the DOM for search and AI engines; main.ts opens it for a #hash inside) */
+.fold { border: 1px solid var(--line); border-radius: 10px; background: var(--bg2); margin: 12px 0; padding: 0 16px; min-width: 0; }
+.fold > summary { list-style: none; display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 8px 0; font-weight: 600; cursor: pointer; }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary::before { content: ""; flex: none; width: 8px; height: 8px; margin: 0 4px 0 2px; border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted); transform: rotate(-45deg); transition: transform .15s; }
+.fold[open] > summary::before { transform: rotate(45deg); }
+.fold[open] { padding-bottom: 14px; }
+.fold > :last-child { margin-bottom: 0; }
 .steps { list-style: none; padding: 0; margin: 18px 0; display: grid; gap: 12px; counter-reset: st; }
 .steps li { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px 18px 14px 62px; counter-increment: st; min-width: 0; }
 .steps li::before { content: counter(st); position: absolute; left: 16px; top: 15px; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--accent-ink); font-weight: 800; }
 .steps h3 { margin-bottom: .35em; }
 .steps p { margin: 0; color: var(--text2); }
+.steps .fold { margin: 12px 0 0; background: var(--bg); }
+.steps .fold > summary { min-height: 44px; }
 .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
 .two p { margin: 0; color: var(--text2); }
 
@@ -159,6 +200,9 @@ table { border-collapse: collapse; width: 100%; }
 .joints li { margin-bottom: .45em; }
 .diagram { margin: 18px 0; background: #f4f6f8; border-radius: var(--radius); padding: 0; overflow: hidden; border: 1px solid var(--line); }
 .diagram img { display: block; width: 100%; height: auto; color: #3b4652; }
+.diagram-link { display: block; }
+.diagram-link:focus-visible { outline-offset: -3px; }
+.diagram figcaption a { display: inline-flex; min-height: 24px; align-items: center; }
 .diagram figcaption { background: var(--card); padding: 10px 14px; margin: 0; }
 .notes { padding-left: 1.1em; }
 .notes li { margin-bottom: .45em; }
@@ -182,8 +226,7 @@ table { border-collapse: collapse; width: 100%; }
 .faq summary { cursor: pointer; font-weight: 600; min-height: 52px; display: flex; align-items: center; padding: 10px 0; }
 .faq details p { color: var(--text2); }
 
-.copy-block { position: relative; }
-.copy-block pre { background: var(--bg2); border: 1px solid var(--line); border-radius: 10px; padding: 14px; white-space: pre-wrap; word-break: break-word; font-size: .85rem; font-family: var(--mono); margin: 0 0 10px; }
+.prompt pre { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 14px; white-space: pre-wrap; word-break: break-word; font-size: .85rem; font-family: var(--mono); margin: 0; }
 .agent-links { margin-top: 12px; }
 
 .author { display: flex; align-items: center; gap: 20px; margin: 8px 0 18px; flex-wrap: wrap; }
@@ -221,8 +264,10 @@ table { border-collapse: collapse; width: 100%; }
 .fb-btn { transition: opacity .2s, visibility .2s; }
 .fb { width: min(560px, calc(100vw - 32px)); background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
 .fb::backdrop { background: rgba(0, 0, 0, .6); }
-.fb-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.fb-head h2 { margin: 0; font-size: 1.3rem; }
+.fb-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.fb-head h2 { margin: 0 auto 0 0; font-size: 1.3rem; }
+.fb-stop { font-weight: 800; letter-spacing: .02em; white-space: nowrap; }
+#fb-close { min-width: 44px; min-height: 44px; }
 .consent-bar {
     position: fixed; right: 16px; bottom: 16px; z-index: 40; max-width: 420px;
     background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px;
@@ -240,10 +285,15 @@ table { border-collapse: collapse; width: 100%; }
 .err-toast p { margin: 0 0 .5em; }
 .err-msg { font-family: var(--mono); font-size: .82rem; color: #ffbdbd; overflow-wrap: anywhere; }
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.sma-connected .consent-bar { bottom: calc(var(--sma-stop-h, 64px) + 28px); }
+/* a focused control never ends up under the floating STOP pill (16 px above the bottom) or, on phones, under
+   the lifted Feedback button: more room than the tool's inline "bar + 12 px", which counts the bar alone */
+html.sma-connected { scroll-padding-bottom: calc(var(--sma-stop-h, 64px) + 28px) !important; }
 
 @media (max-width: 900px) {
     .hero { grid-template-columns: minmax(0, 1fr); }
-    .hero-art { display: none; }
+    /* the chart comes after the call-to-action buttons, so they stay on the first screen */
+    .hero-art { max-width: 300px; margin-top: 14px; }
 }
 @media (max-width: 680px) {
     .flow li { display: block; }
@@ -251,24 +301,35 @@ table { border-collapse: collapse; width: 100%; }
 }
 @media (max-width: 760px) {
     .nav { display: none; }
-    .top { gap: 0 8px; }
-    .langs { margin-left: auto; }
+    .menu { display: block; margin-left: auto; }
+    /* one row: brand … Menu EN ES PL RU; two rows: brand … Menu, then the languages on the right */
+    .top { gap: 0 8px; justify-content: flex-end; }
+    .brand { margin-right: auto; }
     .consent-bar { left: 16px; right: 16px; bottom: 76px; max-width: none; }
     .steps li { padding-left: 56px; }
+    .sma-connected .fb-btn { bottom: calc(var(--sma-stop-h, 64px) + 12px); }
+    .sma-connected .consent-bar { bottom: calc(var(--sma-stop-h, 64px) + 72px); }
+    html.sma-connected { scroll-padding-bottom: calc(var(--sma-stop-h, 64px) + 72px) !important; }
 }
 @media (max-width: 520px) {
     /* brand and languages need two rows here: the header scrolls away instead of covering the page */
-    .top { position: static; }
+    .top { position: relative; }
     /* phone: Feedback is a round icon button (name stays "Feedback"), out of the way of the hero CTAs */
     .fb-btn { width: 48px; height: 48px; padding: 0; justify-content: center; border-radius: 50%; left: 12px; bottom: 12px; }
     .fb-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
     .fb-btn.away { opacity: 0; visibility: hidden; pointer-events: none; }
+    /* phones: the dialog's STOP gets a full-width row under the title */
+    .fb-stop { order: 3; flex: 1 1 100%; }
     html { scroll-padding-top: 8px; }
 }
 @media (max-width: 420px) {
     .brand span { font-size: .95rem; }
-    .langs a { min-width: 40px; padding: 6px 4px; }
+    .langs a { min-width: 44px; padding: 6px 4px; }
     .cta-row .btn { width: 100%; }
+}
+/* a phone held sideways: header and STOP bar together would leave little room, so the header scrolls away */
+@media (max-height: 500px) {
+    .top { position: relative; }
 }
 @media (prefers-reduced-motion: reduce) {
     html { scroll-behavior: auto; }

@@ -8,9 +8,15 @@
 <style>
   [hidden] { display: none !important; }
   dialog:not([open]) { display: none !important; }
-  :root { --bg: #0b0d10; --bg2: #12161b; --card: #151a20; --line: #232a33; --text: #e7ecf1; --muted: #8d99a6; --accent: #ffb347; --accent2: #5cc8ff; color-scheme: dark; }
+  :root { --bg: #0b0d10; --bg2: #12161b; --card: #151a20; --line: #232a33; --text: #e7ecf1; --muted: #8d99a6; --accent: #3ddc97; --accent2: #5cc8ff; color-scheme: dark; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 16px/1.6 system-ui, sans-serif; }
   main { max-width: 1080px; margin: 0 auto; padding: 16px; }
+  /* the page's rule the tool's number boxes must beat (styles.css) */
+  input[type=text] { display: block; width: 100%; }
+  label { display: block; margin: 8px 0 2px; }
+  .fb-btn { position: fixed; left: 16px; bottom: 16px; z-index: 30; min-height: 44px; }
+  /* the page lifts its Feedback button above the tool's fixed STOP bar (contract: html.sma-connected, --sma-stop-h) */
+  .sma-connected .fb-btn { bottom: calc(var(--sma-stop-h, 64px) + 28px); }
 </style>
 </head>
 <body>
@@ -19,6 +25,13 @@
   <section id="tool" aria-label="Configurator"></section>
   <section id="install"><h2>Install</h2></section>
 </main>
+<button type="button" class="fb-btn" id="fb-open">Feedback</button>
+<dialog id="fb" aria-labelledby="fb-title">
+  <h2 id="fb-title">Feedback</h2>
+  <textarea aria-label="Message"></textarea>
+  <button type="button" id="fb-stop" hidden>STOP motor</button>
+  <button type="button" id="fb-close">Close</button>
+</dialog>
 <script type="module" src="./main.ts"></script>
 </body>
 </html>

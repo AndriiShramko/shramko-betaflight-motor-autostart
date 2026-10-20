@@ -19,6 +19,18 @@ export const initFeedback = () => {
     const send = $<HTMLButtonElement>('fb-send');
     let openedAt = 0;
 
+    // STOP inside the dialog while a board is connected: a modal dialog makes the rest of the page inert,
+    // the configurator's fixed STOP bar included. The tool says when a board is connected ('sma:board')
+    // and stops the motor on 'sma:stop' (the same path as its own STOP button).
+    const stop = $<HTMLButtonElement>('fb-stop');
+    window.addEventListener('sma:board', (e) => {
+        stop.hidden = !(e as CustomEvent<{ connected?: boolean }>).detail?.connected;
+    });
+    stop.addEventListener('click', () => {
+        window.dispatchEvent(new CustomEvent('sma:stop'));
+        status.textContent = t('ui.fbStopSent');
+    });
+
     const kind = () => (form.querySelector<HTMLInputElement>('input[name=kind]:checked')?.value ?? 'bug') as 'bug' | 'idea' | 'coop';
     const sync = () => {
         const k = kind();
@@ -100,18 +112,25 @@ export const initFeedback = () => {
         if (!consent) missing.push(t('ui.leadNeedConsent'));
         return { role, email, consent, missing };
     };
+    // the status region (polite) stays empty until the visitor touches the form: the static requirement is
+    // the hint under the button (#lead-hint, aria-describedby), not an announcement on every page load
+    let leadTouched = false;
     const leadSync = () => {
         const s = leadState();
         leadBtn.disabled = s.missing.length > 0;
-        leadStatus.textContent = s.missing.length ? t('ui.leadNeed', { missing: listFormat(s.missing) }) : '';
+        if (leadTouched) leadStatus.textContent = s.missing.length ? t('ui.leadNeed', { missing: listFormat(s.missing) }) : '';
     };
-    lead.addEventListener('input', leadSync);
-    lead.addEventListener('change', leadSync);
+    const leadTouch = () => {
+        leadTouched = true;
+        leadSync();
+    };
+    lead.addEventListener('input', leadTouch);
+    lead.addEventListener('change', leadTouch);
     leadSync();
     lead.addEventListener('submit', async (e) => {
         e.preventDefault();
         const s = leadState();
-        if (s.missing.length) return leadSync();
+        if (s.missing.length) return leadTouch();
         const wait = MIN_MS - (Date.now() - leadOpened);
         leadBtn.disabled = true;
         leadStatus.textContent = t('ui.fbSending');

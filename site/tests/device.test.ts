@@ -192,6 +192,53 @@ test('STOP pressed during a save is queued and sent right after the reconnect', 
     await device.disconnect();
 });
 
+test('STOP while a save opens the CLI: no MSP into the CLI, the save succeeds, the stop follows the reboot', async () => {
+    const { mock, device } = rig({ rebootMs: 300 });
+    await device.connect();
+    await device.readSettings();
+    const p = device.writeSettings({ autostart_delay: 5 });
+    // the same task as Save: the CLI is not open yet, the last live poll may still be running
+    assert.equal(device.phase, 'writing');
+    const mark = mock.mspLog.length;
+    assert.equal(await device.stopMotor(), 'already-stopped');
+    await waitFor(() => mock.cliMode, 3000, 'CLI entered');
+    assert.equal(await device.stopMotor(), 'already-stopped');
+    const r = await p;
+    assert.deepEqual(r.verified, ['autostart_delay']);
+    assert.equal(mock.flash.autostart_delay, '5');
+    assert.ok(mock.cliLog.every(l => !l.includes('$M')), 'no MSP frame typed into the CLI');
+    assert.ok(mock.mspLog.slice(mark).includes(214), 'the stop (SET_MOTOR) went out after the reboot');
+    assert.equal(mock.yielded, true, 'the program stays stopped');
+    await device.disconnect();
+});
+
+test('STOP in the same moment as Run (restart) is kept and sent after the reboot: the program stays stopped', async () => {
+    const { mock, device } = rig({ rebootMs: 200, speed: 1 });
+    await device.connect();
+    const p = device.restartProgram();
+    assert.equal(device.phase, 'rebooting', 'the phase changes at once, before the last live poll ends');
+    assert.equal(await device.stopMotor(), 'queued');
+    await p;
+    assert.equal(mock.reboots, 1);
+    assert.equal(mock.yielded, true, 'held by the STOP sent after the reboot');
+    await device.disconnect();
+});
+
+test('STOP while the board is identified after a restart is still sent (not left queued)', async () => {
+    const { mock, device } = rig({ rebootMs: 200, speed: 1 });
+    await device.connect();
+    const p = device.restartProgram();
+    await waitFor(() => mock.reboots === 1, 3000, 'reboot');
+    const mark = mock.mspLog.length;
+    // identify after the reboot starts with MSP_FC_VARIANT (2); the phase still says reconnecting
+    await waitFor(() => mock.mspLog.slice(mark).includes(2), 5000, 'identify after the reboot');
+    assert.equal(device.phase, 'reconnecting');
+    assert.equal(await device.stopMotor(), 'queued');
+    await p;
+    assert.equal(mock.yielded, true, 'the stop went out before the page said ready');
+    await device.disconnect();
+});
+
 test('pickBestOutput: fewest bad frames among enabled outputs', () => {
     const e = (rpm: number, inv: number) => ({ rpm, invalidPct: inv, tempC: 0, volts: 0, amps: 0, mah: 0 });
     assert.equal(pickBestOutput([e(0, 100), e(5000, 0.4), e(0, 100), e(0, 100)]), 1);

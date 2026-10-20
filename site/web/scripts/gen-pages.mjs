@@ -15,12 +15,17 @@ const web = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SITE = 'https://autostart.flyreelstudio.eu';
 const REPO = 'https://github.com/AndriiShramko/shramko-betaflight-motor-autostart';
 const LANGS = ['en', 'es', 'pl', 'ru'];
-const FAQ_COUNT = 8;
-const INSTALL_STEPS = 5;
+// must match the visible page (template.html): 9 FAQ items, 4 numbered install steps (the DFU fix is a fold inside step 3)
+const FAQ_COUNT = 9;
+const INSTALL_STEPS = 4;
 
 const read = (p) => JSON.parse(readFileSync(p, 'utf8'));
 const readOpt = (p) => (existsSync(p) ? read(p) : {});
 const template = readFileSync(join(web, 'template.html'), 'utf8');
+// the FAQPage and HowTo JSON-LD describe exactly what the page shows
+const shown = (re) => new Set(template.match(re) ?? []).size;
+if (shown(/\{\{faq\.q\d+\}\}/g) !== FAQ_COUNT) throw new Error(`template shows ${shown(/\{\{faq\.q\d+\}\}/g)} FAQ items, JSON-LD has ${FAQ_COUNT}`);
+if (shown(/\{\{install\.s\d+t\}\}/g) !== INSTALL_STEPS) throw new Error(`template shows ${shown(/\{\{install\.s\d+t\}\}/g)} install steps, JSON-LD has ${INSTALL_STEPS}`);
 const en = { ...read(join(web, 'src/i18n/en.json')), ...readOpt(join(web, 'src/i18n/tool.en.json')) };
 
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -39,7 +44,10 @@ for (const lang of LANGS) {
         if (extra.length) console.warn(`[${lang}] ${extra.length} keys not in English (stale?): ${extra.slice(0, 8).join(', ')}`);
     }
     const dict = { ...en, ...own };
-    const txt = (k) => strip(dict[k] ?? '');
+    const txt = (k) => {
+        if (dict[k] === undefined) throw new Error(`JSON-LD key "${k}" has no text`);
+        return strip(dict[k]);
+    };
 
     const faq = [];
     for (let i = 1; i <= FAQ_COUNT; i++) {
@@ -74,7 +82,7 @@ for (const lang of LANGS) {
             '@context': 'https://schema.org',
             '@type': 'HowTo',
             name: txt('install.title'),
-            step: Array.from({ length: INSTALL_STEPS }, (_, i) => ({ '@type': 'HowToStep', name: txt(`install.s${i + 1}t`), text: txt(`install.s${i + 1}_html`) }))
+            step: Array.from({ length: INSTALL_STEPS }, (_, i) => ({ '@type': 'HowToStep', position: i + 1, name: txt(`install.s${i + 1}t`), text: txt(`install.s${i + 1}_html`) }))
         }
     ];
 

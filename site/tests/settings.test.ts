@@ -11,7 +11,6 @@ import {
     diff,
     effective,
     fromDisplay,
-    matchPreset,
     normalize,
     presetValues,
     toDisplay,
@@ -97,20 +96,15 @@ test('diff: only changed keys, case-insensitive enums', () => {
     assert.deepEqual(diff({ autostart_mode: 'POWER', autostart_delay: 10, autostart_ramp: 100 }, { autostart_mode: 'power', autostart_delay: 11, autostart_ramp: 100 }), { autostart_delay: 11 });
 });
 
-test('presets: Steady = defaults of the pattern settings, Gusts = the spec values; not on 1.0 boards', () => {
+test('presets change only the pattern and the gust shape; not on 1.0 boards', () => {
     const e = allEff();
-    const s = presetValues('steady', e)!;
-    assert.equal(s.autostart_pattern, 'STEADY');
-    assert.equal(s.autostart_throttle, 15);
-    assert.ok(!('autostart_delay' in s), 'presets never touch the start settings');
+    assert.deepEqual(presetValues('steady', e), { autostart_pattern: 'STEADY' });
     const g = presetValues('gusts', e)!;
     assert.deepEqual(
-        [g.autostart_pattern, g.autostart_throttle, g.autostart_gust_min, g.autostart_gust_max, g.autostart_gust_len_min, g.autostart_gust_len_max, g.autostart_gust_pause_min, g.autostart_gust_pause_max],
-        ['GUSTS', 20, 50, 90, 200, 600, 15, 60]
+        [g.autostart_pattern, g.autostart_gust_min, g.autostart_gust_max, g.autostart_gust_len_min, g.autostart_gust_len_max, g.autostart_gust_pause_min, g.autostart_gust_pause_max],
+        ['GUSTS', 50, 90, 200, 600, 15, 60]
     );
-    assert.equal(matchPreset({ ...defaultValues(e), ...g }, e), 'gusts');
-    assert.equal(matchPreset(defaultValues(e), e), 'steady');
-    assert.equal(matchPreset({ ...defaultValues(e), autostart_throttle: 33 }, e), null);
+    for (const k of ['autostart_throttle', 'autostart_throttle_limit', 'autostart_run_time', 'autostart_delay']) assert.ok(!(k in g), `the Gusts preset never touches ${k}`);
     const old = allEff(SCHEMA.filter(d => d.since === '1.0').map(d => d.name));
     assert.equal(presetValues('gusts', old), null);
 });

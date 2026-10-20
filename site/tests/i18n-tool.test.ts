@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { GROUPS, SCHEMA } from '../web/src/fc/settings.ts';
+import { MORE_IDS, SCHEMA } from '../web/src/fc/settings.ts';
 
 const load = (l: string) => JSON.parse(readFileSync(new URL(`../web/src/i18n/tool.${l}.json`, import.meta.url), 'utf8')) as Record<string, string>;
 const en = load('en');
@@ -37,15 +37,21 @@ test('every literal key in tool.ts exists', () => {
     assert.deepEqual(missing, []);
 });
 
-test('every setting has a label and help, every enum value an option label, every group a title', () => {
+test('every setting has a label and help, every enum value an option label, every drawer fieldset a title', () => {
     for (const d of SCHEMA) {
         assert.ok(en[`tool.f.${d.name}.label`], `${d.name} label`);
         assert.ok(en[`tool.f.${d.name}.help`], `${d.name} help`);
         if (d.kind === 'enum') for (const v of d.values) assert.ok(en[`tool.opt.${d.name}.${v}`], `${d.name}.${v}`);
-        if (d.kind === 'num' && d.zero) assert.ok(en[`tool.zero.${d.name}`], `${d.name} zero label`);
+        if (d.kind === 'num' && d.zero) assert.ok(en[`tool.zero.${d.name}`], `${d.name} zero value`);
+        // the special 0 has its own switch (How long uses its two choices instead)
+        if (d.kind === 'num' && d.zero && d.name !== 'autostart_run_time') assert.ok(en[`tool.box.${d.name}`], `${d.name} zero switch`);
     }
-    for (const g of GROUPS) assert.ok(en[`tool.group.${g}`], g);
+    for (const id of MORE_IDS) {
+        assert.ok(en[`tool.fs.${id}`], `fieldset ${id}`);
+        assert.ok(Object.keys(en).some(k => k.startsWith(`tool.legend.${id}`)), `legend value ${id}`);
+    }
     for (let s = 0; s <= 5; s++) assert.ok(en[`tool.state.${s}`]);
+    for (const k of ['nocut', 'auto']) for (const p of ['title', 'body', 'ok']) assert.ok(en[`tool.confirm.${k}.${p}`], `confirm ${k}.${p}`);
 });
 
 test('every FcError code has a plain-words message (and the key scan really finds keys)', () => {

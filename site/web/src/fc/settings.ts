@@ -1,5 +1,6 @@
 // Typed schema of the autostart settings, written by hand from docs/settings.md (firmware 1.1),
-// plus validation (clamping, min/max swap), unit conversion, presets and the diff against the board.
+// plus validation (clamping, min/max swap), unit conversion, the simple panel / drawer split, the gust
+// recipe, the program in words (describeProgram) and the diff against the board.
 // The board is the final authority: ranges/values it prints in `get` narrow this schema.
 
 import type { CliVar } from './cli';
@@ -229,27 +230,74 @@ export const toDisplay = (d: NumDef, raw: number) => raw / SCALE[d.unit];
 export const fromDisplay = (d: NumDef, shown: number) => Math.round(shown * SCALE[d.unit]);
 export const displayStep = (d: NumDef) => (d.unit === 'ms' ? 0.05 : 1 / SCALE[d.unit]);
 
-// ---------- presets ----------
+// ---------- the simple panel and the "More settings" drawer ----------
 
-export type PresetId = 'steady' | 'gusts';
+/** The five questions of the simple panel (Step 3), in order. */
+export const SIMPLE = ['autostart_delay', 'autostart_throttle', 'autostart_run_time', 'autostart_pattern', 'autostart_cells'];
 
-/** Presets touch only the throttle pattern (Power + Gusts groups), never start, battery or outputs. */
-export const PRESET_KEYS = [
-    'autostart_throttle',
-    'autostart_throttle_limit',
-    'autostart_run_time',
-    'autostart_pattern',
-    'autostart_gust_min',
-    'autostart_gust_max',
-    'autostart_gust_len_min',
-    'autostart_gust_len_max',
-    'autostart_gust_pause_min',
-    'autostart_gust_pause_max'
+/** Quick-pick chips of the simple questions (raw values); any other value is shown under "Other". */
+export const CHIP_VALUES: Record<string, number[]> = {
+    autostart_delay: [5, 10, 30, 60],
+    autostart_throttle: [15, 30, 50, 80],
+    autostart_cells: [3, 4, 6, 8]
+};
+
+export type MoreId = 'start' | 'gusts' | 'battery' | 'outputs' | 'expert';
+export const MORE_IDS: MoreId[] = ['start', 'gusts', 'battery', 'outputs', 'expert'];
+
+export const GUST_KEYS = ['autostart_gust_min', 'autostart_gust_max', 'autostart_gust_len_min', 'autostart_gust_len_max', 'autostart_gust_pause_min', 'autostart_gust_pause_max'];
+
+/** Fieldsets of the drawer. Battery also holds the "count cells automatically" switch of autostart_cells (its number is on the panel). */
+export const MORE: Record<MoreId, string[]> = {
+    start: ['autostart_mode', 'autostart_ramp', 'autostart_throttle_limit'],
+    gusts: GUST_KEYS,
+    battery: ['autostart_cell_cutoff', 'autostart_cutoff_time'],
+    outputs: ['autostart_motors', 'autostart_usb_inhibit'],
+    expert: ['autostart_vbat_min', 'autostart_box', 'vbat_scale']
+};
+
+/** Drawer fieldset that holds a setting (null for the simple panel). */
+export const moreOf = (name: string): MoreId | null => MORE_IDS.find(id => MORE[id].includes(name)) ?? null;
+
+const same = (a: Value | undefined, b: Value | undefined) => String(a).toUpperCase() === String(b).toUpperCase();
+
+/** Safety-relevant values: when present they open the drawer by themselves (and are named in amber). */
+const ATTENTION: [string, (v: Value, e: Effective) => boolean][] = [
+    ['autostart_mode', v => !same(v, 'POWER')],
+    ['autostart_cells', v => Number(v) === 0],
+    ['autostart_cell_cutoff', v => Number(v) === 0],
+    ['autostart_motors', v => (Number(v) & 1) === 0],
+    ['autostart_usb_inhibit', (v, e) => !same(v, e.boardDefault)],
+    ['autostart_vbat_min', v => Number(v) === 0],
+    ['autostart_cutoff_time', v => Number(v) > 10],
+    ['autostart_box', v => Number(v) !== 255]
 ];
 
-const GUSTS: Record<string, Value> = {
-    autostart_pattern: 'GUSTS',
-    autostart_throttle: 20,
+/** Names (schema order) of the values that need a look: no cut-off, cells automatic, no battery wait, USB rule changed, motor 1 off, start ≠ battery, a long cut-off wait, an RC switch. */
+export const attention = (values: Record<string, Value>, eff: Record<string, Effective>): string[] => {
+    const hit = new Set(ATTENTION.filter(([k, test]) => eff[k]?.present && k in values && test(values[k], eff[k])).map(([k]) => k));
+    return SCHEMA.map(d => d.name).filter(k => hit.has(k));
+};
+
+/** Maximum power below 100 %: a badge on the closed drawer (no auto-open). */
+export const capOf = (values: Record<string, Value>, eff: Record<string, Effective>): number | null => {
+    if (!eff.autostart_throttle_limit?.present) return null;
+    const v = Number(values.autostart_throttle_limit);
+    return Number.isFinite(v) && v < 100 ? v : null;
+};
+
+/** Hidden values (inside the drawer) that differ from THIS build's default, minus the attention list and the cap badge. */
+export const hiddenDiffs = (values: Record<string, Value>, eff: Record<string, Effective>): string[] => {
+    const skip = new Set(attention(values, eff));
+    if (capOf(values, eff) !== null) skip.add('autostart_throttle_limit');
+    const hidden = new Set(MORE_IDS.flatMap(id => MORE[id]));
+    return SCHEMA.map(d => d.name).filter(k => hidden.has(k) && !skip.has(k) && eff[k]?.present && k in values && !same(values[k], eff[k].boardDefault));
+};
+
+// ---------- gusts ----------
+
+/** The owner's gust recipe: 50–90 %, 0.2–0.6 s long, every 1.5–6 s (only the 6 gust settings). */
+export const SUGGESTED_GUSTS: Record<string, number> = {
     autostart_gust_min: 50,
     autostart_gust_max: 90,
     autostart_gust_len_min: 200,
@@ -257,26 +305,140 @@ const GUSTS: Record<string, Value> = {
     autostart_gust_pause_min: 15,
     autostart_gust_pause_max: 60
 };
+/** Power between gusts that goes with the recipe; offered separately, never applied with it. */
+export const SUGGESTED_GUST_POWER = 20;
 
-/** Values of a preset for the settings the board has; null when the board cannot do it (no gusts in 1.0). */
-export const presetValues = (id: PresetId, eff: Record<string, Effective>): Record<string, Value> | null => {
-    const out: Record<string, Value> = {};
-    for (const k of PRESET_KEYS) if (eff[k]?.present) out[k] = eff[k].boardDefault;
-    if (id === 'steady') {
-        if (eff.autostart_pattern?.present) out.autostart_pattern = 'STEADY';
-        return out;
-    }
+/** The suggested gust mix for the settings this board has; null when it has no gusts (firmware 1.0). */
+export const gustMix = (eff: Record<string, Effective>): Record<string, Value> | null => {
     if (!eff.autostart_pattern?.present || !eff.autostart_pattern.values.includes('GUSTS')) return null;
-    for (const [k, v] of Object.entries(GUSTS)) if (eff[k]?.present) out[k] = v;
+    const out: Record<string, Value> = {};
+    for (const [k, v] of Object.entries(SUGGESTED_GUSTS)) if (eff[k]?.present) out[k] = v;
     return out;
 };
 
-export const matchPreset = (values: Record<string, Value>, eff: Record<string, Effective>): PresetId | null => {
-    for (const id of ['steady', 'gusts'] as PresetId[]) {
-        const p = presetValues(id, eff);
-        if (p && Object.keys(p).length && Object.entries(p).every(([k, v]) => String(values[k]) === String(v))) return id;
+export type PresetId = 'steady' | 'gusts';
+
+/**
+ * Presets change only the pattern and the shape of the gusts — never Power, Maximum power or How long
+ * (until 2026-10-20 they reset autostart_throttle, _throttle_limit and _run_time to the defaults).
+ */
+export const PRESET_KEYS = ['autostart_pattern', ...GUST_KEYS];
+
+/** Steady = gusts off; Gusts = gusts on with the suggested mix. null when the board cannot do it (no gusts in 1.0). */
+export const presetValues = (id: PresetId, eff: Record<string, Effective>): Record<string, Value> | null => {
+    if (!eff.autostart_pattern?.present) return null;
+    if (id === 'steady') return { autostart_pattern: 'STEADY' };
+    const mix = gustMix(eff);
+    return mix ? { autostart_pattern: 'GUSTS', ...mix } : null;
+};
+
+// ---------- run time as minutes + seconds ----------
+
+export const RUN_TIME_MAX = 65535;
+
+/** Seconds → minutes and seconds (0–59). */
+export const splitMinSec = (total: number): { min: number; sec: number } => {
+    const t = Number.isFinite(total) ? Math.min(RUN_TIME_MAX, Math.max(0, Math.round(total))) : 0;
+    return { min: Math.floor(t / 60), sec: t % 60 };
+};
+
+/** Minutes + seconds → a run time the board accepts: seconds clamped to 0–59, the total to 1–65535 s. */
+export const joinMinSec = (min: number, sec: number): number => {
+    const m = Number.isFinite(min) ? Math.max(0, Math.round(min)) : 0;
+    const s = Number.isFinite(sec) ? Math.min(59, Math.max(0, Math.round(sec))) : 0;
+    return Math.min(RUN_TIME_MAX, Math.max(1, m * 60 + s));
+};
+
+// ---------- the program in words ----------
+
+/** The firmware never drives the motor before the ESC has had this long of stop frames (AUTOSTART_MIN_UPTIME_MS). */
+export const MIN_START_S = 3;
+
+export type ProgramRow = 'start' | 'power' | 'cap' | 'run' | 'usb' | 'rc';
+export interface ProgramLine {
+    row: ProgramRow;
+    /** string key under tool.prog. */
+    key: string;
+    /** numbers for the text: delay/ramp/t/time in s, pct/lo/hi/limit/thr in %, v/cut in V, n cells */
+    vars: Record<string, number>;
+    tone?: 'warn' | 'bad';
+}
+
+/**
+ * What the board does with these values, line by line, exactly as the firmware runs it
+ * (docs/settings.md + patches/0001: programStart(), batteryCutoffReached(), escHadTimeToArm()):
+ * the delay counts from the battery (or the click) but nothing spins before the ESC had 3 s of power;
+ * the ramp goes to min(Power, Maximum power); gust peaks lie in min(Maximum power, max(Power, gust min … max));
+ * run time counts after the ramp; the battery stop fires after cells × cut-off stayed low for cut-off time s,
+ * in every running state. Firmware 1.0 has no cut-off, run time, gusts or maximum power.
+ */
+export const describeProgram = (values: Record<string, Value>, level: '1.0' | '1.1' | null): ProgramLine[] => {
+    const num = (k: string): number => {
+        const n = typeof values[k] === 'number' ? (values[k] as number) : parseInt(String(values[k] ?? ''), 10);
+        return Number.isFinite(n) ? n : Number(DEF[k].def);
+    };
+    const str = (k: string) => String(values[k] ?? DEF[k].def).toUpperCase();
+    const v11 = level !== '1.0';
+    const mode = str('autostart_mode');
+    if (mode === 'OFF') return [{ row: 'start', key: 'start.off', vars: {}, tone: 'warn' }];
+    const out: ProgramLine[] = [];
+    const delay = num('autostart_delay');
+    const tooSoon = delay < MIN_START_S ? 'Min' : '';
+    if (mode === 'BUTTON') out.push({ row: 'start', key: 'start.button', vars: { delay } });
+    else out.push({ row: 'start', key: `start.${num('autostart_vbat_min') === 0 ? 'always' : 'power'}${tooSoon}`, vars: { delay } });
+
+    const limit = v11 ? Math.min(100, Math.max(1, num('autostart_throttle_limit'))) : 100;
+    const thr = num('autostart_throttle');
+    const pct = Math.min(thr, limit);
+    const ramp = num('autostart_ramp') / 10;
+    const gusts = v11 && str('autostart_pattern') === 'GUSTS';
+    const gLo = Math.min(num('autostart_gust_min'), num('autostart_gust_max'));
+    const gHi = Math.max(num('autostart_gust_min'), num('autostart_gust_max'));
+    const vars: Record<string, number> = { ramp, pct };
+    // the firmware raises both gust ends to Power (programStart: gustMin = MAX(MIN(min, max), throttle)) and
+    // caps every output at Maximum power
+    const lo = Math.min(limit, Math.max(thr, gLo));
+    const hi = Math.min(limit, Math.max(thr, gHi));
+    // every gust the same: "gusts at N %", or "capped at N % by Maximum power" when the cap made them so
+    const shape = !gusts ? 'steady' : lo < hi ? 'gusts' : Math.max(thr, gHi) > limit ? 'gustsCap' : 'gustsOne';
+    if (gusts) Object.assign(vars, { lo, hi });
+    out.push({ row: 'power', key: `power.${shape}${ramp > 0 ? '' : 'Now'}`, vars });
+    if (limit < 100) out.push({ row: 'cap', key: 'cap', vars: { limit, thr }, tone: thr > limit || (gusts && gHi > limit) ? 'warn' : undefined });
+
+    if (!v11) out.push({ row: 'run', key: 'run.fw10', vars: {}, tone: 'bad' });
+    else {
+        const cutCv = num('autostart_cell_cutoff');
+        const cells = num('autostart_cells');
+        const run = num('autostart_run_time');
+        const prot = cutCv === 0 ? 'Off' : cells === 0 ? 'Auto' : '';
+        const low: Record<string, string> = { Off: 'run.off', Auto: 'run.lowAuto', '': 'run.low' };
+        const key = run === 0 ? low[prot] : `run.time${prot}`;
+        const rv: Record<string, number> = { cut: cutCv / 100, t: num('autostart_cutoff_time'), n: cells, time: run };
+        if (cells > 0 && cutCv > 0) rv.v = (cells * cutCv) / 100;
+        out.push({ row: 'run', key, vars: rv, tone: prot === 'Off' ? 'bad' : prot === 'Auto' ? 'warn' : undefined });
     }
-    return null;
+    if (str('autostart_usb_inhibit') === 'ON') out.push({ row: 'usb', key: 'usb', vars: {}, tone: 'warn' });
+    const box = num('autostart_box');
+    if (box >= 40 && box <= 43) out.push({ row: 'rc', key: 'rc', vars: { n: box - 39 } });
+    return out;
+};
+
+// ---------- the cell count against the live voltage ----------
+
+/** Volts per cell a LiPo shows at rest, roughly empty to full. */
+export const CELL_REST_MIN = 3.0;
+export const CELL_REST_MAX = 4.35;
+const FIT_ORDER = [3, 4, 6, 8, 1, 2, 5, 7, 9, 10, 11, 12];
+
+/**
+ * Does the live voltage fit the chosen cell count? null without a battery (under 6 V) or without a count.
+ * When it does not, `guess` is the first count (common packs first) that fits — a suggestion, never applied by itself.
+ */
+export const cellFit = (volts: number, cells: number): { fits: boolean; perCell: number; guess: number | null } | null => {
+    if (!(volts >= 6) || !(cells > 0)) return null;
+    const ok = (n: number) => volts / n >= CELL_REST_MIN && volts / n <= CELL_REST_MAX;
+    const fits = ok(cells);
+    return { fits, perCell: volts / cells, guess: fits ? null : FIT_ORDER.find(ok) ?? null };
 };
 
 /** Board defaults for every present setting except the voltage calibration. */

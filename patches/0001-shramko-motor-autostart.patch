@@ -175,7 +175,7 @@ index e4267ea..a3c40a6 100644
  
 diff --git a/src/main/fc/autostart.c b/src/main/fc/autostart.c
 new file mode 100644
-index 0000000..bc1d5a8
+index 0000000..4a518e8
 --- /dev/null
 +++ b/src/main/fc/autostart.c
 @@ -0,0 +1,701 @@
@@ -726,7 +726,7 @@ index 0000000..bc1d5a8
 +    if (heldByComputer) {
 +        powerTriggerPending = false;
 +    }
-+    if (programActive() && (cliMode || outputsOverwritten())) {
++    if (programActive() && (cliMode || outputsOverwritten() || heldByComputer)) {   // also a STOP during the countdown
 +        outputsWritten = outputsWritten && !outputsOverwritten();   // don't stomp on the other writer
 +        programStop(nowMs);
 +        powerTriggerPending = false;
@@ -1302,10 +1302,10 @@ index 0de224c..5dc863d 100644
  		$(USER_DIR)/common/filter.c \
 diff --git a/src/test/unit/autostart_unittest.cc b/src/test/unit/autostart_unittest.cc
 new file mode 100644
-index 0000000..fd6ef40
+index 0000000..fc64bbd
 --- /dev/null
 +++ b/src/test/unit/autostart_unittest.cc
-@@ -0,0 +1,895 @@
+@@ -0,0 +1,921 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -1909,6 +1909,32 @@ index 0000000..fd6ef40
 +    runUntil(60000);
 +    EXPECT_FALSE(autostartIsDrivingMotors());
 +    EXPECT_EQ(64, debug[4] & 64);
++}
++
++TEST(AutostartTest, StopDuringTheCountdownCancelsIt)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartInit();
++    runUntil(5000);                             // countdown running, nothing written to the motor yet
++    autostartComputerTookOver();                // the page's STOP (MSP_SET_MOTOR 1000)
++    runUntil(60000);
++    EXPECT_FALSE(autostartIsDrivingMotors());   // the ramp never starts
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, StopDuringTheRampStopsIt)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartInit();
++    runUntil(15000);                            // ramping
++    EXPECT_TRUE(autostartIsDrivingMotors());
++    motor_disarmed[0] = DISARM;                 // MSP_SET_MOTOR 1000 ...
++    autostartComputerTookOver();                // ... and its hook
++    runUntil(60000);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
 +}
 +
 +TEST(AutostartTest, WithoutComputerTheBatteryStartsTheProgram)    // negative control for the two above

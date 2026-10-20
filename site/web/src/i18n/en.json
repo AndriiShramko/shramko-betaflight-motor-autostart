@@ -60,7 +60,7 @@
   "video.r02t": "Set it up in your browser",
   "video.r02cap": "Connect the board over USB in Chrome, watch the motor live, change the settings and save them: no app, no CLI.",
   "video.r05t": "Self-starting motor, five safeguards",
-  "video.r05cap": "STOP that stays stopped, a restart only after you tick “propeller is off”, and three more.",
+  "video.r05cap": "STOP that holds until you run it again, a run from the page only after you tick “propeller is off”, and three more.",
   "video.r07t": "Motor stops at low battery",
   "video.r07cap": "It stops below the cut-off you set (3.3 V per cell by default), then the ESC beeps until you replug the battery.",
   "video.r10t": "Timed runs, no laptop attached",

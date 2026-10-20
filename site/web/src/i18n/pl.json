@@ -60,7 +60,7 @@
   "video.r02t": "Ustaw wszystko w przeglądarce",
   "video.r02cap": "Podłącz płytkę przez USB w Chrome, obserwuj silnik na żywo, zmień ustawienia i zapisz: bez aplikacji i bez CLI.",
   "video.r05t": "Silnik, który rusza sam: pięć zabezpieczeń",
-  "video.r05cap": "STOP, który trzyma, restart dopiero po zaznaczeniu „śmigło jest zdjęte” i jeszcze trzy.",
+  "video.r05cap": "STOP, który trzyma do ponownego uruchomienia, uruchomienie ze strony dopiero po zaznaczeniu „śmigło jest zdjęte” i jeszcze trzy.",
   "video.r07t": "Silnik staje przy słabej baterii",
   "video.r07cap": "Staje poniżej ustawionego progu (domyślnie 3,3 V na celę), a potem ESC piszczy, aż ponownie podłączysz baterię.",
   "video.r10t": "Praca na czas, bez laptopa",

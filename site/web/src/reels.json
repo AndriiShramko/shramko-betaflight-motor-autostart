@@ -84,10 +84,10 @@
       "id": "ma-r05",
       "file": "/video/ma-r05-720.mp4",
       "poster": "/video/ma-r05-poster.webp",
-      "seconds": 36.44,
+      "seconds": 37.48,
       "uploadDate": "2026-10-21",
       "voice": "en",
-      "transcript": "A self-starting motor needs safeguards. Here are 5. Hit STOP on the page: the motor stops, and stays stopped until you restart it. A restart from the setup page only runs after you tick: propeller is off. By default it waits 10 seconds on a stop signal. Settings freeze at the start. And if the battery drops out for half a second, it stops. On a real bench test, after STOP in the countdown, the motor didn't move for 25 seconds. Still, the cut-off is not a fuse. Test on the bench with the propeller off. Free and open source, on GitHub."
+      "transcript": "A self-starting motor needs safeguards. Here are 5. Hit STOP on the page: the motor stops. It stays stopped until you run it again, or replug the battery. Running it from the setup page needs a tick first: propeller is off. By default it waits 10 seconds on a stop signal. Settings freeze at the start. And if the battery drops out for half a second, it stops. On a real bench test, after STOP in the countdown, the motor didn't move for 25 seconds. Still, the cut-off is not a fuse. Test on the bench with the propeller off. Free and open source, on GitHub."
     },
     {
       "key": "r07",

@@ -60,7 +60,7 @@
   "video.r02t": "Configúralo en el navegador",
   "video.r02cap": "Conecta la placa por USB en Chrome, mira el motor en directo, cambia los ajustes y guárdalos: sin app ni CLI.",
   "video.r05t": "Motor que arranca solo: cinco protecciones",
-  "video.r05cap": "Un STOP que no se suelta, un reinicio solo tras marcar «la hélice está quitada» y tres más.",
+  "video.r05cap": "Un STOP que se mantiene hasta que lo vuelvas a ejecutar, la ejecución desde la página solo tras marcar «la hélice está quitada» y tres más.",
   "video.r07t": "El motor se para con la batería baja",
   "video.r07cap": "Se para por debajo del corte que elijas (3,3 V por celda de serie) y el ESC pita hasta que reconectes la batería.",
   "video.r10t": "Funcionamiento con temporizador, sin portátil",

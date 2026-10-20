@@ -25,7 +25,7 @@ import argparse, csv, statistics, struct, sys, time
 import serial
 
 MSP_REBOOT, MSP_MOTOR, MSP_BATTERY_STATE, MSP_MOTOR_TELEMETRY, MSP_DEBUG = 68, 104, 130, 139, 254
-STATE = {0: "IDLE", 1: "DELAY", 2: "RAMP", 3: "RUN"}
+STATE = {0: "IDLE", 1: "DELAY", 2: "RAMP", 3: "RUN", 4: "DONE", 5: "LOW_BATTERY"}
 SOURCE = {0: "NONE", 1: "POWER", 2: "BUTTON", 3: "RC_BOX"}
 COLS = ["fc_uptime_s", "motor_us", "state", "percent", "state_ms", "usb", "rx", "button", "source",
         "rpm", "esc_invalid_pct", "vbat_v", "battery_present", "battery_age_s", "host_s"]
@@ -74,9 +74,13 @@ def read_settings_and_reboot(port):
             break
     s.write(b"\r\nget autostart\r\n")
     out, t0 = b"", time.time()
-    while time.time() - t0 < 3:
-        out += s.read(4096)
-        if out.count(b"autostart_") >= 8 and out.rstrip().endswith(b"#"):
+    last = time.time()
+    while time.time() - t0 < 5:
+        chunk = s.read(4096)
+        if chunk:
+            out += chunk
+            last = time.time()
+        elif out.rstrip().endswith(b"#") and time.time() - last > 0.4:
             break
     s.write(b"get dshot_bidir\r\n")
     t0 = time.time()
@@ -106,6 +110,7 @@ def capture(a):
         a.ramp = float(cfg.get("autostart_ramp", a.ramp * 10)) / 10.0
         a.throttle = float(cfg.get("autostart_throttle", a.throttle))
         a.bidir = cfg.get("dshot_bidir") == "ON"
+        a.cfg = cfg
         print("settings read from the board:", ", ".join("%s=%s" % kv for kv in sorted(cfg.items())))
     time.sleep(1.0)
     s = open_port(a.port, 15)
@@ -241,6 +246,48 @@ def evaluate(a, rows, quiet=False):
     return ok
 
 
+def evaluate_program(a, rows):
+    """Firmware 1.1 programs: gusts, run time, throttle limit. Every RUN sample must be the steady
+    level or a gust peak inside [gust_min, gust_max] (capped by the limit); with a run time the
+    program must end in DONE after that time and the motor must be at stop."""
+    cfg = a.cfg
+    limit = float(cfg.get("autostart_throttle_limit", 100))
+    base = min(a.throttle, limit)
+    g = sorted([float(cfg.get("autostart_gust_min", 0)), float(cfg.get("autostart_gust_max", 0))])
+    gmin, gmax = min(g[0], limit), min(g[1], limit)
+    gusts_on = cfg.get("autostart_pattern") == "GUSTS"
+    run_time = float(cfg.get("autostart_run_time", 0))
+
+    def origin(rs):
+        return statistics.median([r[0] + 0.05 - r[4] / 1000.0 for r in rs]) if rs else None
+
+    run_rows = [r for r in rows if r[2] == 3]
+    if not run_rows:
+        print("FAIL: never reached RUN")
+        return False
+    base_us = 1000 + 10 * base
+    lo, hi = 1000 + 10 * gmin, 1000 + 10 * gmax
+    bad = [r[1] for r in run_rows if not (abs(r[1] - base_us) <= 1 or (gusts_on and lo - 1 <= r[1] <= hi + 1))]
+    peaks = [r[1] for r in run_rows if abs(r[1] - base_us) > 1]
+    print("RUN samples %d: steady level %d us, gust peaks seen %s (allowed %d..%d), out-of-range %d, max %d"
+          % (len(run_rows), base_us, sorted(set(peaks))[:12], lo, hi, len(bad), max(r[1] for r in run_rows)))
+    ok = not bad and max(r[1] for r in rows) <= 1000 + 10 * limit + 1
+    if gusts_on:
+        ok = ok and len(peaks) > 0 and (gmin == gmax or len(set(peaks)) > 1)
+    if run_time:
+        done = [r for r in rows if r[2] == 4]
+        t_run, t_done = origin(run_rows), origin(done)
+        after = [r[1] for r in done]
+        if t_done is None:
+            print("FAIL: run time %.0f s, but DONE never seen" % run_time)
+            return False
+        print("run time: RUN -> DONE took %.2f s (expected %.0f), motor after DONE max %d"
+              % (t_done - t_run, run_time, max(after)))
+        ok = ok and abs((t_done - t_run) - run_time) <= 0.2 and max(after) <= 1000
+    print("PASS" if ok else "FAIL")
+    return ok
+
+
 def plot(a, rows, out):
     import matplotlib
     matplotlib.use("Agg")
@@ -293,12 +340,16 @@ def main():
     a = ap.parse_args()
     a.bidir = None
 
+    a.cfg = {}
     rows = load_csv(a.csv) if (a.analyze or a.self_check) else capture(a)
     if a.self_check:
         sys.exit(0 if self_check(a, rows) else 1)
     esc_report(a, rows)
     if a.plot:
         plot(a, rows, a.plot)
+    special = a.cfg.get("autostart_pattern") == "GUSTS" or float(a.cfg.get("autostart_run_time", 0) or 0) > 0
+    if special and not a.expect_off:
+        sys.exit(0 if evaluate_program(a, rows) else 1)
     sys.exit(0 if evaluate(a, rows) else 1)
 
 

@@ -175,10 +175,10 @@ index e4267ea..a3c40a6 100644
  
 diff --git a/src/main/fc/autostart.c b/src/main/fc/autostart.c
 new file mode 100644
-index 0000000..10298e1
+index 0000000..1c26367
 --- /dev/null
 +++ b/src/main/fc/autostart.c
-@@ -0,0 +1,650 @@
+@@ -0,0 +1,686 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -236,7 +236,9 @@ index 0000000..10298e1
 +#include "config/feature.h"
 +
 +#ifdef USE_DSHOT
++#include "drivers/dshot.h"
 +#include "drivers/dshot_command.h"
++#include "pg/motor.h"
 +#endif
 +#include "drivers/io.h"
 +#include "drivers/motor.h"
@@ -273,6 +275,8 @@ index 0000000..10298e1
 +#define AUTOSTART_BOOT_POWER_WINDOW_MS 2500  // battery seen this early = it powered the board: count from boot
 +#define AUTOSTART_LOWBAT_BEEP_MS     3000    // after a cut-off: ESC beacon / buzzer every 3 s
 +#define AUTOSTART_NO_BATTERY_CV      100     // below 1.00 V there is no battery to protect (USB-only bench)
++#define AUTOSTART_CELL_PLAUSIBLE_MIN 250     // a LiPo cell reads 2.50..4.45 V; outside that the voltage
++#define AUTOSTART_CELL_PLAUSIBLE_MAX 445     // calibration (vbat_scale) or the cell count is wrong
 +
 +typedef enum {
 +    AUTOSTART_STATE_IDLE = 0,
@@ -330,6 +334,9 @@ index 0000000..10298e1
 +static uint8_t gustPeak;
 +static timeMs_t gustEdgeMs;         // end of the current gust, or start of the next one
 +static uint32_t rngState = 1;
++
++// extended DShot telemetry (ESC voltage / temperature) is requested once per battery power-up
++static bool edtRequested;
 +
 +// battery cut-off
 +static bool lowSince;
@@ -418,6 +425,18 @@ index 0000000..10298e1
 +{
 +    const uint8_t cells = autostartConfig()->cells;
 +    return cells ? cells : getBatteryCellCount();
++}
++
++// the measured pack voltage cannot be a LiPo of this cell count: tell the configurator (debug bit 5)
++static bool batteryVoltageSuspect(void)
++{
++    const uint16_t vbat = getBatteryVoltage();
++    const uint8_t cells = batteryCells();
++    if (!powerPresent || cells == 0 || vbat < AUTOSTART_NO_BATTERY_CV) {
++        return false;
++    }
++    const uint16_t perCell = vbat / cells;
++    return perCell < AUTOSTART_CELL_PLAUSIBLE_MIN || perCell > AUTOSTART_CELL_PLAUSIBLE_MAX;
 +}
 +
 +static bool outputsOverwritten(void)
@@ -568,13 +587,14 @@ index 0000000..10298e1
 +}
 +
 +// debug_mode = AUTOSTART: [0] state, [1] commanded percent x10, [2] ms in current state / 10,
-+// [3] uptime in 0.1 s, [4] flags (bit0 USB host, bit1 RX link, bit2 button pressed, bit3 battery present, bit4 gust),
++// [3] uptime in 0.1 s, [4] flags (bit0 USB host, bit1 RX link, bit2 button pressed, bit3 battery present, bit4 gust,
++//     bit5 battery voltage implausible for the cell count = calibrate vbat_scale),
 +// [5] battery voltage in 0.1 V, [6] time since the battery appeared in 0.1 s (-1 = no battery), [7] source
 +
 +static void autostartDebug(timeMs_t nowMs, bool rxValid)
 +{
 +    const int16_t flags = (usbHostPresent() ? 1 : 0) | (rxValid ? 2 : 0) | (buttonStablePressed ? 4 : 0) | (powerPresent ? 8 : 0)
-+        | (gustActive ? 16 : 0);
++        | (gustActive ? 16 : 0) | (batteryVoltageSuspect() ? 32 : 0);
 +    DEBUG_SET(DEBUG_AUTOSTART, 0, state);
 +    DEBUG_SET(DEBUG_AUTOSTART, 1, commandedPermille);
 +    DEBUG_SET(DEBUG_AUTOSTART, 2, (int16_t)MIN(cmpTimeMs(nowMs, stateStartMs) / 10, INT16_MAX));
@@ -620,6 +640,7 @@ index 0000000..10298e1
 +    powerDetectMs = 0;
 +    powerFirstCheckDone = false;
 +    powerAtFirstCheck = false;
++    edtRequested = false;
 +
 +    rcBoxId = BOXID_NONE;
 +    if (cfg->rcBoxPermanentId != PERMANENT_ID_NONE) {
@@ -682,6 +703,7 @@ index 0000000..10298e1
 +    } else if (powerPresent && !powerRaw && powerStableMs >= AUTOSTART_POWER_LOSS_MS) {
 +        powerPresent = false;               // battery unplugged: the ESC is off, stop and wait for it again
 +        powerTriggerPending = false;
++        edtRequested = false;
 +        if (state != AUTOSTART_STATE_IDLE || outputsWritten) {
 +            programStop(nowMs);             // also clears DONE / LOW_BATTERY: a new battery starts again
 +        }
@@ -750,6 +772,20 @@ index 0000000..10298e1
 +        }
 +    }
 +    // else: an RX link is appearing but not yet confirmed - start nothing new, keep the current program
++
++    // extended DShot telemetry: ESC voltage and temperature for the configurator, without arming
++    if (!edtRequested && escHadTimeToArm(nowMs) && !outputsWritten) {
++        edtRequested = true;
++#if defined(USE_DSHOT) && defined(USE_DSHOT_TELEMETRY)
++        if (isMotorProtocolDshot() && useDshotTelemetry && motorConfig()->dev.useDshotEdt
++#ifdef USE_ESC_SENSOR
++            && !featureIsEnabled(FEATURE_ESC_SENSOR)
++#endif
++            ) {
++            dshotCommandWrite(ALL_MOTORS, getMotorCount(), DSHOT_CMD_EXTENDED_TELEMETRY_ENABLE, DSHOT_CMD_TYPE_INLINE);
++        }
++#endif
++    }
 +
 +    // 4. battery cut-off protects the pack in every running state (also during the countdown)
 +    if (programActive() && batteryCutoffReached(nowMs)) {
@@ -1227,10 +1263,10 @@ index 0de224c..5dc863d 100644
  		$(USER_DIR)/common/filter.c \
 diff --git a/src/test/unit/autostart_unittest.cc b/src/test/unit/autostart_unittest.cc
 new file mode 100644
-index 0000000..c4bc63b
+index 0000000..65f7a5d
 --- /dev/null
 +++ b/src/test/unit/autostart_unittest.cc
-@@ -0,0 +1,811 @@
+@@ -0,0 +1,828 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -2042,3 +2078,20 @@ index 0000000..c4bc63b
 +    }
 +    EXPECT_TRUE(sawFlag);
 +}
++
++TEST(AutostartTest, VoltagePlausibilityFlag)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    debugMode = DEBUG_AUTOSTART;
++    fakeVbat = 3480;                    // 34.8 V for "6S" = 5.8 V per cell: wrong vbat_scale
++    autostartInit();
++    runUntil(5000);
++    EXPECT_EQ(32, debug[4] & 32);
++    fakeVbat = 2480;                    // 24.8 V = 4.13 V per cell: plausible
++    runUntil(5100);
++    EXPECT_EQ(0, debug[4] & 32);
++    fakeVbat = 1400;                    // 14.0 V for 6S = 2.33 V per cell: implausible (or wrong cell count)
++    runUntil(5200);
++    EXPECT_EQ(32, debug[4] & 32);
++}
++

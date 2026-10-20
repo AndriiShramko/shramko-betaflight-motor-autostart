@@ -67,7 +67,17 @@ code { font-family: var(--mono); font-size: .88em; background: var(--bg2); borde
 main { max-width: 1080px; margin: 0 auto; padding: 0 clamp(16px, 4vw, 40px); }
 
 /* ---------- hero */
-.hero { padding: clamp(36px, 7vw, 76px) 0 28px; }
+.hero { padding: clamp(36px, 7vw, 76px) 0 28px; display: grid; grid-template-columns: minmax(0, 1fr) 320px; column-gap: 40px; align-items: center; }
+.hero-main, .hero-art { min-width: 0; }
+.hero > .chips, .hero > .measured { grid-column: 1 / -1; }
+.hero-art svg { display: block; width: 100%; height: auto; }
+.hero-art .axis { stroke: var(--line2); stroke-width: 1.5; }
+.hero-art .grid { stroke: var(--line); stroke-width: 1; stroke-dasharray: 3 5; }
+.hero-art .curve { fill: none; stroke: var(--accent); stroke-width: 3.5; stroke-linejoin: round; stroke-linecap: round; }
+.hero-art .gust { fill: none; stroke: var(--accent); stroke-width: 2; opacity: .45; stroke-dasharray: 4 4; }
+.hero-art .area { fill: url(#ramp-fill); }
+.hero-art text { fill: var(--muted); font: 12px var(--mono); }
+.hero-art .st { fill: var(--accent); font-size: 11px; }
 .eyebrow { color: var(--accent); font-weight: 600; letter-spacing: .02em; margin-bottom: .5em; }
 .lead { font-size: 1.15rem; color: var(--text2); max-width: 780px; }
 .cta-row { display: flex; flex-wrap: wrap; gap: 12px; margin: 22px 0 6px; }
@@ -136,18 +146,19 @@ table { border-collapse: collapse; width: 100%; }
 .two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
 .two p { margin: 0; color: var(--text2); }
 
-.flow { list-style: none; padding: 0; margin: 18px 0; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; }
-.flow li { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; min-width: 0; }
-.flow li + li::before { content: "→"; position: absolute; left: -12px; top: 18px; width: 12px; text-align: center; color: var(--accent); font-weight: 700; }
-.flow p { margin: 0; color: var(--text2); font-size: .92rem; }
-.state { display: inline-block; font-family: var(--mono); font-size: .74rem; color: var(--accent); border: 1px solid rgba(61, 220, 151, .4); border-radius: 6px; padding: 1px 7px; margin-bottom: 8px; }
+.flow { list-style: none; padding: 0; margin: 18px 0; display: grid; gap: 10px; counter-reset: fl; }
+.flow li { display: grid; grid-template-columns: 220px minmax(0, 1fr); column-gap: 22px; align-items: start; background: var(--card); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: var(--radius); padding: 14px 18px; min-width: 0; }
+.flow .state { grid-column: 1; grid-row: 1; justify-self: start; }
+.flow h3 { grid-column: 1; grid-row: 2; margin: 0; }
+.flow p { grid-column: 2; grid-row: 1 / span 2; margin: 0; color: var(--text2); }
+.state { display: inline-block; font-family: var(--mono); font-size: .74rem; color: var(--accent); border: 1px solid rgba(61, 220, 151, .4); border-radius: 6px; padding: 1px 7px; margin-bottom: 6px; }
 .stops ul { columns: 2 260px; padding-left: 1.1em; margin: 0 0 10px; }
 .stops li { margin-bottom: .3em; break-inside: avoid; }
 
 .joints { padding-left: 1.3em; }
 .joints li { margin-bottom: .45em; }
 .diagram { margin: 18px 0; background: #f4f6f8; border-radius: var(--radius); padding: 0; overflow: hidden; border: 1px solid var(--line); }
-.diagram img { display: block; width: 100%; height: auto; }
+.diagram img { display: block; width: 100%; height: auto; color: #3b4652; }
 .diagram figcaption { background: var(--card); padding: 10px 14px; margin: 0; }
 .notes { padding-left: 1.1em; }
 .notes li { margin-bottom: .45em; }
@@ -228,14 +239,24 @@ table { border-collapse: collapse; width: 100%; }
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 
 @media (max-width: 900px) {
-    .flow { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
-    .flow li + li::before { display: none; }
+    .hero { grid-template-columns: minmax(0, 1fr); }
+    .hero-art { display: none; }
+}
+@media (max-width: 680px) {
+    .flow li { display: block; }
+    .flow h3 { margin: 0 0 .4em; }
 }
 @media (max-width: 760px) {
     .nav { display: none; }
-    .top { gap: 8px; }
+    .top { gap: 0 8px; }
+    .langs { margin-left: auto; }
     .consent-bar { left: 16px; right: 16px; bottom: 76px; max-width: none; }
     .steps li { padding-left: 56px; }
+}
+@media (max-width: 520px) {
+    /* brand and languages need two rows here: the header scrolls away instead of covering the page */
+    .top { position: static; }
+    html { scroll-padding-top: 8px; }
 }
 @media (max-width: 420px) {
     .brand span { font-size: .95rem; }

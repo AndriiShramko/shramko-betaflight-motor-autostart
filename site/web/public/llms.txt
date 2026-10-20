@@ -1,0 +1,33 @@
+# Shramko Motor Autostart
+
+> Betaflight 2025.12.1 firmware module plus a browser configurator (https://autostart.flyreelstudio.eu) by Andrii Shramko that turns a flight controller into a standalone motor / ESC driver: on power-up it waits for the battery, counts down, ramps the throttle linearly and holds it (optionally with random gusts, a run time and a LiPo cut-off) - no transmitter, receiver or switch. The configurator talks to the board over USB with Web Serial, in the visitor's browser. Open source, GPL-3.0-or-later: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart
+
+## Key facts
+- Ready firmware (.hex): HGLRC F405 8S V2 (Betaflight board_name HGLRC_F405_S8), tested with a Flycolor X-Cross HV3 160A (BLHeli_32) on 6S. Releases: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/releases/latest
+- Other Betaflight boards: build from source (Docker; add #define USE_AUTOSTART to the board's config.h).
+- Flashing: https://app.betaflight.com -> Firmware Flasher -> Load Firmware [Local]. Windows "DFU device not found": ImpulseRC Driver Fixer or Zadig (WinUSB). The first boot after flashing resets settings once; the build's defaults are the project settings.
+- Defaults: autostart_mode POWER, autostart_delay 10 s, autostart_ramp 100 (10.0 s), autostart_throttle 15 %, autostart_motors 15 (motors 1-4), autostart_vbat_min 60 (6.0 V). Firmware 1.1 adds autostart_pattern STEADY/GUSTS, autostart_run_time, autostart_throttle_limit, autostart_cells / autostart_cell_cutoff / autostart_cutoff_time (battery cut-off).
+- States (debug_mode AUTOSTART, debug[0]): 0 IDLE, 1 DELAY, 2 RAMP, 3 RUN, 4 DONE, 5 LOW_BATTERY.
+- Stops the program (no automatic restart): entering the CLI, the Configurator Motors tab, arming via a receiver, a valid receiver link (unless autostart_box), run time over, battery cut-off, battery unplugged, a button click while running.
+- Measured on hardware: ramp starts 10.01 s after power-on, takes 10.02 s, max deviation 1 us; 26 unit tests.
+- Browsers: Chrome, Edge, Opera on Windows/macOS/Linux (Web Serial). Android: Chrome with USB-OTG (not confirmed). iPhone/iPad: not possible (no Web Serial / WebUSB in iOS browsers).
+- Safety: remove the propeller; never more than 8S on the board's B pin; ground use only.
+
+## Pages
+- English: https://autostart.flyreelstudio.eu/en/
+- Espanol: https://autostart.flyreelstudio.eu/es/
+- Polski: https://autostart.flyreelstudio.eu/pl/
+- Russkiy: https://autostart.flyreelstudio.eu/ru/
+
+## For agents
+- README: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart#readme
+- Setup protocol: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/AGENT_SETUP.md
+- Settings reference (names, ranges, defaults): https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/docs/settings.md
+- Wiring: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/docs/wiring.md
+
+## Author
+Andrii Shramko - drone and 360-degree camera systems for extreme shoots (storm chasing, city-scale Gaussian-splat scans); open to interesting people and ready to help teams build ambitious projects.
+- LinkedIn: https://www.linkedin.com/in/andrii-shramko/
+- Book a call: https://calendar.app.google/Ff729HqGk4RpzPNDA
+- Email: zmei116@gmail.com
+- GitHub: https://github.com/AndriiShramko

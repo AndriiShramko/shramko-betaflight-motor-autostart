@@ -96,6 +96,7 @@ await shot('restarted');
 // 4. read settings and compare with what the board holds
 await btn(/^Read settings$|^Read again$/).click();
 await waitText(/Settings read from the board/, 30000, 'settings read');
+check(!/running from the start/.test(await tool.locator('.st-live').innerText()), 'no stale "program running" message once the read holds the program');
 const value = async name => {
   const f = field(name);
   const num = f.locator('input.st-num');

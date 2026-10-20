@@ -921,6 +921,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         run(async () => {
             if (!device) return;
             setMsg(saveMsg, '');
+            setMsg(liveMsg, ''); // "program running from the start" is no longer true once the CLI holds it
             board = await device.readSettings();
             identity = device.identity;
             edited = { ...board.values };

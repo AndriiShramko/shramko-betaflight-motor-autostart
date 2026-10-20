@@ -1,0 +1,218 @@
+board now: {'autostart_mode': 'OFF', 'autostart_vbat_min': '60', 'autostart_delay': '10', 'autostart_ramp': '100', 'autostart_throttle': '15', 'autostart_run_time': '0', 'autostart_pattern': 'STEADY', 'autostart_cell_cutoff': '330', 'autostart_cutoff_time': '5', 'autostart_cells': '6', 'vbat_scale': '210'}
+
+battery: plug it in now (propeller off). Waiting up to 3 min ...
+battery seen by the board; settling 5 s
+     0.0s IDLE        cmd   0.0% out 1000 | board 31.34 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     0.3s IDLE        cmd   0.0% out 1000 | board 31.34 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     0.6s IDLE        cmd   0.0% out 1000 | board 31.34 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     1.0s IDLE        cmd   0.0% out 1000 | board 31.34 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+     1.3s IDLE        cmd   0.0% out 1000 | board 31.34 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     1.6s IDLE        cmd   0.0% out 1000 | board 31.33 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     1.9s IDLE        cmd   0.0% out 1000 | board 31.33 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+     2.3s IDLE        cmd   0.0% out 1000 | board 31.33 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+     2.6s IDLE        cmd   0.0% out 1000 | board 31.34 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     2.9s IDLE        cmd   0.0% out 1000 | board 31.34 V | ESC rpm      0 V 22.35 T  26 bad   0.0
+     3.2s IDLE        cmd   0.0% out 1000 | board 31.35 V | ESC rpm      0 V 22.35 T  26 bad   0.0
+     3.5s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     3.9s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+     4.2s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+     4.5s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     4.8s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     5.2s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     5.5s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     5.8s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+     6.1s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+     6.4s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+     6.8s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     7.1s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+     7.4s IDLE        cmd   0.0% out 1000 | board 31.35 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+     7.7s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     8.1s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+     8.4s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+     8.7s IDLE        cmd   0.0% out 1000 | board 31.35 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+     9.0s IDLE        cmd   0.0% out 1000 | board 31.35 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     9.4s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     9.7s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+    10.0s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+    10.3s IDLE        cmd   0.0% out 1000 | board 31.35 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    10.6s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    11.0s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    11.3s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    11.6s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    11.9s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    12.3s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+    12.6s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    12.9s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+    13.2s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+    13.5s IDLE        cmd   0.0% out 1000 | board 31.36 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+    13.9s IDLE        cmd   0.0% out 1000 | board 31.35 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+    14.2s IDLE        cmd   0.0% out 1000 | board 31.35 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    14.5s IDLE        cmd   0.0% out 1000 | board 31.35 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+    14.8s IDLE        cmd   0.0% out 1000 | board 31.35 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+   (0 idle, mode OFF: 47 samples)
+1) board 31.36 V (5.23 V/cell)  ESC 22.32 V
+   board vs ESC +40.5 % -> vbat_scale 149 would agree (now 210)
+   vbat_scale 149 -> board now 22.24 V vs ESC 22.32 V
+
+2 run: autostart_delay = 3, autostart_ramp = 30, autostart_throttle = 15, autostart_run_time = 8, autostart_pattern = STEADY
+     0.0s DELAY       cmd   0.0% out 1000 | board 14.85 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     0.3s DELAY       cmd   0.0% out 1000 | board 18.21 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     0.6s DELAY       cmd   0.0% out 1000 | board 20.06 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     1.0s DELAY       cmd   0.0% out 1000 | board 21.17 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     1.3s DELAY       cmd   0.0% out 1000 | board 21.75 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     1.6s RAMP        cmd   0.1% out 1000 | board 21.99 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     1.9s RAMP        cmd   1.7% out 1015 | board 22.01 V | ESC rpm   1029 V   0.0 T   0 bad   0.0
+     2.3s RAMP        cmd   3.3% out 1031 | board 21.99 V | ESC rpm   1786 V   0.0 T   0 bad   0.0
+     2.6s RAMP        cmd   4.9% out 1048 | board 21.85 V | ESC rpm   3000 V   0.0 T   0 bad   0.0
+     2.9s RAMP        cmd   6.5% out 1064 | board 21.63 V | ESC rpm   4257 V   0.0 T   0 bad   0.0
+     3.2s RAMP        cmd   8.2% out 1080 | board 21.38 V | ESC rpm   5586 V   0.0 T   0 bad   0.0
+     3.5s RAMP        cmd   9.8% out 1096 | board 21.07 V | ESC rpm   6629 V   0.0 T   0 bad   0.0
+     3.9s RAMP        cmd  11.4% out 1113 | board 20.76 V | ESC rpm   7714 V 20.71 T  26 bad   0.0
+     4.2s RAMP        cmd  13.0% out 1129 | board 20.46 V | ESC rpm   8714 V 20.37 T  26 bad   0.0
+     4.5s RAMP        cmd  14.6% out 1145 | board 20.15 V | ESC rpm   9629 V 20.05 T  26 bad   0.0
+     4.8s RUN         cmd  15.0% out 1150 | board 19.97 V | ESC rpm  10186 V 19.76 T  26 bad   0.0
+     5.2s RUN         cmd  15.0% out 1150 | board 19.89 V | ESC rpm  10457 V 19.88 T  26 bad   0.0
+     5.5s RUN         cmd  15.0% out 1150 | board 19.86 V | ESC rpm  10500 V 19.89 T  26 bad   0.0
+     5.8s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10557 V 19.91 T  26 bad   0.0
+     6.2s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10614 V 19.91 T  26 bad   0.0
+     6.5s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10529 V 19.88 T  26 bad   0.0
+     6.8s RUN         cmd  15.0% out 1150 | board 19.81 V | ESC rpm  10529 V 19.91 T  26 bad   0.0
+     7.1s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10586 V 19.89 T  26 bad   0.0
+     7.5s RUN         cmd  15.0% out 1150 | board 19.81 V | ESC rpm  10557 V 19.91 T  26 bad   0.0
+     7.8s RUN         cmd  15.0% out 1150 | board 19.81 V | ESC rpm  10586 V 19.89 T  26 bad   0.0
+     8.1s RUN         cmd  15.0% out 1150 | board 19.81 V | ESC rpm  10500 V 19.89 T  26 bad   0.0
+     8.4s RUN         cmd  15.0% out 1150 | board 19.81 V | ESC rpm  10614 V 19.93 T  26 bad   0.0
+     8.7s RUN         cmd  15.0% out 1150 | board 19.81 V | ESC rpm  10529 V 19.91 T  26 bad   0.0
+     9.1s RUN         cmd  15.0% out 1150 | board 19.80 V | ESC rpm  10557 V 19.91 T  26 bad   0.0
+     9.4s RUN         cmd  15.0% out 1150 | board 19.81 V | ESC rpm  10429 V 19.91 T  26 bad   0.0
+     9.7s RUN         cmd  15.0% out 1150 | board 19.80 V | ESC rpm  10557 V 19.89 T  26 bad   0.0
+    10.0s RUN         cmd  15.0% out 1150 | board 19.79 V | ESC rpm  10614 V 19.89 T  26 bad   0.0
+    10.4s RUN         cmd  15.0% out 1150 | board 19.81 V | ESC rpm  10586 V 19.88 T  26 bad   0.0
+    10.7s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10500 V 19.88 T  26 bad   0.0
+    11.0s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10529 V 19.88 T  26 bad   0.0
+    11.3s RUN         cmd  15.0% out 1150 | board 19.80 V | ESC rpm  10586 V 19.89 T  26 bad   0.0
+    11.7s RUN         cmd  15.0% out 1150 | board 19.80 V | ESC rpm  10586 V 19.89 T  26 bad   0.0
+    12.0s RUN         cmd  15.0% out 1150 | board 19.80 V | ESC rpm  10557 V 19.89 T  26 bad   0.0
+    12.3s RUN         cmd  15.0% out 1150 | board 19.81 V | ESC rpm  10529 V 19.89 T  26 bad   0.0
+    12.6s DONE        cmd   0.0% out 1000 | board 20.36 V | ESC rpm   9029 V 19.88 T  26 bad   0.0
+    13.0s DONE        cmd   0.0% out 1000 | board 21.25 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    13.3s DONE        cmd   0.0% out 1000 | board 21.70 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    13.6s DONE        cmd   0.0% out 1000 | board 21.94 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    13.9s DONE        cmd   0.0% out 1000 | board 22.06 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    14.2s DONE        cmd   0.0% out 1000 | board 22.12 V | ESC rpm      0 V  22.3 T  26 bad   0.0
+    14.6s DONE        cmd   0.0% out 1000 | board 22.16 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    14.9s DONE        cmd   0.0% out 1000 | board 22.18 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    15.2s DONE        cmd   0.0% out 1000 | board 22.19 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+   (2 run: 48 samples)
+
+3 gusts: autostart_delay = 3, autostart_ramp = 10, autostart_throttle = 15, autostart_run_time = 10, autostart_pattern = GUSTS
+     0.0s DELAY       cmd   0.0% out 1000 | board 14.80 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     0.3s DELAY       cmd   0.0% out 1000 | board 18.13 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     0.6s DELAY       cmd   0.0% out 1000 | board 19.95 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     1.0s DELAY       cmd   0.0% out 1000 | board 21.10 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     1.3s DELAY       cmd   0.0% out 1000 | board 21.70 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     1.6s RAMP        cmd   0.3% out 1000 | board 21.97 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     1.9s RAMP        cmd   5.1% out 1048 | board 21.88 V | ESC rpm   2443 V   0.0 T   0 bad   0.0
+     2.3s RAMP        cmd   9.9% out 1096 | board 21.39 V | ESC rpm   5629 V   0.0 T   0 bad   0.0
+     2.6s RAMP        cmd  14.7% out 1144 | board 20.57 V | ESC rpm   8486 V   0.0 T   0 bad   0.0
+     2.9s RUN         cmd  15.0% out 1150 | board 20.15 V | ESC rpm   9943 V   0.0 T   0 bad   0.0
+     3.2s RUN         cmd  15.0% out 1150 | board 19.99 V | ESC rpm  10271 V   0.0 T   0 bad   0.0
+     3.5s RUN         cmd  15.0% out 1150 | board 19.90 V | ESC rpm  10457 V   0.0 T   0 bad   0.0
+     3.9s RUN         cmd  15.0% out 1150 | board 19.87 V | ESC rpm  10457 V 19.89 T  26 bad   0.0
+     4.2s RUN         cmd  15.0% out 1150 | board 19.86 V | ESC rpm  10557 V 19.89 T  26 bad   0.0
+     4.5s RUN         cmd  15.0% out 1150 | board 19.84 V | ESC rpm  10500 V 19.91 T  26 bad   0.0
+     4.8s RUN         cmd  15.0% out 1150 | board 19.84 V | ESC rpm  10586 V 19.91 T  26 bad   0.0
+     5.2s RUN         cmd  15.0% out 1150 | board 19.84 V | ESC rpm  10629 V 19.93 T  26 bad   0.0
+     5.5s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10557 V 19.91 T  26 bad   0.0
+     5.8s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10557 V 19.91 T  26 bad   0.0
+     6.2s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10657 V 19.93 T  26 bad   0.0
+     6.5s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10557 V 19.93 T  26 bad   0.0
+     6.8s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10586 V 19.91 T  26 bad   0.0
+     7.1s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10557 V 19.91 T  26 bad   0.0
+     7.5s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10586 V 19.91 T  26 bad   0.0
+     7.8s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10586 V 19.93 T  26 bad   0.0
+     8.1s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10629 V 19.93 T  26 bad   0.0
+     8.4s RUN         cmd  61.0% out 1610 | board 18.15 V | ESC rpm  13471 V 19.91 T  26 bad   0.0
+     8.7s RUN         cmd  61.0% out 1610 | board 17.15 V | ESC rpm  15814 V 15.23 T  26 bad   0.0
+     9.1s RUN         cmd  15.0% out 1150 | board 17.97 V | ESC rpm  14629 V 16.62 T  26 bad   0.0
+     9.4s RUN         cmd  15.0% out 1150 | board 19.02 V | ESC rpm  12000 V 20.42 T  26 bad   0.0
+     9.7s RUN         cmd  15.0% out 1150 | board 19.45 V | ESC rpm  10929 V 20.08 T  26 bad   0.0
+    10.0s RUN         cmd  15.0% out 1150 | board 19.64 V | ESC rpm  10743 V 19.96 T  26 bad   0.0
+    10.3s RUN         cmd  15.0% out 1150 | board 19.72 V | ESC rpm  10629 V 19.93 T  26 bad   0.0
+    10.7s RUN         cmd  15.0% out 1150 | board 19.78 V | ESC rpm  10629 V 19.91 T  26 bad   0.0
+    11.0s RUN         cmd  15.0% out 1150 | board 19.80 V | ESC rpm  10629 V 19.91 T  26 bad   0.0
+    11.3s RUN         cmd  15.0% out 1150 | board 19.81 V | ESC rpm  10629 V 19.91 T  26 bad   0.0
+    11.6s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10657 V 19.93 T  26 bad   0.0
+    12.0s RUN         cmd  15.0% out 1150 | board 19.83 V | ESC rpm  10614 V 19.93 T  26 bad   0.0
+    12.3s RUN         cmd  15.0% out 1150 | board 19.84 V | ESC rpm  10686 V 19.93 T  26 bad   0.0
+    12.6s DONE        cmd   0.0% out 1000 | board 20.33 V | ESC rpm   9443 V 19.91 T  26 bad   0.0
+    12.9s DONE        cmd   0.0% out 1000 | board 21.24 V | ESC rpm      0 V  22.3 T  26 bad   0.0
+    13.2s DONE        cmd   0.0% out 1000 | board 21.72 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    13.6s DONE        cmd   0.0% out 1000 | board 21.96 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    13.9s DONE        cmd   0.0% out 1000 | board 22.09 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    14.2s DONE        cmd   0.0% out 1000 | board 22.14 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    14.5s DONE        cmd   0.0% out 1000 | board 22.19 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    14.9s DONE        cmd   0.0% out 1000 | board 22.20 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    15.2s DONE        cmd   0.0% out 1000 | board 22.22 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+   (3 gusts: 48 samples)
+
+4 STOP during the countdown: autostart_delay = 10, autostart_ramp = 30, autostart_run_time = 8, autostart_pattern = STEADY
+     0.0s DELAY       cmd   0.0% out 1000 | board 14.54 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     1.6s IDLE        cmd   0.0% out 1000 | board 21.98 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     2.5s IDLE        cmd   0.0% out 1000 | board 22.25 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     3.5s IDLE        cmd   0.0% out 1000 | board 22.28 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     4.5s IDLE        cmd   0.0% out 1000 | board 22.27 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     5.4s IDLE        cmd   0.0% out 1000 | board 22.25 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     6.4s IDLE        cmd   0.0% out 1000 | board 22.24 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     7.4s IDLE        cmd   0.0% out 1000 | board 22.23 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     8.4s IDLE        cmd   0.0% out 1000 | board 22.23 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     9.3s IDLE        cmd   0.0% out 1000 | board 22.23 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    10.3s IDLE        cmd   0.0% out 1000 | board 22.23 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    11.3s IDLE        cmd   0.0% out 1000 | board 22.23 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    12.2s IDLE        cmd   0.0% out 1000 | board 22.23 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    13.2s IDLE        cmd   0.0% out 1000 | board 22.24 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    14.2s IDLE        cmd   0.0% out 1000 | board 22.23 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    15.2s IDLE        cmd   0.0% out 1000 | board 22.23 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    16.1s IDLE        cmd   0.0% out 1000 | board 22.24 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    17.1s IDLE        cmd   0.0% out 1000 | board 22.24 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    18.1s IDLE        cmd   0.0% out 1000 | board 22.23 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    19.1s IDLE        cmd   0.0% out 1000 | board 22.23 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    20.0s IDLE        cmd   0.0% out 1000 | board 22.24 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    21.0s IDLE        cmd   0.0% out 1000 | board 22.23 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    22.0s IDLE        cmd   0.0% out 1000 | board 22.24 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    23.0s IDLE        cmd   0.0% out 1000 | board 22.24 V | ESC rpm      0 V 22.33 T  26 bad   0.0
+    23.9s IDLE        cmd   0.0% out 1000 | board 22.23 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+    24.9s IDLE        cmd   0.0% out 1000 | board 22.24 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+   (4 STOP during the countdown: 76 samples)
+
+5 cut-off: autostart_delay = 3, autostart_ramp = 30, autostart_run_time = 12, autostart_cell_cutoff = 420, autostart_cutoff_time = 2, autostart_pattern = STEADY
+     0.0s DELAY       cmd   0.0% out 1000 | board 14.54 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     0.3s DELAY       cmd   0.0% out 1000 | board 18.21 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     0.6s DELAY       cmd   0.0% out 1000 | board 20.06 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     1.0s DELAY       cmd   0.0% out 1000 | board 21.17 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     1.3s DELAY       cmd   0.0% out 1000 | board 21.73 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     1.6s RAMP        cmd   0.1% out 1000 | board 21.99 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     1.9s LOW_BATTERY cmd   0.0% out 1000 | board 22.07 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     2.3s LOW_BATTERY cmd   0.0% out 1000 | board 22.18 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     2.6s LOW_BATTERY cmd   0.0% out 1000 | board 22.22 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     2.9s LOW_BATTERY cmd   0.0% out 1000 | board 22.26 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     3.2s LOW_BATTERY cmd   0.0% out 1000 | board 22.27 V | ESC rpm      0 V   0.0 T   0 bad   0.0
+     3.6s LOW_BATTERY cmd   0.0% out 1000 | board 22.27 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     3.9s LOW_BATTERY cmd   0.0% out 1000 | board 22.27 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     4.2s LOW_BATTERY cmd   0.0% out 1000 | board 22.27 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+     4.5s LOW_BATTERY cmd   0.0% out 1000 | board 22.25 V | ESC rpm      0 V 22.32 T  26 bad   0.0
+   (5 cut-off: 15 samples)
+
+restored: autostart_vbat_min = 60; autostart_delay = 10; autostart_ramp = 100; autostart_throttle = 15; autostart_run_time = 0; autostart_pattern = STEADY; autostart_cell_cutoff = 330; autostart_cutoff_time = 5; autostart_cells = 6; autostart_mode = OFF; vbat_scale = 149
+
+PASS 0 nothing turns with mode OFF
+PASS 1 ESC reports its voltage
+PASS 1 calibrated board within 2 % of the ESC
+PASS 2 motor turns at the target (RPM > 0)
+PASS 2 stops by itself after the run time
+PASS 3 gusts seen (flag) and RPM varies
+PASS 3 stops after the run time
+PASS 4 STOP sent during the countdown
+PASS 4 nothing turns after STOP (held flag)
+PASS 5 cut-off: LOW_BATTERY and motor stopped
+ALL PASS

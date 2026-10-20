@@ -1,0 +1,162 @@
+dshot_bidir: OFF (ESC alive = RPM or ESC voltage over the TX wire)
+board now: {'autostart_mode': 'OFF', 'autostart_delay': '3', 'autostart_ramp': '5', 'autostart_throttle': '10', 'autostart_throttle_limit': '100', 'autostart_run_time': '2', 'autostart_pattern': 'STEADY', 'autostart_motors': '15', 'autostart_usb_inhibit': 'OFF', 'autostart_vbat_min': '60', 'autostart_cell_cutoff': '330', 'autostart_cutoff_time': '5', 'autostart_cells': '6', 'autostart_gust_min': '40', 'autostart_gust_max': '80', 'autostart_gust_len_min': '300', 'autostart_gust_len_max': '800', 'autostart_gust_pause_min': '20', 'autostart_gust_pause_max': '80', 'autostart_box': '255', 'vbat_scale': '149', 'dshot_bidir': 'OFF'}
+
+delay 3 s, ramp 3.0 s: autostart_delay = 3, autostart_ramp = 30, autostart_run_time = 3
+   states: DELAY > RAMP > RUN > DONE | samples 29
+   battery on the board: 15.01 .. 22.39 V (min 2.50 V per cell on 6S)
+   ESC answers in 13/16 spinning samples, rpm [12186, 12200, 12257]
+   ramp starts 2.98 s (want 3.0), run 5.94 s (want 6.0), done 9.0 s (want 9.0)
+   PASS delay 3: ramp starts at 3.0 s +-0.25 (board clock)
+   PASS ramp 3.0 s long +-0.25
+   PASS run time 3 s +-0.25
+
+delay 6 s, ramp 2.0 s: autostart_delay = 6, autostart_ramp = 20, autostart_run_time = 3
+   states: DELAY > RAMP > RUN > DONE | samples 36
+   battery on the board: 15.02 .. 22.40 V (min 2.50 V per cell on 6S)
+   ESC answers in 13/13 spinning samples, rpm [12243, 12257, 12271]
+   ramp starts 5.92 s (want 6.0), run 8.0 s (want 8.0), done 10.96 s (want 11.0)
+   PASS delay 6: ramp starts at 6.0 s +-0.25 (board clock)
+   PASS ramp 2.0 s long +-0.25
+   PASS run time 3 s +-0.25
+
+delay 0 s, ramp 2.0 s: autostart_delay = 0, autostart_ramp = 20, autostart_run_time = 3
+   states: DELAY > RAMP > RUN > DONE | samples 26
+   battery on the board: 15.01 .. 22.41 V (min 2.50 V per cell on 6S)
+   ESC answers in 9/13 spinning samples, rpm [11929, 12171, 12214]
+   ramp starts 2.98 s (want 3.0), run 4.98 s (want 5.0), done 7.94 s (want 8.0)
+   PASS delay 0: ramp starts at 3.0 s +-0.25 (board clock)
+   PASS ramp 2.0 s long +-0.25
+   PASS run time 3 s +-0.25
+
+ramp 0 (jump): autostart_ramp = 0, autostart_run_time = 3
+   states: DELAY > RUN > DONE | samples 18
+   battery on the board: 15.02 .. 22.41 V (min 2.50 V per cell on 6S)
+   ESC answers in 4/9 spinning samples, rpm [0, 11786, 11814]
+   FAIL ramp 0 (jump): ESC NOT ANSWERING while the output is above stop (power? connector?) - stopping the matrix
+
+restored the board's settings, autostart_mode = OFF
+
+10 checks, 1 failed
+FAIL ramp 0 (jump): ESC NOT ANSWERING while the output is above stop (power? connector?) - stopping the matrix
+NOT ALL PASS
+dshot_bidir: OFF (ESC alive = RPM or ESC voltage over the TX wire)
+board now: {'autostart_mode': 'OFF', 'autostart_delay': '3', 'autostart_ramp': '5', 'autostart_throttle': '10', 'autostart_throttle_limit': '100', 'autostart_run_time': '2', 'autostart_pattern': 'STEADY', 'autostart_motors': '15', 'autostart_usb_inhibit': 'OFF', 'autostart_vbat_min': '60', 'autostart_cell_cutoff': '330', 'autostart_cutoff_time': '5', 'autostart_cells': '6', 'autostart_gust_min': '40', 'autostart_gust_max': '80', 'autostart_gust_len_min': '300', 'autostart_gust_len_max': '800', 'autostart_gust_pause_min': '20', 'autostart_gust_pause_max': '80', 'autostart_box': '255', 'vbat_scale': '149', 'dshot_bidir': 'OFF'}
+
+ramp 0 (jump): autostart_ramp = 0, autostart_run_time = 3
+   states: DELAY > RUN > DONE | samples 18
+   battery on the board: 15.01 .. 22.39 V (min 2.50 V per cell on 6S)
+   ESC answers in 4/9 spinning samples, rpm [11571, 11614, 11629]
+   PASS ramp 0: RUN at 3.0 s (straight to the throttle)
+   PASS ramp 0: output only 1000 or 1150
+
+throttle 10 %: autostart_throttle = 10, autostart_run_time = 5
+   states: DELAY > RAMP > RUN > DONE | samples 33
+   battery on the board: 15.01 .. 22.39 V (min 2.50 V per cell on 6S)
+   ESC answers in 18/21 spinning samples, rpm [8371, 8386, 8400]
+   output [1100], median rpm 8357
+   PASS throttle 10 %: output 1100 us exactly
+
+throttle 25 %: autostart_throttle = 25, autostart_run_time = 5
+   states: DELAY > RAMP > RUN > DONE | samples 33
+   battery on the board: 15.01 .. 22.38 V (min 2.50 V per cell on 6S)
+   ESC answers in 17/22 spinning samples, rpm [16257, 16286, 16314]
+   output [1250], median rpm 16229
+   PASS throttle 25 %: output 1250 us exactly
+
+throttle 40 %: autostart_throttle = 40, autostart_run_time = 5
+   states: DELAY > RAMP > RUN > DONE | samples 33
+   battery on the board: 15.00 .. 22.36 V (min 2.50 V per cell on 6S)
+   ESC answers in 18/23 spinning samples, rpm [19786, 19829, 19886]
+   output [1400], median rpm 19786
+   PASS throttle 40 %: output 1400 us exactly
+   PASS RPM rises with throttle: {10: 8357, 25: 16229, 40: 19786}
+
+limit 20 below throttle 30: autostart_throttle = 30, autostart_throttle_limit = 20, autostart_run_time = 5
+   states: DELAY > RAMP > RUN > DONE | samples 33
+   battery on the board: 15.00 .. 22.38 V (min 2.50 V per cell on 6S)
+   ESC answers in 18/23 spinning samples, rpm [14514, 14571, 14671]
+   PASS limit 20 %: steady output 1200 (got [1200])
+
+gusts capped by limit 25: autostart_pattern = GUSTS, autostart_throttle = 15, autostart_throttle_limit = 25, autostart_gust_min = 60, autostart_gust_max = 90, autostart_gust_len_min = 300, autostart_gust_len_max = 500, autostart_gust_pause_min = 5, autostart_gust_pause_max = 10, autostart_run_time = 10
+   states: DELAY > RAMP > RUN > DONE | samples 178
+   PASS gusts with limit 25 %: peak 1250 <= 1250, gusts seen
+
+gust ranges: autostart_pattern = GUSTS, autostart_throttle = 15, autostart_gust_min = 40, autostart_gust_max = 60, autostart_gust_len_min = 300, autostart_gust_len_max = 500, autostart_gust_pause_min = 5, autostart_gust_pause_max = 10, autostart_run_time = 12
+   states: DELAY > RAMP > RUN > DONE | samples 256
+   sample period 0.061 s; 9 gust lengths [0.37, 0.31, 0.31, 0.36, 0.37, 0.37, 0.43, 0.42, 0.48]; pauses [0.85, 0.74, 0.67, 0.79, 0.67, 0.73, 0.97, 0.92, 0.82]; peaks [1470, 1550, 1400, 1590, 1510, 1560, 1480, 1590, 1550, 1550]
+   PASS gusts: at least 6 in ~12 s with 0.5-1.0 s pauses (10)
+   PASS gust peaks within 40-60 %% (1400-1600 us)
+   PASS gust lengths within 0.3-0.5 s (+- 0.15)
+   PASS pauses within 0.5-1.0 s (+- 0.15)
+   PASS between gusts exactly the base 1150 (seen [1150])
+
+motor mask = motor 2 only: autostart_motors = 2, autostart_run_time = 4
+   states: DELAY > RAMP > RUN > DONE | samples 29
+   battery on the board: 14.70 .. 22.39 V (min 2.45 V per cell on 6S)
+   motor 1 values [1000], motor 2 values [1150]
+   PASS mask 2: motor 1 stays at 1000
+   PASS mask 2: motor 2 gets 1150
+   PASS mask 2: motor 1 does not turn (RPM 0)
+
+USB inhibit ON with USB connected: autostart_usb_inhibit = ON
+   states: IDLE | samples 37
+   battery on the board: 14.99 .. 22.39 V (min 2.50 V per cell on 6S)
+   PASS USB inhibit: nothing starts
+
+battery threshold 30.0 V above the pack: autostart_vbat_min = 300
+   states: IDLE | samples 37
+   battery on the board: 14.99 .. 22.43 V (min 2.50 V per cell on 6S)
+   PASS vbat_min 30 V: no battery seen, nothing starts
+
+BUTTON mode, no button wired: autostart_mode = BUTTON
+   states: IDLE | samples 37
+   battery on the board: 14.70 .. 22.38 V (min 2.45 V per cell on 6S)
+   PASS BUTTON with no click: nothing starts
+
+STOP during RAMP: autostart_ramp = 40, autostart_run_time = 8
+   states: DELAY > RAMP > IDLE | samples 150
+   PASS STOP sent during RAMP
+   PASS after STOP in RAMP: output 1000 and held for the rest of the run
+
+STOP during RUN: autostart_run_time = 10
+   states: DELAY > RAMP > RUN > IDLE | samples 149
+   PASS STOP sent during RUN
+   PASS after STOP in RUN: output 1000 and held for the rest of the run
+
+STOP during a gust: autostart_pattern = GUSTS, autostart_gust_pause_min = 5, autostart_gust_pause_max = 10, autostart_run_time = 10
+   states: DELAY > RAMP > RUN > IDLE | samples 149
+   PASS STOP sent during a gust
+   PASS after STOP in a gust: output 1000 and held for the rest of the run
+
+restart after a hold (MSP_REBOOT)
+   PASS held before the restart
+   PASS after the restart the program runs again (DELAY > RAMP > RUN > DONE)
+
+CLI during RUN
+   PASS running before the CLI
+   PASS after CLI + exit noreboot: stopped and held
+
+MSP flood during RUN (no jitter, no hang)
+   264 requests, 33 req/s, output values [1150], cycle time 250 us, worst round 247 ms
+   PASS output steady at 1150 under the flood
+   PASS board kept answering (worst round 247 ms)
+
+5 reboots in a row
+   PASS board came back after 5/5 reboots
+
+all settings survive save + reboot
+   PASS 20 settings read back after save + reboot (wrong: {})
+
+45 s soak at 15 %: autostart_run_time = 45, autostart_ramp = 20
+   states: DELAY > RAMP > RUN > DONE | samples 178
+   battery on the board: 14.99 .. 22.38 V (min 2.50 V per cell on 6S)
+   ESC answers in 163/167 spinning samples, rpm [12429, 12457, 12471]
+   output [1150], rpm min 12029 max 12471
+   PASS soak: output steady at 1150 for 45 s
+   PASS soak: RPM within 5 %
+   PASS soak: DONE after 45.0 s +-0.3
+
+restored the board's settings, autostart_mode = OFF
+
+36 checks, 0 failed
+ALL PASS

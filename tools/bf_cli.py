@@ -34,6 +34,11 @@ for attempt in range(10):
 else:
     print("!!! could not enter CLI")
     sys.exit(2)
+# a fresh prompt before the first command: a "#" typed into an already open CLI would turn the next
+# command into a comment (20.10: "set dshot_bidir = OFF" was lost that way)
+s.write(b"\r\n")
+time.sleep(0.4)
+s.read(4096)
 
 def run(cmd, quiet_s=1.0, hard_s=30):
     s.write(cmd.encode() + b"\r\n")
@@ -59,7 +64,15 @@ for c in cmds:
         break
     print("### " + c)
     try:
-        print(run(c))
+        out = run(c)
+        if c.startswith("set ") and "=" in c and " set to " not in out:
+            out = run(c)                      # one retry: the first line after entering the CLI can be lost
+            if " set to " not in out:
+                print(out)
+                print("!!! not confirmed by the board: %s -- nothing saved" % c)
+                s.write(b"exit\r\n")       # leave without saving (reboots, discards the changes)
+                sys.exit(3)
+        print(out)
     except serial.SerialException:
         # `save` and `defaults` reboot the board, the USB port disappears mid-read
         print("(port closed - board rebooting)")

@@ -44,11 +44,17 @@ def msp(s, cmd, timeout=0.3):
     t0, buf = time.time(), b""
     while time.time() - t0 < timeout:
         buf += s.read(64)
-        i = buf.find(b"$M>")
-        if i >= 0 and len(buf) >= i + 5:
+        # skip complete frames of other commands (e.g. the ack of an earlier MSP_SET_MOTOR still in the buffer)
+        while True:
+            i = buf.find(b"$M>")
+            if i < 0 or len(buf) < i + 5:
+                break
             n = buf[i + 3]
-            if len(buf) >= i + 6 + n and buf[i + 4] == cmd:
+            if len(buf) < i + 6 + n:
+                break
+            if buf[i + 4] == cmd:
                 return buf[i + 5:i + 5 + n]
+            buf = buf[i + 6 + n:]
     return None
 
 

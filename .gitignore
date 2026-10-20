@@ -24,3 +24,4 @@ config.env
 *.log
 .DS_Store
 Thumbs.db
+tools/*.keep.json

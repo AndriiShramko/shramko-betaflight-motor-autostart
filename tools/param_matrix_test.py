@@ -12,7 +12,7 @@ save + reboot, 45 s soak.
 
 usage: python param_matrix_test.py COM6 [--only name,name]   (names: see CASES at the bottom)
 """
-import argparse, struct, sys, time
+import argparse, json, os, struct, sys, time
 
 sys.path.insert(0, __file__.rsplit("\\", 1)[0] if "\\" in __file__ else __file__.rsplit("/", 1)[0])
 from autostart_selftest import msp, msp_frame, open_port  # noqa: E402
@@ -59,8 +59,12 @@ def watch(port, seconds, full=True, stop_when=None, each=None, period=0.15):
     return rows
 
 
+DRY = False   # --dry-run: USB only, no battery; vbat gate off, the ESC is unpowered (no RPM, no ESC checks)
+
+
 def configure(port, sets, wait=1.0):
-    cli(port, ["set " + x for x in BASE + sets] + ["save"], wait=wait)
+    extra = ["autostart_vbat_min = 0"] if DRY and not any(x.startswith("autostart_vbat_min") for x in sets) else []
+    cli(port, ["set " + x for x in BASE + sets + extra] + ["save"], wait=wait)
 
 
 def off(port):
@@ -103,7 +107,7 @@ def run(port, name, sets, seconds, **kw):
     if vs:
         print("   battery on the board: %.2f .. %.2f V (min %.2f V per cell on 6S)" % (min(vs), max(vs), min(vs) / 6), flush=True)
     spin = [r for r in rows if r.get("bad") and r["motors"][0] > 1050 and r["ms_state"] > 500]
-    if spin:
+    if spin and not DRY:
         # alive = RPM or the ESC's own voltage in the telemetry (TX wire), or good bidirectional DShot frames
         answering = [r for r in spin if (r["rpm"] and r["rpm"][0] > 0) or (r["escv"] and r["escv"][0] > 1) or (BIDIR and r["bad"][0] < 50)]
         print("   ESC answers in %d/%d spinning samples, rpm %s" % (len(answering), len(spin), sorted({r["rpm"][0] for r in spin})[-3:]), flush=True)
@@ -144,19 +148,23 @@ def c_throttle(p):
     rpm_at = {}
     for thr in (10, 25, 40):
         rows = run(p, "throttle %d %%" % thr, ["autostart_throttle = %d" % thr, "autostart_run_time = 5"], 14, stop_when=lambda x, r: x["state"] == 4)
-        steady = [r for r in rows if r["state"] == 3 and r["ms_state"] > 1500]
+        steady = [r for r in rows if r["state"] == 3 and 1500 < r["ms_state"] < 5000 - 300]   # run time 5 s
         outs = sorted({r["motors"][0] for r in steady})
+        for r in steady:
+            if r["motors"][0] != 1000 + 10 * thr:
+                print("   off-value sample: state %s, %d ms in state, outputs %s, uptime %.1f s" % (STATE[r["state"]], r["ms_state"], r["motors"][:4], r["up"]))
         rpm = sorted(r["rpm"][0] for r in steady if r.get("rpm"))
         rpm_at[thr] = rpm[len(rpm) // 2] if rpm else 0
         print("   output %s, median rpm %s" % (outs, rpm_at[thr]))
         check(outs == [1000 + 10 * thr], "throttle %d %%: output %d us exactly" % (thr, 1000 + 10 * thr))
-    check(0 < rpm_at[10] < rpm_at[25] < rpm_at[40], "RPM rises with throttle: %s" % rpm_at)
+    if not DRY:
+        check(0 < rpm_at[10] < rpm_at[25] < rpm_at[40], "RPM rises with throttle: %s" % rpm_at)
 
 
 def c_limit(p):
     rows = run(p, "limit 20 below throttle 30", ["autostart_throttle = 30", "autostart_throttle_limit = 20", "autostart_run_time = 5"], 14,
                stop_when=lambda x, r: x["state"] == 4)
-    outs = {r["motors"][0] for r in rows if r["state"] == 3 and r["ms_state"] > 300}
+    outs = {r["motors"][0] for r in rows if r["state"] == 3 and 300 < r["ms_state"] < 5000 - 300}
     check(outs == {1200}, "limit 20 %%: steady output 1200 (got %s)" % sorted(outs))
     rows = run(p, "gusts capped by limit 25", ["autostart_pattern = GUSTS", "autostart_throttle = 15", "autostart_throttle_limit = 25",
                "autostart_gust_min = 60", "autostart_gust_max = 90", "autostart_gust_len_min = 300", "autostart_gust_len_max = 500",
@@ -193,7 +201,8 @@ def c_gusts(p):
     check(peaks and all(1395 <= x <= 1605 for x in peaks), "gust peaks within 40-60 %% (1400-1600 us)")
     check(lens and all(0.3 - tol <= x <= 0.5 + tol for x in lens), "gust lengths within 0.3-0.5 s (+- %.2f)" % tol)
     check(pauses and all(0.5 - tol <= x <= 1.0 + tol for x in pauses), "pauses within 0.5-1.0 s (+- %.2f)" % tol)
-    # a sample reads the state and the outputs with two requests: skip samples next to a phase/gust edge
+    # a sample reads the state and the outputs with two requests (debug first, motors ~1 ms later): skip
+    # samples next to a phase/gust edge; the steady checks above skip 300 ms at both ends of RUN for the same reason
     base = {r["motors"][0] for i, r in enumerate(run_rows) if not r["flags"] & 16 and r["ms_state"] > 300
             and 0 < i < len(run_rows) - 1 and not run_rows[i - 1]["flags"] & 16 and not run_rows[i + 1]["flags"] & 16}
     check(base == {1150}, "between gusts exactly the base 1150 (seen %s)" % sorted(base)[:6])
@@ -201,7 +210,7 @@ def c_gusts(p):
 
 def c_mask(p):
     rows = run(p, "motor mask = motor 2 only", ["autostart_motors = 2", "autostart_run_time = 4"], 12, stop_when=lambda x, r: x["state"] == 4)
-    runr = [r for r in rows if r["state"] == 3 and r["ms_state"] > 300]
+    runr = [r for r in rows if r["state"] == 3 and 300 < r["ms_state"] < 4000 - 300]
     print("   motor 1 values %s, motor 2 values %s" % (sorted({r["motors"][0] for r in runr}), sorted({r["motors"][1] for r in runr})))
     check(runr and all(r["motors"][0] == 1000 for r in runr), "mask 2: motor 1 stays at 1000")
     check(runr and all(r["motors"][1] == 1150 for r in runr), "mask 2: motor 2 gets 1150")
@@ -214,6 +223,9 @@ def c_inhibit(p):
 
 
 def c_vbatmin(p):
+    if DRY:
+        print("\nbattery threshold: skipped without a battery", flush=True)
+        return
     rows = run(p, "battery threshold 30.0 V above the pack", ["autostart_vbat_min = 300"], 10)
     check(all(r["motors"][0] == 1000 for r in rows) and not any(r["flags"] & 8 for r in rows[3:]), "vbat_min 30 V: no battery seen, nothing starts")
 
@@ -344,12 +356,13 @@ def c_persist(p):
 
 def c_soak(p):
     rows = run(p, "45 s soak at 15 %", ["autostart_run_time = 45", "autostart_ramp = 20"], 55, stop_when=lambda x, r: x["state"] == 4)
-    runr = [r for r in rows if r["state"] == 3 and r["ms_state"] > 300]
+    runr = [r for r in rows if r["state"] == 3 and 300 < r["ms_state"] < 45000 - 300]
     outs = {r["motors"][0] for r in runr}
     rpm = [r["rpm"][0] for r in runr if r.get("rpm") and r["ms_state"] > 2000]
     print("   output %s, rpm min %s max %s" % (sorted(outs), min(rpm) if rpm else None, max(rpm) if rpm else None))
     check(outs == {1150}, "soak: output steady at 1150 for 45 s")
-    check(rpm and max(rpm) - min(rpm) < 0.05 * max(rpm), "soak: RPM within 5 %")
+    if not DRY:
+        check(rpm and max(rpm) - min(rpm) < 0.05 * max(rpm), "soak: RPM within 5 %")
     check(edge_time(rows, 4) is not None and abs(edge_time(rows, 4) - edge_time(rows, 3) - 45) <= 0.3, "soak: DONE after 45.0 s +-0.3")
 
 
@@ -382,13 +395,22 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("port")
     ap.add_argument("--only", default=",".join(CASES))
+    ap.add_argument("--dry-run", action="store_true", help="USB only, no battery: vbat gate off, no RPM/ESC checks")
     ap.add_argument("--gust-max", type=int, default=60, help="strongest gust in the gust cases (%%); a weak pack sags hard")
     a = ap.parse_args()
-    global BIDIR
+    global BIDIR, DRY
+    DRY = a.dry_run
+    keep_file = __file__.rsplit(".", 1)[0] + ".keep.json"     # survives an interrupted run
     keep_txt = cli(a.port, ["get " + k for k in KEYS] + ["get dshot_bidir", "exit"])
     BIDIR = "dshot_bidir = ON" in keep_txt
     print("dshot_bidir:", "ON" if BIDIR else "OFF (ESC alive = RPM or ESC voltage over the TX wire)", flush=True)
-    keep = {l.split(" = ")[0].strip(): l.split(" = ")[1].strip() for l in keep_txt.splitlines() if " = " in l}
+    keep = {l.split(" = ")[0].strip(): l.split(" = ")[1].strip() for l in keep_txt.splitlines()
+            if " = " in l and l.split(" = ")[0].strip() in KEYS}
+    if os.path.exists(keep_file):
+        keep = json.load(open(keep_file))
+        print("an earlier run was interrupted: restoring its saved settings at the end:", keep, flush=True)
+    else:
+        json.dump(keep, open(keep_file, "w"))
     print("board now:", keep, flush=True)
     try:
         for name in a.only.split(","):
@@ -404,6 +426,10 @@ def main():
     finally:
         cli(a.port, ["set %s = %s" % kv for kv in keep.items()] + ["set autostart_mode = OFF", "save"], wait=4)
         print("\nrestored the board's settings, autostart_mode = OFF", flush=True)
+        try:
+            os.remove(keep_file)
+        except OSError:
+            pass
     fails = [w for ok, w in RESULTS if not ok]
     print("\n%d checks, %d failed" % (len(RESULTS), len(fails)))
     for w in fails:

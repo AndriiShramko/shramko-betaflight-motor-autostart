@@ -54,7 +54,7 @@
   "tool.live.cutoff": "cut-off {v} V",
   "tool.live.noBattery": "No battery (USB power only)",
   "tool.live.rpm": "Motor speed",
-  "tool.live.rpmValue": "{rpm} rpm · output {n} · {bad} % bad frames",
+  "tool.live.rpmValue": "output {n} · {bad} % bad frames",
   "tool.live.noEsc": "No answer from an ESC on any output",
   "tool.live.noTelemetry": "Not available: bidirectional DShot (dshot_bidir) is off on this board",
   "tool.live.chart": "Throttle over the last 60 s",

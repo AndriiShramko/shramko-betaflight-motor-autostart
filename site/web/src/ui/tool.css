@@ -105,7 +105,10 @@
 
 .st-group, .st-adv { border: 1px solid var(--st-line); border-radius: 10px; padding: 12px 14px; margin: 0 0 14px; min-width: 0; }
 .st-group legend { color: var(--st-accent); font-weight: 700; padding: 0 6px; }
-.st-adv summary { cursor: pointer; font-weight: 700; color: var(--st-accent); min-height: 44px; display: flex; align-items: center; }
+.st-adv summary { cursor: pointer; font-weight: 700; color: var(--st-accent); min-height: 44px; display: flex; align-items: center; gap: 8px; list-style: none; }
+.st-adv summary::-webkit-details-marker { display: none; }
+.st-adv summary::before { content: "▸"; display: inline-block; transition: transform .15s; }
+.st-adv[open] summary::before { transform: rotate(90deg); }
 .st-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px 18px; margin-top: 6px; }
 .st-field { min-width: 0; padding-left: 10px; border-left: 2px solid transparent; }
 .st-field.st-changed { border-left-color: var(--st-accent2); }
@@ -156,5 +159,5 @@
     .st-grid { grid-template-columns: minmax(0, 1fr); }
 }
 @media (prefers-reduced-motion: reduce) {
-    .st-fill { transition: none; }
+    .st-fill, .st-adv summary::before { transition: none; }
 }

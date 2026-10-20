@@ -108,6 +108,24 @@
   </ul>
 </section>
 
+<!-- the reel R01 (37 s, 9:16): plays only on a click, never by itself; the VideoObject JSON-LD (gen-pages.mjs) names the same files -->
+<section id="video" class="section video" aria-labelledby="video-title">
+  <h2 id="video-title">{{video.title}}</h2>
+  <div class="video-grid">
+    <figure class="video-fig">
+      <video controls playsinline preload="none" poster="/video/ma-r01-poster.webp" width="360" height="640" aria-describedby="video-r01-cap"><source src="/video/ma-r01-720.mp4" type="video/mp4"></video>
+      <figcaption id="video-r01-cap" class="small muted">{{video.r01cap}}</figcaption>
+    </figure>
+    <div class="video-text">
+      <p class="video-lead">{{video.lead}}</p>
+      <ul class="video-points">{{video.points_html}}</ul>
+      <details class="fold" id="video-transcript"><summary>{{video.transcript}}</summary>{{video.transcript_html}}</details>
+      <p class="small muted">{{video.ai}}</p>
+      <a class="btn primary" href="#install">{{video.cta}}</a>
+    </div>
+  </div>
+</section>
+
 <section id="install" class="section install" aria-labelledby="install-title">
   <div class="sec-head">
     <h2 id="install-title"><span class="step-no">{{install.step}}</span> {{install.title}}</h2>
@@ -147,7 +165,7 @@
   <p>{{wiring.lead}}</p>
   <ol class="joints">{{wiring.joints_html}}</ol>
   <figure class="diagram">
-    <a class="diagram-link" href="/img/wiring-{{lang}}.svg" target="_blank" rel="noopener"><img src="/img/wiring-{{lang}}.svg" width="1600" height="1050" alt="{{wiring.alt}}" loading="lazy" decoding="async"></a>
+    <a class="diagram-link" href="/img/wiring-{{lang}}.svg" target="_blank" rel="noopener"><img src="/img/wiring-{{lang}}.svg" width="{{wiringW}}" height="{{wiringH}}" alt="{{wiring.alt}}" loading="lazy" decoding="async"></a>
     <figcaption class="muted small"><a href="/img/wiring-{{lang}}.svg" target="_blank" rel="noopener">{{wiring.full}}</a> · {{wiring.caption_html}}</figcaption>
   </figure>
   <ul class="notes">{{wiring.notes_html}}</ul>
@@ -229,7 +247,7 @@
   <h2 id="agent-title">{{agent.title}}</h2>
   <p>{{agent.p}}</p>
   <div class="row"><button type="button" class="btn" data-copy="agent-prompt">{{agent.copy}}</button></div>
-  <details class="fold prompt" id="agent-show"><summary>{{agent.show}}</summary><pre id="agent-prompt">{{agent.prompt}}</pre></details>
+  <details class="fold prompt" id="agent-show"><summary>{{agent.show}}</summary><pre id="agent-prompt" lang="en">{{agent.prompt}}</pre></details>
   <p class="small agent-links">{{agent.links_html}}</p>
 </section>
 

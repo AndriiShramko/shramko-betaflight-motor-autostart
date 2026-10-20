@@ -1,6 +1,6 @@
 // Feedback on every screen: Bug · Idea · Collaboration (→ the contact form), plus the lead form.
 
-import { sendLead, sendReport, track } from './api';
+import { ApiError, sendLead, sendReport, track } from './api';
 import { browserInfo, getLog, getRelease, onReportRequest, recentErrors, toolDiagnostics } from './diagnostics';
 import { lang, listFormat, t } from './i18n';
 
@@ -46,7 +46,8 @@ export const initFeedback = () => {
         if (prefill !== undefined) {
             form.querySelector<HTMLInputElement>('input[name=kind][value=bug]')!.checked = true;
             diag.checked = true;
-            if (!msg.value.trim()) msg.value = t('ui.errPrefill', { msg: prefill.substring(0, 300) });
+            // cut by characters, not UTF-16 units: half an emoji would make the report unreadable for the API
+            if (!msg.value.trim()) msg.value = t('ui.errPrefill', { msg: Array.from(prefill).slice(0, 300).join('') });
         }
         sync();
         if (!dlg.open) dlg.showModal();
@@ -62,7 +63,8 @@ export const initFeedback = () => {
     $('fb-to-contact').addEventListener('click', () => dlg.close());
 
     send.addEventListener('click', async () => {
-        const text = msg.value.trim();
+        // invisible control and format characters (U+200B …) are dropped by the API too: a message of only those is empty
+        const text = msg.value.replace(/[\p{Cf}]|(?![\n\t])\p{Cc}/gu, '').trim();
         if (!text) {
             status.textContent = t('ui.fbEmpty');
             msg.focus();
@@ -90,8 +92,10 @@ export const initFeedback = () => {
             });
             status.textContent = r?.id ? t('ui.fbOk', { id: r.id }) : t('ui.fbOkPlain');
             msg.value = '';
-        } catch {
-            status.textContent = t('ui.fbFail');
+        } catch (e) {
+            // a retry in a moment cannot fix every failure: say what can
+            const code = e instanceof ApiError ? e.status : 0;
+            status.textContent = t(code === 429 ? 'ui.fbTooMany' : code === 400 ? 'ui.fbBad' : 'ui.fbFail');
         } finally {
             send.disabled = false;
         }

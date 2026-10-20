@@ -1,7 +1,10 @@
-// Calibration from the ESC voltage, against the emulated board with a wrong scale (?mockScale=290, board reads 1.38x high):
+// Calibration from the ESC voltage, against the emulated board with a wrong scale (?mockScale=250, board reads 1.19x high;
+// a value the CLI accepts, 10–255) and live ESC telemetry (?mockEsc=bidir: the ESC answers at stop too):
 // Motor status must warn (outside every closed area), Change settings must open More settings by itself at the
 // calibration box, the box must show the disagreement and one click must propose a scale that brings the board to
-// the ESC's value. With a correct scale (negative control) there is no warning and the drawer stays closed.
+// the ESC's value. With a correct scale (negative control) there is no warning and the drawer stays closed. And the
+// real-hardware case of 2026-10-20: after a restart MSP keeps the ESC's LAST voltage over the TX wire (14.81 V on a 22.2 V
+// pack) until the motor turns — it must never warn, open the drawer or be offered for calibration.
 import { chromium } from 'playwright';
 import http from 'node:http';
 import fs from 'node:fs';
@@ -21,9 +24,15 @@ const port = server.address().port;
 const browser = await chromium.launch({ channel: 'chrome' }).catch(() => chromium.launch());
 let ok = true;
 const check = (cond, what) => { console.log(`  ${cond ? 'ok  ' : 'FAIL'} ${what}`); if (!cond) ok = false; };
-for (const [scale, expectWarn] of [['290', true], ['210', false]]) {
+const cases = [
+  ['250', true, 'mockEsc=bidir&mockScale=250'],
+  ['210', false, 'mockEsc=bidir&mockScale=210'],
+  // a stale ESC voltage: the TX wire, 14.81 V kept from before, the motor never turns here (a 60 s wait)
+  ['stale 14.81 V', false, 'mockEsc=sensor&mockEscVolts=14.81&mockSet=autostart_delay:60']
+];
+for (const [scale, expectWarn, q] of cases) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-  await page.goto(`http://127.0.0.1:${port}/en/?mock=1&mockSpeed=4&mockScale=${scale}`);
+  await page.goto(`http://127.0.0.1:${port}/en/?mock=1&mockSpeed=4&${q}`);
   await page.locator('#tool .st-connect .st-primary').click();
   await page.locator('#tool .st-live').waitFor({ state: 'visible', timeout: 10000 });
   await page.waitForTimeout(2500);
@@ -43,6 +52,9 @@ for (const [scale, expectWarn] of [['290', true], ['210', false]]) {
   const warn = await box.locator('.st-help.st-warn').count() > 0;
   console.log(`  "${hint}" warn=${warn}`);
   check(warn === expectWarn, `the calibration box ${expectWarn ? 'shows' : 'does not show'} a disagreement`);
+  const escButton = await box.locator('button', { hasText: /ESC/ }).isVisible();
+  check(escButton === expectWarn, `"Use the ESC's reading" ${expectWarn ? 'is offered' : 'is not offered'}`);
+  if (scale.startsWith('stale')) check(/not fresh yet/.test(hint), 'the box says the ESC voltage is not fresh yet');
   if (expectWarn) {
     await box.locator('button', { hasText: /ESC/ }).click();
     const msg = await box.locator('.st-fnote').innerText();

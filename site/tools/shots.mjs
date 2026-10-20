@@ -24,7 +24,7 @@ const dist = resolve(distArg ?? 'dist');
 const outDir = resolve(outArg ?? 'docs/wip/shots');
 mkdirSync(outDir, { recursive: true });
 
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml', '.map': 'application/json' };
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.txt': 'text/plain; charset=utf-8', '.xml': 'application/xml', '.map': 'application/json', '.mp4': 'video/mp4' };
 let server = null;
 let base = baseArg;
 if (!base) {
@@ -54,7 +54,7 @@ if (!base) {
 const problems = [];
 const notes = [];
 const fail = (s) => problems.push(s);
-const SECTION_ORDER = 'install tool wiring safety how support faq agent contact privacy';
+const SECTION_ORDER = 'video install tool wiring safety how support faq agent contact privacy';
 const EXPECTED_MISSING = /\/img\/wiring-(en|es|pl|ru)\.svg$/; // the lead adds the diagrams
 
 const browser = await chromium.launch({ channel: 'chrome' });
@@ -113,6 +113,48 @@ for (const lang of ['en', 'ru', 'es', 'pl']) {
         });
         if (JSON.stringify(ld.faq) !== JSON.stringify(ld.faqShown)) fail(`${name}: FAQPage JSON-LD (${ld.faq.length}) differs from the visible FAQ (${ld.faqShown.length})`);
         if (JSON.stringify(ld.how) !== JSON.stringify(ld.howShown)) fail(`${name}: HowTo JSON-LD ${JSON.stringify(ld.how)} differs from the visible steps ${JSON.stringify(ld.howShown)}`);
+        // the reel (#video): plays only on a click (no autoplay, no muted loop, nothing preloaded), 9:16 and never
+        // wider than 360 px, its caption tied to it; the VideoObject JSON-LD names the same two files
+        const vid = await page.evaluate(() => {
+            const v = document.querySelector('#video video');
+            if (!v) return null;
+            const r = v.getBoundingClientRect();
+            const vo = JSON.parse(document.querySelector('script[type="application/ld+json"]').textContent).find((x) => x['@type'] === 'VideoObject');
+            const cap = document.getElementById(v.getAttribute('aria-describedby') ?? '');
+            return {
+                autoplay: v.autoplay, loop: v.loop, muted: v.muted || v.defaultMuted, preload: v.preload, controls: v.controls, inline: v.playsInline,
+                w: Math.round(r.width), h: Math.round(r.height), src: v.querySelector('source')?.getAttribute('src'), poster: v.getAttribute('poster'),
+                cap: cap?.tagName === 'FIGCAPTION' && !!cap.textContent.trim(),
+                vo: vo ? { name: vo.name, content: vo.contentUrl, thumb: vo.thumbnailUrl, dur: vo.duration, date: vo.uploadDate, lang: vo.inLanguage } : null,
+                beforeInstall: !!document.querySelector('#video + #install')
+            };
+        });
+        if (!vid) fail(`${name}: no video in #video`);
+        else {
+            const SITE = 'https://autostart.flyreelstudio.eu';
+            if (vid.autoplay || vid.loop || vid.muted || vid.preload !== 'none' || !vid.controls || !vid.inline || !vid.cap) fail(`${name}: the reel's attributes ${JSON.stringify(vid)}`);
+            if (vid.w > 360 || Math.abs(vid.h / vid.w - 16 / 9) > 0.02) fail(`${name}: the reel is ${vid.w}×${vid.h} (want ≤ 360 px wide, 9:16)`);
+            if (!vid.vo || vid.vo.content !== `${SITE}${vid.src}` || vid.vo.thumb !== `${SITE}${vid.poster}` || vid.vo.dur !== 'PT37S' || vid.vo.date !== '2026-10-20' || vid.vo.lang !== 'en' || !vid.vo.name) fail(`${name}: VideoObject ${JSON.stringify(vid.vo)} vs ${vid.src} ${vid.poster}`);
+            if (!vid.beforeInstall) fail(`${name}: #video is not right before #install`);
+            notes.push(`${name}: reel ${vid.w}×${vid.h}, click to play (no autoplay/loop/preload), VideoObject ${vid.vo?.name}`);
+        }
+        if (name === 'en-1440') {
+            // the file itself is served and plays (real Chrome decodes H.264); nothing was fetched before the play
+            const res = await page.request.get(`${base}${vid?.src ?? '/video/ma-r01-720.mp4'}`);
+            const size = (await res.body()).length;
+            if (res.status() !== 200 || !/video\/mp4/.test(res.headers()['content-type'] ?? '') || size < 1_000_000) fail(`${name}: reel file ${res.status()} ${res.headers()['content-type']} ${size} B`);
+            const before = await page.evaluate(() => { const v = document.querySelector('#video video'); return { t: v.currentTime, paused: v.paused, readyState: v.readyState }; });
+            if (!before.paused || before.readyState !== 0) fail(`${name}: the reel loaded or started before anyone pressed play ${JSON.stringify(before)}`);
+            await page.locator('#video video').scrollIntoViewIfNeeded();
+            // the visitor's click on the player, then play() (headless Chrome has no click-to-play on the picture)
+            await page.locator('#video video').click();
+            await page.evaluate(() => { const v = document.querySelector('#video video'); if (v.paused) void v.play().catch(() => undefined); });
+            const played = await page.waitForFunction(() => document.querySelector('#video video').currentTime > 1, null, { timeout: 8000 }).then(() => true, () => false);
+            const vs = await page.evaluate(() => { const v = document.querySelector('#video video'); const s = { t: v.currentTime, w: v.videoWidth, h: v.videoHeight, d: v.duration, err: v.error?.code ?? null }; v.pause(); v.load(); return s; }); // load(): back to the poster for the screenshot
+            if (!played || vs.w !== 720 || vs.h !== 1280 || Math.abs(vs.d - 37.4) > 1) fail(`${name}: the reel does not play (${JSON.stringify(before)} → ${JSON.stringify(vs)})`);
+            else notes.push(`${name}: reel file ${(size / 1e6).toFixed(1)} MB video/mp4, nothing loaded before play; it plays (${vs.w}×${vs.h}, ${vs.d.toFixed(1)} s)`);
+            await page.evaluate(() => scrollTo(0, 0));
+        }
         if (vp.mobile) {
             // both hero buttons on the first phone screen (the chart comes after them)
             const ctaBottom = await page.evaluate(() => document.querySelector('.cta-row').getBoundingClientRect().bottom);
@@ -296,6 +338,34 @@ const settle = async (page) => {
     const others = await page.evaluate(() => [...document.querySelectorAll('#faq details[open]')].map((d) => d.id));
     if (others.join() !== 'faq-2') fail(`hash: other folds opened too: ${others.join()}`);
     else notes.push('hash: #faq-9 / #install-dfu / #how-tech on load, #agent-prompt by hashchange, #faq-2 by click open their fold and scroll there; nothing else opens; Copy copies the folded prompt');
+    await ctx.close();
+}
+
+// ---- a deep link BELOW the configurator lands where one above it lands (the mount changed the page's height
+//      after the first jump); Copy clicked twice within 1.5 s ends with its own label again, not "Copied"
+for (const [vp, lang] of [[{ width: 375, height: 812 }, 'ru'], [{ width: 1440, height: 900 }, 'en']]) {
+    const ctx = await browser.newContext({ viewport: vp });
+    await ctx.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: base });
+    const page = await ctx.newPage();
+    watch(page, `land-${lang}-${vp.width}`);
+    const topOf = async (path, id) => {
+        await page.goto(`${base}${path}`, { waitUntil: 'networkidle' });
+        await page.waitForTimeout(2500);
+        return page.evaluate((i) => Math.round(document.getElementById(i).getBoundingClientRect().top), id);
+    };
+    const above = await topOf(`/${lang}/#install-more`, 'install-more');
+    const below = await topOf(`/${lang}/#faq-5`, 'faq-5');
+    if (Math.abs(below - above) > 12) fail(`land ${lang} ${vp.width}: #faq-5 lands at ${below}px, #install-more at ${above}px`);
+    else notes.push(`land ${lang} ${vp.width}: #faq-5 at ${below}px = #install-more at ${above}px`);
+    await page.goto(`${base}/${lang}/`, { waitUntil: 'networkidle' });
+    const copy = page.locator('#agent button[data-copy]');
+    const label = (await copy.innerText()).trim();
+    await copy.click();
+    await page.waitForTimeout(200);
+    await copy.click();
+    await page.waitForTimeout(2200);
+    const after = (await copy.innerText()).trim();
+    if (after !== label) fail(`copy ${lang}: two quick clicks left the label "${after}" (was "${label}")`);
     await ctx.close();
 }
 

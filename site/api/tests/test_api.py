@@ -655,5 +655,65 @@ class Process(unittest.TestCase):
             self.assertNotIn("198.51.100.77", (Path(tmp) / "reports.jsonl").read_text(encoding="utf-8"))
 
 
+class Hardening(Api):
+    """Bodies the page (or a bot) can produce that once lost a report or dropped the connection."""
+
+    def test_lone_surrogate_is_stored_not_dropped(self):
+        # "hi \ud83d": half an emoji (a string cut by UTF-16 units); json.dumps escapes it, json.loads restores it
+        raw = b'{"kind": "bug", "message": "hi \\ud83d end", "t": 9000, "diagnosticsConsent": true,' \
+              b' "diagnostics": {"log": ["x \\udc00"], "errors": ["\\ud83d"]}}'
+        s, out = self.call("POST", "/api/report", raw)
+        self.assertEqual(s, 200, out)
+        rec = self.records()[-1]
+        self.assertEqual(rec["message"], "hi  end")  # the surrogate is gone, the text kept
+        # the report announced and its diagnostics written (both as valid UTF-8)
+        self.assertTrue(self.sent and self.sent[-1][1])
+        for f in self.diag_files():
+            f.read_text(encoding="utf-8")
+
+    def test_nan_time_is_bot_speed(self):
+        s, b = self.report(t="NaN")
+        self.assertEqual((s, b["delivered"]), (200, False))
+        self.assertTrue(self.records()[-1]["suspect"])
+        raw = b'{"kind": "idea", "message": "x", "t": NaN}'
+        self.assertEqual(self.call("POST", "/api/report", raw)[0], 200)
+        self.assertTrue(self.records()[-1]["suspect"])
+        lead = b'{"role": "maker", "email": "a@b.example", "consent": true, "t": Infinity}'
+        self.assertEqual(self.call("POST", "/api/lead", lead)[0], 200)
+        # negative control: a real time-to-submit is not suspect
+        self.assertFalse(self.report(t=9000)[1].get("suspect", False))
+        self.assertFalse(self.records()[-1]["suspect"])
+
+    def test_deep_nesting_is_400(self):
+        deep = b"[" * 100000 + b"]" * 100000
+        for path in ("/api/report", "/api/lead", "/api/e"):
+            body = deep if path == "/api/report" else (b"[" * 3000 + b"]" * 3000)
+            s, _ = self.call("POST", path, body)
+            self.assertIn(s, (400, 413), path)
+        self.assertEqual(self.call("GET", "/api/health")[0], 200, "the server still answers")
+
+    def test_head(self):
+        c = http.client.HTTPConnection("127.0.0.1", self.api.server_address[1], timeout=10)
+        c.request("HEAD", "/api/health")
+        r = c.getresponse()
+        self.assertEqual((r.status, r.read()), (200, b""))
+        c.close()
+        c = http.client.HTTPConnection("127.0.0.1", self.api.server_address[1], timeout=10)
+        c.request("HEAD", "/go/releases")
+        r = c.getresponse()
+        r.read()
+        self.assertEqual((r.status, r.getheader("Location")), (302, server.GO_TARGETS["releases"]))
+        c.close()
+        self.assertNotIn(server.utc_day(time.time()), server.S.events.days, "a HEAD is no click")
+
+    def test_error_announce_cap(self):
+        # one client sending many different errors: the first 5 an hour are announced, the rest stored only
+        got = [self.error(message=f"Error number {chr(65 + i)} failed")[1]["delivered"] for i in range(7)]
+        self.assertEqual(got, [True] * 5 + [False] * 2)
+        self.assertEqual(len([r for r in self.records() if r["kind"] == "error"]), 7)
+        # negative control: another client is announced
+        self.assertTrue(self.error(ip="198.51.100.99", message="Another client failed")[1]["delivered"])
+
+
 if __name__ == "__main__":
     unittest.main()

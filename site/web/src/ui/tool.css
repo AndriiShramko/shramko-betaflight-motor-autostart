@@ -64,6 +64,8 @@
 .st-status { font-weight: 600; margin: 6px 0; }
 .st-status:empty { display: none; }
 .st-phase-rebooting, .st-phase-reconnecting { color: var(--st-warn); }
+/* a Disconnect that left the board running its program, or the page that stopped waiting */
+.st-status.st-warn-text, .st-phase-closed { color: var(--st-warn); }
 .st-note { background: var(--st-bg2); border: 1px solid var(--st-line); border-radius: 10px; padding: 10px 12px; margin: 8px 0; font-size: .92rem; }
 .st-note p:last-child { margin-bottom: 0; }
 .st-note .st-row { margin: 6px 0; }
@@ -229,7 +231,7 @@
     padding: 6px 6px 6px 16px; border-radius: 999px;
     background: var(--st-card); border: 1px solid rgba(255, 107, 107, .55); box-shadow: 0 8px 26px rgba(0, 0, 0, .55);
 }
-.st-stopstate { flex: 1 1 auto; min-width: 0; display: flex; white-space: nowrap; font-weight: 600; font-variant-numeric: tabular-nums; }
+.st-stopstate { flex: 1 1 auto; min-width: 0; display: flex; gap: .35em; white-space: nowrap; font-weight: 600; font-variant-numeric: tabular-nums; }
 .st-stoptext { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .st-stoppct { flex: none; }
 .st-stoptext:empty, .st-stoppct:empty { display: none; }

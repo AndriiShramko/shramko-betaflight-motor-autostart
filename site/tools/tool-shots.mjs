@@ -24,7 +24,7 @@ const browser = await chromium.launch({ channel: 'chrome' }).catch(() => chromiu
 const errors = [];
 const query = process.env.SHOTS_QUERY || 'mock=1&mockSpeed=4';
 // every state the fixed STOP bar can show, per language: at 375 px only the words may be cut, never the Power %
-const BAR_KEYS = ['tool.state.0', 'tool.state.1', 'tool.state.2', 'tool.state.3', 'tool.state.4', 'tool.state.5', 'tool.state.unknown', 'tool.live.waitBattery', 'tool.live.waitButton', 'tool.live.paused', 'tool.live.stopped', 'tool.live.off', 'tool.live.usbHeld', 'tool.live.manual', 'tool.live.noAnswer'];
+const BAR_KEYS = ['tool.state.0', 'tool.state.1', 'tool.state.2', 'tool.state.3', 'tool.state.4', 'tool.state.5', 'tool.state.unknown', 'tool.live.waitBattery', 'tool.live.waitButton', 'tool.live.paused', 'tool.live.stopped', 'tool.live.held', 'tool.status.connecting', 'tool.live.off', 'tool.live.usbHeld', 'tool.live.manual', 'tool.live.noAnswer'];
 const toolStrings = lang => JSON.parse(fs.readFileSync(path.resolve('web/src/i18n', `tool.${lang}.json`), 'utf8'));
 const barCheck = async (page, name, lang) => {
   const words = BAR_KEYS.map(k => toolStrings(lang)[k]);

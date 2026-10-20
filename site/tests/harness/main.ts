@@ -31,3 +31,8 @@ import('../../web/src/ui/tool').then(m => {
     const handle = m.mountTool(document.getElementById('tool') as HTMLElement, t, locale);
     (window as unknown as { __tool: unknown }).__tool = handle;
 });
+// what a bug report from the page's Feedback dialog would carry (feedback.ts reads the same two functions)
+(window as unknown as { __diag: () => Promise<unknown> }).__diag = async () => {
+    const d = await import('../../web/src/ui/diagnostics');
+    return { tool: d.toolDiagnostics(), log: d.getLog() };
+};

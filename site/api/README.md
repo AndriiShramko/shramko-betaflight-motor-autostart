@@ -33,8 +33,9 @@ Telegram note went out; it is `false` for suspects, repeats, or when no bot toke
 ```
 
 - `kind`: `bug` or `idea` (typed by a person: `message` required, at most 2000 characters,
-  `contact` at most 200) or `error` (sent by the configurator itself when something fails: the
-  message is generated, no contact). `page`: `site` (the Feedback button) or `tool`.
+  `contact` at most 200) or `error` (sent by a page's own code when something fails: the message
+  is generated, no contact; the autostart configurator does not send these yet, its errors reach
+  a bug report through the Feedback button's technical details). `page`: `site` (the Feedback button) or `tool`.
 - `page`, `stage`: slugs `[a-z0-9][a-z0-9_.-]{0,39}`; `lang` (or `locale`): `en`, `pt-BR`...;
   `release`: `[0-9A-Za-z._-]{1,40}`. Anything else is stored as empty.
 - Spam: a non-empty honeypot `website` makes any report a suspect; for `bug` and `idea` so does a
@@ -90,8 +91,12 @@ Only daily totals are kept (at most 32 distinct values per event and day, the re
 
 ## Rate limits and the client address
 
-Per client: reports 10/h (bug + idea), errors 20/h, all report requests 40/h (checked before the
-body is read), leads 8/h, events 600/h, /go/ counts 300/h. Global caps: reports 300/h, errors 1000/h, report
+Per client: reports 10/h (bug + idea), errors 20/h (of them at most 5/h announced to Telegram, the rest
+stored only: errors skip the time-to-submit check), all report requests 40/h (checked before the
+body is read), leads 8/h, events 600/h, /go/ counts 300/h. A time-to-submit `t` that is not a finite
+number (`"NaN"`, `NaN`, `Infinity`) counts as 0 ms, i.e. bot speed. A body nested too deep, or text
+that cannot be stored as UTF-8, is answered 400 (lone UTF-16 surrogates are dropped from the text).
+`HEAD` works like `GET` without a body (`/api/health`, `/go/…`; a HEAD is not counted as a click). Global caps: reports 300/h, errors 1000/h, report
 requests 2000/h, leads 100/h, events 60000/h, /go/ counts 30000/h.
 
 The client is taken from `X-Real-IP`, else the **last** `X-Forwarded-For` entry, else the socket

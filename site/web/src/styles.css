@@ -158,6 +158,18 @@ fieldset { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14p
 legend { color: var(--accent); font-weight: 700; padding: 0 6px; }
 table { border-collapse: collapse; width: 100%; }
 
+/* ---------- the reel (9:16, never wider than 360 px; the text beside it, under it below 760 px) */
+.video-grid { display: grid; grid-template-columns: minmax(0, 360px) minmax(0, 1fr); gap: 20px 36px; align-items: start; }
+.video-fig { margin: 0; min-width: 0; }
+.video-fig video { display: block; width: 100%; max-width: 360px; height: auto; aspect-ratio: 9 / 16; border-radius: var(--radius); background: #000; border: 1px solid var(--line); }
+.video-fig figcaption { margin-top: 8px; max-width: 360px; }
+.video-text { min-width: 0; }
+.video-lead { font-size: 1.08rem; color: var(--text2); }
+.video-points { padding-left: 1.1em; margin: 0 0 14px; }
+.video-points li { margin-bottom: .45em; }
+.video-text .fold { margin: 0 0 12px; }
+.video-text .fold p { color: var(--text2); }
+
 /* ---------- configurator mount */
 .tool { margin: 12px 0 56px; padding: clamp(18px, 3vw, 28px); border: 1px solid var(--line2); border-radius: calc(var(--radius) + 4px); background: linear-gradient(180deg, rgba(61, 220, 151, .05), rgba(61, 220, 151, 0) 220px), var(--bg2); }
 .tool > h2 { margin-bottom: .3em; }
@@ -300,6 +312,8 @@ html.sma-connected { scroll-padding-bottom: calc(var(--sma-stop-h, 64px) + 28px)
     .flow h3 { margin: 0 0 .4em; }
 }
 @media (max-width: 760px) {
+    .video-grid { grid-template-columns: minmax(0, 1fr); }
+    .video-fig { justify-self: center; width: 100%; max-width: 360px; }
     .nav { display: none; }
     .menu { display: block; margin-left: auto; }
     /* one row: brand … Menu EN ES PL RU; two rows: brand … Menu, then the languages on the right */

@@ -94,7 +94,10 @@ test('zero-click default path: connect shows the factory program and "you are do
     assert.equal(await moreOpen(page), false, 'More settings stays closed for a board at the defaults');
     await page.locator('.st-live').getByText(/6S · stops at 19\.8 V/).waitFor({ timeout: 5000 });
     assert.match(await page.locator('.st-state').innerText(), /Paused while settings are open/);
-    assert.match((await page.locator('.st-stopstate').textContent()) ?? '', /Paused while settings are open · 0 %/);
+    assert.match((await page.locator('.st-stopstate').textContent()) ?? '', /Paused while settings are open\s*· 0 %/);
+    // K3: the state words and the Power % are separate flex items: a visible gap between them, never "open· 0 %"
+    const gap = await page.evaluate(() => document.querySelector('.st-stoppct')!.getBoundingClientRect().left - document.querySelector('.st-stoptext')!.getBoundingClientRect().right);
+    assert.ok(gap >= 3, `gap ${gap}px`);
     assert.deepEqual(errors, []);
     await page.close();
 });
@@ -400,7 +403,7 @@ test('STOP right after Save (the CLI is being opened): the save succeeds, no fal
 });
 
 test('firmware 1.0 with a wrong voltage scale: Calibrate opens the helper in More settings → Battery, the ESC button sets vbat_scale', async () => {
-    const { page, errors } = await open('mock=1&mockReboot=150&mockFw=1.0&mockScale=180');
+    const { page, errors } = await open('mock=1&mockReboot=150&mockFw=1.0&mockScale=180&mockEsc=bidir');
     await connect(page);
     await page.locator('.st-live').getByText(/the ESC measures 24[.,]\d+ V/).waitFor({ timeout: 5000 });
     await page.locator('.st-live').getByRole('button', { name: 'Calibrate' }).first().click();
@@ -466,11 +469,19 @@ test('sma:board tells the page about the board; the STOP bar reserves room at th
     assert.deepEqual({ ...(await lastEv()), phase: undefined }, { connected: true, module: true, phase: undefined });
     const space = await page.evaluate(() => ({ cls: document.documentElement.classList.contains('sma-connected'), pad: parseFloat(getComputedStyle(document.body).paddingBottom), bar: document.querySelector('.st-stopbar')!.getBoundingClientRect().height }));
     assert.ok(space.cls && space.bar >= 44 && Math.abs(space.pad - (space.bar + 12)) <= 1, JSON.stringify(space));
+    // the board counts down (DELAY): Disconnect says the motor starts soon, not "keeps its program for later"
+    await page.locator('.st-state[data-state="1"]').waitFor({ timeout: 5000 });
     await page.getByRole('button', { name: 'Disconnect' }).click();
     await page.waitForFunction(() => !(window as unknown as { __board: { connected: boolean }[] }).__board.at(-1)!.connected);
     assert.equal(await page.evaluate(() => document.documentElement.classList.contains('sma-connected')), false);
     assert.equal(await page.evaluate(() => document.body.style.paddingBottom), '');
-    assert.match(await page.locator('.st-status').innerText(), /Disconnected\. The board keeps its program/);
+    assert.match(await page.locator('.st-status').innerText(), /Disconnected during the countdown: the motor starts soon\. To stop it, unplug the battery/);
+    // negative control: STOP first (held), then Disconnect → the plain text
+    await connect(page);
+    await page.getByRole('button', { name: 'STOP motor' }).click();
+    await page.locator('.st-state').filter({ hasText: 'Stopped with STOP' }).waitFor({ timeout: 5000 });
+    await page.getByRole('button', { name: 'Disconnect' }).click();
+    await page.locator('.st-status').filter({ hasText: /Disconnected\. The board keeps its program/ }).waitFor({ timeout: 5000 });
     // a stock build: connected, but no module
     const stock = await open('mock=1&mockFw=stock');
     await connect(stock.page);
@@ -547,7 +558,7 @@ test('negative control: the board never comes back after saving → a clear time
 });
 
 test('miscalibrated board: Motor status says so, More settings opens at the calibration, the scale is saved and verified', async () => {
-    const { page } = await open('mock=1&mockReboot=200&mockScale=120');
+    const { page } = await open('mock=1&mockReboot=200&mockScale=120&mockEsc=bidir');
     await connect(page);
     await page.locator('.st-live').getByText(/doesn’t fit the battery/).waitFor({ timeout: 5000 });
     await page.locator('.st-live').getByText(/the ESC measures 24[.,]\d+ V/).waitFor({ timeout: 5000 });
@@ -636,4 +647,667 @@ test('Polish page: the tool speaks Polish', async () => {
     await p.locator('.st-connect h3').waitFor();
     assert.equal(await p.locator('.st-connect h3').innerText(), 'Krok 2 · Podłącz płytkę');
     await p.close();
+});
+
+// ---------- the fixes of 2026-10-20 (real-hardware facts, the adversarial review): each with a negative control ----------
+
+type Mocks = { __mocks?: { unplug(ms?: number): void; boot(): void; mspLog: number[]; opts: Record<string, unknown>; reboots: number }[] };
+const saveMsg = (page: Page) => page.locator('.st-actions > .st-msg');
+const liveSub = (page: Page) => page.locator('.st-livemore .st-meter .st-small').first();
+const openLiveMore = (page: Page) => page.locator('details.st-livemore').evaluate(d => ((d as HTMLDetailsElement).open = true));
+
+test('K1: an edit after "Saved and checked" (or Undo) clears the old result and its Run now; the calibration result goes with Undo', async () => {
+    const { page, errors } = await open('mock=1&mockReboot=300');
+    await connectAndRead(page);
+    await question(page, 'autostart_delay').getByText('30 s', { exact: true }).click();
+    await page.getByRole('button', { name: 'Save to board' }).click();
+    await page.locator('.st-msg[data-result="saved"]').waitFor({ timeout: 20000 });
+    assert.ok(await saveMsg(page).getByRole('button', { name: 'Run now…' }).isVisible());
+    await question(page, 'autostart_throttle').getByText('50 %', { exact: true }).click();
+    assert.equal((await saveMsg(page).innerText()).trim(), '', 'the old result is gone');
+    assert.equal(await saveMsg(page).getByRole('button', { name: 'Run now…' }).count(), 0);
+    await page.getByRole('button', { name: 'Undo changes' }).click();
+    assert.match(await saveMsg(page).innerText(), /Changes undone/);
+    await question(page, 'autostart_throttle').getByText('80 %', { exact: true }).click();
+    assert.equal((await saveMsg(page).innerText()).trim(), '', 'the Undo note is gone with the next edit');
+    // negative control: a result with no edit after it stays
+    await page.getByRole('button', { name: 'Undo changes' }).click();
+    await page.waitForTimeout(300);
+    assert.match(await saveMsg(page).innerText(), /Changes undone/);
+    // calibration: the same scale says so; a new one is forgotten by Undo
+    await openMore(page);
+    const cal = page.getByRole('textbox', { name: 'Your multimeter shows, volts', exact: true });
+    await cal.fill('24.4');
+    await cal.press('Enter');
+    assert.match(await page.locator('.st-cal').innerText(), /The scale already matches \(210\)/);
+    await cal.fill('26');
+    await cal.press('Enter');
+    assert.match(await page.locator('.st-cal').innerText(), /New scale 224 \(was 210\)/);
+    await page.getByRole('button', { name: 'Undo changes' }).click();
+    assert.doesNotMatch(await page.locator('.st-cal').innerText(), /New scale/);
+    assert.equal(await value(page, 'vbat_scale'), '210');
+    assert.deepEqual(errors, []);
+    await page.close();
+});
+
+test('K2: Battery 8S on a 24.4 V pack is below its stop voltage — never "fits", never a green "Protected"; Use 6S fixes it', async () => {
+    const { page } = await open('mock=1&mockReboot=200&mockSpeed=4');
+    await connectAndRead(page);
+    const battery = question(page, 'autostart_cells');
+    await battery.locator('label.st-chip', { hasText: /^8S$/ }).click();
+    await battery.getByText(/24\.4 V is below the stop voltage 26\.4 V of 8S: the motor would stop at once/).waitFor({ timeout: 5000 });
+    assert.doesNotMatch(await battery.innerText(), /fits 8S/);
+    assert.equal(await battery.locator('.st-qline.st-tone-ok').count(), 0, 'no green protection line');
+    assert.equal(await battery.locator('.st-qline.st-tone-bad').count(), 1);
+    await battery.getByRole('button', { name: 'Use 6S' }).click();
+    await battery.getByText('24.4 V fits 6S').waitFor();
+    assert.equal(await battery.locator('.st-qline.st-tone-ok').count(), 1, 'negative control: 6S is green');
+    // a 6S pack at 19.0 V is below 19.8 V too; Motor status says so after the read
+    const low = await open('mock=1&mockReboot=200&mockSpeed=4&mockVolts=19.0');
+    await connectAndRead(low.page);
+    await question(low.page, 'autostart_cells').getByText(/19\.0 V is below the stop voltage 19\.8 V of 6S/).waitFor({ timeout: 5000 });
+    await low.page.locator('.st-live .st-warns').getByText(/19\.0 V is below the stop voltage 19\.8 V \(6S\): the motor stops at once/).waitFor({ timeout: 5000 });
+    await low.page.close();
+    await page.close();
+});
+
+test('K8.1: a stale ESC voltage after a restart (TX wire, 14.81 V kept by MSP) is never warned about, auto-opened or offered; once the motor turned it is used', async () => {
+    // correct scale: nothing to warn about before or after the motor turned
+    const { page, errors } = await open('mock=1&mockReboot=300&mockSpeed=4&mockEsc=sensor&mockEscVolts=14.81');
+    await connect(page);
+    await openLiveMore(page);
+    await liveSub(page).getByText(/ESC last sent 14\.81 V \(old reading\)/).waitFor({ timeout: 5000 });
+    await page.waitForTimeout(800);
+    assert.doesNotMatch(await page.locator('.st-live .st-warns').innerText(), /ESC measures/, 'no mismatch warning from an old value');
+    // the motor turns (10 s wait at 4×): the ESC sends live values now — the same as the board
+    await page.locator('.st-state[data-state="2"], .st-state[data-state="3"]').first().waitFor({ timeout: 10000 });
+    await liveSub(page).getByText(/ESC measures 24\.\d\d V/).waitFor({ timeout: 5000 });
+    assert.doesNotMatch(await page.locator('.st-live .st-warns').innerText(), /ESC measures/);
+    assert.deepEqual(errors, []);
+    await page.close();
+    // the same with a board that reads high: no warning from the stale value, the real one warns (stop too late)
+    const hi = await open('mock=1&mockReboot=300&mockSpeed=4&mockEsc=sensor&mockEscVolts=14.81&mockScale=250');
+    await connect(hi.page);
+    await hi.page.waitForTimeout(1500);
+    assert.doesNotMatch(await hi.page.locator('.st-live .st-warns').innerText(), /ESC measures/, 'stale: never');
+    await hi.page.locator('.st-live .st-warns').getByText(/the ESC measures 24\.\d\d V .* the board reads high, so the battery stop comes too late/).waitFor({ timeout: 12000 });
+    await hi.page.close();
+});
+
+test('C02: a slipped decimal point in the multimeter box is refused (244, 2.44); a real reading is used', async () => {
+    const { page } = await open('mock=1&mockReboot=200&mockScale=200');
+    await connectAndRead(page);
+    await openMore(page);
+    const cal = page.getByRole('textbox', { name: 'Your multimeter shows, volts', exact: true });
+    for (const typo of ['244', '2.44']) {
+        await cal.fill(typo);
+        await cal.press('Enter');
+        assert.match(await page.locator('.st-cal').innerText(), /doesn’t fit 6S\. 24\.4 or 2\.44\? A 6S pack reads 15\.0–26\.7 V\. Nothing changed/, typo);
+        assert.equal(await value(page, 'vbat_scale'), '200', `${typo}: the scale is untouched`);
+    }
+    assert.deepEqual(await changeKeys(page), []);
+    await cal.fill('24.4');
+    await cal.press('Enter');
+    assert.match(await page.locator('.st-cal').innerText(), /New scale 210 \(was 200\)/);
+    assert.deepEqual(await changeKeys(page), ['vbat_scale']);
+    await page.close();
+});
+
+test('K8.4: sparse TX-wire samples never flicker "No answer from an ESC"; no "bad frames" over the TX wire', async () => {
+    const { page } = await open('mock=1&mockReboot=300&mockSpeed=10&mockEsc=sensor&mockEscSparse=0.5');
+    await connect(page);
+    await openLiveMore(page);
+    await page.locator('.st-state[data-state="3"]').waitFor({ timeout: 10000 });
+    await liveSub(page).getByText(/output 1/).waitFor({ timeout: 5000 });
+    const seen = await page.evaluate(async () => {
+        const el = document.querySelector('.st-livemore .st-meter .st-small')!;
+        const out = new Set<string>();
+        for (let i = 0; i < 30; i++) {
+            out.add(el.textContent ?? '');
+            await new Promise(r => setTimeout(r, 100));
+        }
+        return [...out];
+    });
+    assert.ok(seen.every(t => /^output 1/.test(t)), JSON.stringify(seen));
+    assert.ok(!seen.some(t => /No answer|bad frames/.test(t)), JSON.stringify(seen));
+    await page.close();
+});
+
+test('K8.2: after Run the ESC only beeps (BLHeli_32 on the battery, dshot_bidir ON): Motor status says replug the battery; never without the lock', async () => {
+    for (const locked of [true, false]) {
+        const { page } = await open(`mock=1&mockReboot=300&mockSpeed=10&mockEsc=bidir${locked ? '&mockEscLocked=1' : ''}`);
+        await connect(page);
+        await page.locator('.st-state[data-state="3"]').waitFor({ timeout: 10000 });
+        await page.getByRole('button', { name: 'Run the program…' }).click();
+        await page.getByLabel('The propeller is off, or nothing and nobody is near it.').check();
+        await page.getByRole('button', { name: 'Run now', exact: true }).click();
+        await page.locator('.st-live .st-msg').getByText(/Motor only beeps and does not turn after a Save or Run\? Unplug the battery/).waitFor({ timeout: 10000 });
+        await page.locator('.st-state[data-state="3"]').waitFor({ timeout: 10000 });
+        const warn = page.locator('.st-live .st-warns').getByText(/The motor only beeps and does not turn\? Unplug the battery and plug it back in/);
+        if (locked) await warn.waitFor({ timeout: 8000 });
+        else {
+            await page.waitForTimeout(4500);
+            assert.equal(await warn.count(), 0, 'a turning ESC: no warning');
+        }
+        await page.close();
+    }
+});
+
+test('K8.3: no ESC telemetry wired: the advice puts the TX wire first and names the BLHeli_32 caveat of bidirectional DShot', async () => {
+    const { page } = await open('mock=1&mockReboot=200&mockEsc=none');
+    await connectAndRead(page);
+    await openLiveMore(page);
+    await liveSub(page).getByText(/connect the ESC’s TX pad to the cable’s yellow wire \(feature ESC_SENSOR\) — recommended\. Bidirectional DShot .* can lock with it: replug the battery/).waitFor({ timeout: 5000 });
+    await page.close();
+    // negative control: the TX wire is configured — the ESC just has not turned yet
+    const s = await open('mock=1&mockReboot=200&mockEsc=sensor&mockSet=autostart_delay:60');
+    await connectAndRead(s.page);
+    await openLiveMore(s.page);
+    await liveSub(s.page).getByText(/the ESC answers only after the motor has turned once/).waitFor({ timeout: 5000 });
+    assert.doesNotMatch(await liveSub(s.page).innerText(), /Bidirectional/);
+    await s.page.close();
+});
+
+test('C09: a run longer than 655 s keeps counting down after the firmware counter stops', async () => {
+    const { page } = await open('mock=1&mockReboot=300&mockSpeed=60&mockSet=autostart_run_time:1200');
+    // the countdown needs the saved run time: read, then run the program from the start
+    await connectAndRead(page);
+    await page.getByRole('button', { name: 'Run the program…' }).click();
+    await page.getByLabel('The propeller is off, or nothing and nobody is near it.').check();
+    await page.getByRole('button', { name: 'Run now', exact: true }).click();
+    await page.locator('.st-state[data-state="3"]').waitFor({ timeout: 10000 });
+    const left = async () => Number(/Stops in (\d+) s/.exec(await page.locator('.st-state-sub').innerText())?.[1] ?? NaN);
+    // past 655 s in RUN (60×: ~11 s), the counter stopped: the page counts on with the board's uptime
+    await page.waitForFunction(() => /Stops in ([1-4]\d\d) s/.test(document.querySelector('.st-state-sub')?.textContent ?? ''), null, { timeout: 20000 });
+    const a = await left();
+    await page.waitForTimeout(1500);
+    const b = await left();
+    assert.ok(a < 545 && b < a - 40, `the countdown moves on past 655 s: ${a} → ${b}`);
+    await page.close();
+});
+
+test('C15: firmware 1.0 ignores STOP in the countdown — the page notices, stops it through the CLI and never says "stays stopped until Run"', async () => {
+    const { page } = await open('mock=1&mockReboot=300&mockSpeed=4&mockFw=1.0&mockSet=autostart_delay:20');
+    await connect(page);
+    await page.locator('.st-state[data-state="1"]').waitFor({ timeout: 5000 });
+    await page.getByRole('button', { name: 'STOP motor' }).click();
+    await page.locator('.st-live .st-msg').getByText(/Stopped\. This firmware does not hold the program/).waitFor({ timeout: 8000 });
+    // the emulated countdown (20 s at 4× = 5 s) would have ramped by now if the stop had not taken
+    await page.waitForTimeout(5500);
+    assert.equal(await page.locator('.st-state').getAttribute('data-state'), '0');
+    assert.doesNotMatch(await page.locator('.st-live .st-msg').innerText(), /stays stopped until/);
+    await page.close();
+    // negative control: firmware 1.1 holds — "stays stopped until you press Run"
+    const v11 = await open('mock=1&mockReboot=300&mockSpeed=4');
+    await connect(v11.page);
+    await v11.page.locator('.st-state[data-state="1"]').waitFor({ timeout: 5000 });
+    await v11.page.getByRole('button', { name: 'STOP motor' }).click();
+    await v11.page.locator('.st-live .st-msg').getByText(/Stopped\. It stays stopped until you press Run the program/).waitFor({ timeout: 5000 });
+    await v11.page.close();
+});
+
+test('C13/C43: a double click on Connect makes one board; Disconnect while reconnecting, then Connect at once: the new session works', async () => {
+    const { page, errors } = await open('mock=1&mockReboot=300&mockSpeed=4');
+    await page.locator('.st-connect .st-primary').dblclick();
+    await page.locator('.st-conn').waitFor({ state: 'visible', timeout: 10000 });
+    await page.waitForTimeout(500);
+    assert.equal(await page.evaluate(() => (window as unknown as Mocks).__mocks!.length), 1, 'one emulated board');
+    await page.evaluate(() => (window as unknown as Mocks).__mocks!.at(-1)!.unplug(20000));
+    await page.locator('.st[data-phase="reconnecting"]').waitFor({ timeout: 5000 });
+    await page.evaluate(() => {
+        (document.querySelector('.st-connrow .st-ghost') as HTMLButtonElement).click(); // Disconnect
+        setTimeout(() => (document.querySelector('.st-connect .st-primary') as HTMLButtonElement).click(), 30); // Connect
+    });
+    await page.waitForTimeout(400);
+    // Connect waited for the Disconnect to finish; a second click now connects a new board
+    if (!(await page.locator('.st-conn').isVisible())) await page.locator('.st-connect .st-primary').click();
+    await page.locator('.st-conn').waitFor({ state: 'visible', timeout: 10000 });
+    await page.getByRole('button', { name: 'Disconnect' }).waitFor();
+    const s1 = await page.locator('.st-state').innerText();
+    await page.waitForFunction(old => document.querySelector('.st-state')?.textContent !== old || /Starts in/.test(document.querySelector('.st-state-sub')?.textContent ?? ''), s1, { timeout: 8000 });
+    assert.ok(await page.locator('.st-live').isVisible(), 'Motor status is shown and updates');
+    assert.deepEqual(errors, []);
+    await page.close();
+});
+
+test('C11: a CLI left open with unsaved values in RAM — Change settings shows the board’s saved program, not the half-written values', async () => {
+    const { page } = await open('mock=1&mockReboot=200&mockCliUnsaved=autostart_delay:45,autostart_throttle:60');
+    await connectAndRead(page);
+    assert.equal(await value(page, 'autostart_delay'), '10');
+    assert.equal(await value(page, 'autostart_throttle'), '15');
+    assert.match(await page.locator('.st-changes').innerText(), /Nothing changed/);
+    await page.close();
+});
+
+test('C16: a bug report carries the configurator state and its log', async () => {
+    const { page } = await open('mock=1&mockReboot=200');
+    await connect(page);
+    const d = (await page.evaluate(() => (window as unknown as { __diag: () => Promise<unknown> }).__diag())) as { tool: Record<string, unknown>; log: string[] };
+    assert.equal(d.tool.phase, 'ready');
+    assert.equal(d.tool.board, 'HGLRC_F405_S8');
+    assert.equal(d.tool.verdict, 'autostart');
+    assert.ok((d.tool.log as string[]).length > 0 && d.log.some(l => /tool phase: ready/.test(l)), JSON.stringify(d.log.slice(-5)));
+    await page.close();
+});
+
+test('C44: leaving the page with unsaved changes asks first; with none it does not', async () => {
+    const { page } = await open('mock=1&mockReboot=200');
+    await connectAndRead(page);
+    const asks = () =>
+        page.evaluate(() => {
+            const ev = new Event('beforeunload', { cancelable: true });
+            window.dispatchEvent(ev);
+            return ev.defaultPrevented;
+        });
+    assert.equal(await asks(), false, 'nothing unsaved: no question');
+    await question(page, 'autostart_delay').getByText('30 s', { exact: true }).click();
+    assert.equal(await asks(), true, 'unsaved: the page asks');
+    await page.getByRole('button', { name: 'Undo changes' }).click();
+    assert.equal(await asks(), false, 'negative control: undone, no question');
+    await page.close();
+});
+
+test('C45: the STOP bar is there while a board is being connected (its CLI was left open: a few seconds)', async () => {
+    const { page } = await open('mock=1&mockReboot=300&mockCliOpen=1');
+    await page.locator('.st-connect .st-primary').click();
+    await page.locator('.st[data-phase="connecting"] .st-stopbar:not([hidden])').waitFor({ timeout: 3000 });
+    assert.match(await page.locator('.st-stopstate').innerText(), /Connecting to the board/);
+    await page.locator('.st-conn').waitFor({ state: 'visible', timeout: 15000 });
+    await page.close();
+});
+
+test('held and finished states in words: an unknown hold, DONE while held, a mode OFF Run, a battery under "counts as plugged in from", the ESC wake, a cut-off of 1.00 V', async () => {
+    // a hold this page did not make (a reload, the Betaflight App): not "Stopped with STOP"
+    const held = await open('mock=1&mockReboot=200&mockHeld=1');
+    await connect(held.page);
+    await held.page.locator('.st-state').getByText('Held by the computer').waitFor({ timeout: 5000 });
+    await held.page.close();
+    // DONE, then Change settings: the board holds it in DONE — a battery replug alone does nothing now
+    const done = await open('mock=1&mockReboot=200&mockSpeed=20&mockSet=autostart_run_time:1');
+    await connect(done.page);
+    await done.page.locator('.st-state[data-state="4"]').waitFor({ timeout: 10000 });
+    assert.match(await done.page.locator('.st-state-sub').innerText(), /Press Run the program, or replug the battery/, 'not held yet');
+    await openSettings(done.page);
+    await done.page.locator('.st-state-sub').getByText(/Held by the computer: press Run the program/).waitFor({ timeout: 5000 });
+    await done.page.close();
+    // mode OFF: Run says nothing runs
+    const off = await open('mock=1&mockReboot=200&mockSet=autostart_mode:OFF');
+    await connectAndRead(off.page);
+    await off.page.getByRole('button', { name: 'Run the program…' }).click();
+    await off.page.getByLabel('The propeller is off, or nothing and nobody is near it.').check();
+    await off.page.getByRole('button', { name: 'Run now', exact: true }).click();
+    await off.page.locator('.st-live .st-msg').getByText('Board restarted. Autostart is off: nothing runs.').waitFor({ timeout: 10000 });
+    await off.page.close();
+    // a battery below "counts as plugged in from": never "Plug in the battery"; the field and the program say why
+    const vmin = await open('mock=1&mockReboot=200&mockSet=autostart_vbat_min:300');
+    await connectAndRead(vmin.page);
+    assert.match(await vmin.page.locator('.st-form > .st-program').innerText(), /Never: a 6S pack never reaches 30\.0 V/);
+    await openMore(vmin.page);
+    assert.match(await vmin.page.locator('.st [data-name="autostart_vbat_min"]').innerText(), /A 6S pack never reaches 30\.0 V/);
+    await vmin.page.getByRole('button', { name: 'Run the program…' }).click();
+    await vmin.page.getByLabel('The propeller is off, or nothing and nobody is near it.').check();
+    await vmin.page.getByRole('button', { name: 'Run now', exact: true }).click();
+    await vmin.page.locator('.st-state-sub').getByText(/The battery shows 24\.\d V, below “Battery counts as plugged in from” \(30\.0 V\)/).waitFor({ timeout: 10000 });
+    await vmin.page.close();
+    // a wait of 0 s: the ESC arms first
+    const zero = await open('mock=1&mockReboot=200&mockSet=autostart_delay:0');
+    await connectAndRead(zero.page); // the countdown needs the saved wait: read, then run from the start
+    await zero.page.getByRole('button', { name: 'Run the program…' }).click();
+    await zero.page.getByLabel('The propeller is off, or nothing and nobody is near it.').check();
+    await zero.page.getByRole('button', { name: 'Run now', exact: true }).click();
+    await zero.page.locator('.st-state-sub').getByText(/Starts in \d s \(the ESC arms first\)/).waitFor({ timeout: 5000 });
+    await zero.page.close();
+    // a cut-off of 1.00 V per cell: the firmware uses 2.50 V — the page says 15.0 V everywhere
+    const cut = await open('mock=1&mockReboot=200&mockSet=autostart_cell_cutoff:100');
+    await connectAndRead(cut.page);
+    await cut.page.locator('.st-live').getByText(/6S · stops at 15\.0 V/).waitFor({ timeout: 5000 });
+    await openMore(cut.page);
+    assert.match(await cut.page.locator('.st [data-name="autostart_cell_cutoff"]').innerText(), /the firmware uses 2\.50 V/);
+    await cut.page.getByRole('button', { name: 'Run the program…' }).click();
+    assert.match(await cut.page.locator('dialog[open]').innerText(), /below 15\.0 V \(6 × 2\.50 V\)/);
+    assert.doesNotMatch(await cut.page.locator('dialog[open]').innerText(), /1\.00 V/);
+    await cut.page.close();
+});
+
+test('drawer details: an unknown RC id, USER1 on this board, gusts raised to Power, no-gust note, swapped pair, 0.333 s, rounding and parse notes, "1 unsaved change", cells counted automatically', async () => {
+    const box = await open('mock=1&mockReboot=200&mockSet=autostart_box:0');
+    await connectAndRead(box.page);
+    const summary = await box.page.locator('details.st-more > summary').innerText();
+    assert.match(summary, /RC switch: id 0 \(ignored by the firmware\)/);
+    assert.doesNotMatch(summary, /USER-39/);
+    await openMore(box.page);
+    const sel = box.page.locator('.st [data-name="autostart_box"] select');
+    assert.match(await sel.locator('option[value="40"]').innerText(), /USER1 \(also switches PINIO1 — use USER3 or USER4\)/);
+    await sel.selectOption('40');
+    assert.match(await box.page.locator('.st [data-name="autostart_box"]').innerText(), /On this board USER1 also switches PINIO1/);
+    await sel.selectOption('42');
+    assert.doesNotMatch(await box.page.locator('.st [data-name="autostart_box"]').innerText(), /also switches PINIO1 \(another/, 'USER3: no warning');
+    await box.page.close();
+
+    const g = await open('mock=1&mockReboot=200&mockSet=autostart_pattern:GUSTS,autostart_throttle:30,autostart_gust_min:10');
+    await connectAndRead(g.page);
+    await openMore(g.page);
+    assert.match(await g.page.locator('#tool-more-gusts > legend').innerText(), /30–80 %/, 'the legend as the firmware runs it');
+    const strongest = g.page.getByRole('textbox', { name: 'Strongest gust, percent', exact: true });
+    await strongest.fill('5'); // below Weakest gust (10): the firmware swaps them
+    await strongest.press('Tab');
+    assert.match(await g.page.locator('.st [data-name="autostart_gust_max"]').innerText(), /Swapped so the smaller value comes first/);
+    assert.match(await g.page.locator('.st [data-name="autostart_gust_min"]').innerText(), /Swapped so the smaller value comes first/);
+    assert.match(await g.page.locator('.st [data-name="autostart_gust_max"]').innerText(), /No gust is above Power \(30 %\)/);
+    assert.match(await g.page.locator('.st-form > .st-program').innerText(), /no gust is above Power/);
+    const shortest = g.page.getByRole('textbox', { name: 'Shortest gust, seconds', exact: true });
+    await shortest.fill('0.333');
+    await shortest.press('Tab');
+    assert.equal(await shortest.inputValue(), '0.333');
+    assert.equal(await value(g.page, 'autostart_gust_len_min'), '333');
+    await question(g.page, 'autostart_delay').getByText('Other', { exact: true }).click();
+    const delay = g.page.getByLabel('Wait before start, seconds', { exact: true });
+    await delay.fill('3,3');
+    await delay.press('Tab');
+    assert.match(await question(g.page, 'autostart_delay').innerText(), /Rounded to 3 s/);
+    await delay.fill('12abc');
+    await delay.press('Tab');
+    assert.match(await question(g.page, 'autostart_delay').innerText(), /Not a number — set to 3 s/);
+    await g.page.close();
+
+    const one = await open('mock=1&mockReboot=200');
+    await connectAndRead(one.page);
+    await openMore(one.page);
+    const ramp = one.page.getByRole('textbox', { name: 'Speed-up time, seconds', exact: true });
+    await ramp.fill('5');
+    await ramp.press('Tab');
+    assert.match(await one.page.locator('details.st-more > summary').innerText(), /1 unsaved change inside/);
+    await one.page.close();
+
+    const auto = await open('mock=1&mockReboot=200&mockSet=autostart_cells:0');
+    await connectAndRead(auto.page);
+    assert.equal(await question(auto.page, 'autostart_cells').locator('input[value="other"]').isChecked(), false, 'counted automatically is not "Other"');
+    await auto.page.close();
+});
+
+test('STOP while the board is unplugged says "not connected" and is sent and confirmed when it is back; a STOP that fails says the motor may still run', async () => {
+    const { page } = await open('mock=1&mockReboot=200&mockSpeed=4');
+    await connect(page);
+    await page.evaluate(() => (window as unknown as Mocks).__mocks!.at(-1)!.unplug(1500));
+    await page.locator('.st[data-phase="reconnecting"]').waitFor({ timeout: 5000 });
+    await page.getByRole('button', { name: 'STOP motor' }).click();
+    assert.match(await page.locator('.st-live .st-msg').innerText(), /The board is not connected — the stop is sent the moment it is back/);
+    await page.locator('.st-live .st-msg').getByText(/Stopped\. It stays stopped until you press Run the program/).waitFor({ timeout: 10000 });
+    // the board stops answering: STOP cannot get through
+    await page.evaluate(() => ((window as unknown as Mocks).__mocks!.at(-1)!.opts.noAnswer = true));
+    await page.getByRole('button', { name: 'STOP motor' }).click();
+    await page.locator('.st-live .st-msg').getByText('STOP did not reach the board — the motor may still be running. Unplug the battery now.').waitFor({ timeout: 8000 });
+    assert.ok(await page.getByRole('button', { name: 'STOP motor' }).isEnabled(), 'STOP stays for another try');
+    await page.close();
+});
+
+test('C14: unplugged while connecting — the right words, and nothing keeps polling in the background', async () => {
+    const { page } = await open('mock=1&mockReboot=200');
+    await Promise.all([
+        page.locator('.st-connect .st-primary').click(),
+        page.evaluate(async () => {
+            const w = window as unknown as Mocks;
+            for (let i = 0; i < 500 && !((w.__mocks?.at(-1)?.mspLog.length ?? 0) >= 2); i++) await new Promise(r => setTimeout(r, 5));
+            w.__mocks!.at(-1)!.unplug(800);
+        })
+    ]);
+    await page.locator('.st-error').getByText('The board disconnected while connecting. Plug it in and press Connect.').waitFor({ timeout: 10000 });
+    await page.waitForTimeout(1500);
+    const n = await page.evaluate(() => (window as unknown as Mocks).__mocks!.at(-1)!.mspLog.length);
+    await page.waitForTimeout(1500);
+    assert.equal(await page.evaluate(() => (window as unknown as Mocks).__mocks!.at(-1)!.mspLog.length), n, 'no orphan polls the board');
+    assert.ok(await page.locator('.st-connect .st-primary').isEnabled());
+    await page.close();
+});
+
+test('C39: the board comes back late after a save (past the timeout): the save is checked then, and the page says so', async () => {
+    const { page } = await open('mock=1&mockNoReturn=1&mockReconnectTimeout=1500');
+    await connectAndRead(page);
+    await question(page, 'autostart_delay').getByText('60 s', { exact: true }).click();
+    await page.getByRole('button', { name: 'Save to board' }).click();
+    await page.locator('.st-msg[data-result="error"]').waitFor({ timeout: 15000 });
+    assert.match(await saveMsg(page).innerText(), /did not come back after restarting/);
+    // the board is back by itself: the page reads it back and shows the result (no stale "Will save")
+    await page.evaluate(() => (window as unknown as Mocks).__mocks!.at(-1)!.boot());
+    await saveMsg(page).getByText(/The board is back and the save is checked:\s*Saved and checked on the board: 1 value\./).waitFor({ timeout: 10000 });
+    assert.equal(await value(page, 'autostart_delay'), '60');
+    assert.doesNotMatch(await page.locator('.st-changes').innerText(), /Will save/);
+    await page.close();
+});
+
+test('C10/C21: Disconnect during a Save (writing or the restart): no internal-error alarm, and the words say the board runs its program now', async () => {
+    for (const phase of ['writing', 'rebooting']) {
+        const { page, errors } = await open('mock=1&mockReboot=1500&mockLatency=20');
+        await connectAndRead(page);
+        await question(page, 'autostart_throttle').getByText('30 %', { exact: true }).click();
+        await page.getByRole('button', { name: 'Save to board' }).click();
+        await page.locator(phase === 'writing' ? '.st[data-phase="writing"]' : '.st[data-phase="rebooting"], .st[data-phase="reconnecting"]').first().waitFor({ timeout: 10000 });
+        await page.getByRole('button', { name: 'Disconnect' }).click();
+        await page.locator('.st[data-phase="idle"]').waitFor({ timeout: 10000 });
+        await page.waitForTimeout(800);
+        const text = await page.locator('.st').innerText();
+        assert.doesNotMatch(text, /Something went wrong/, phase);
+        assert.deepEqual(errors, [], phase);
+        if (phase === 'rebooting') assert.match(await page.locator('.st-status').innerText(), /Disconnected while the board restarted: it runs its program now/);
+        else assert.match(await page.locator('.st-status').innerText(), /Disconnected/);
+        await page.close();
+    }
+});
+
+// ---------- the final round of 2026-10-20 (N1–N6 of the diagnostics recheck): each with a negative control ----------
+
+type Fc = {
+    setBattery(v: number): void;
+    unplug(ms?: number): void;
+    motorOutputs(): number[];
+    cliLog: string[];
+    opts: Record<string, unknown>;
+};
+/** run fn against the page's emulated board (window.__mocks, the demo's own list) */
+const onFc = <R>(page: Page, fn: (m: Fc) => R): Promise<R> => page.evaluate(`(${fn.toString()})(window.__mocks.at(-1))`) as Promise<R>;
+const liveMsg = (page: Page) => page.locator('.st-live > .st-msg');
+const runNowDialog = async (page: Page, from: 'live' | 'saved' = 'live') => {
+    if (from === 'saved') await saveMsg(page).getByRole('button', { name: 'Run now…' }).click();
+    else await page.getByRole('button', { name: 'Run the program…' }).click();
+    await page.getByLabel('The propeller is off, or nothing and nobody is near it.').check();
+    await page.getByRole('button', { name: 'Run now', exact: true }).click();
+};
+
+test('N1: a battery swapped with USB connected — the old pack’s ESC frame (MSP keeps it) is never warned about, auto-opened or offered; after a turn on the new pack it is used', async () => {
+    for (const freeze of ['1', 'rpm']) {
+        const { page, errors } = await open(`mock=1&mockReboot=300&mockSpeed=4&mockVolts=25.2&mockEsc=sensor&mockEscFreeze=${freeze}`);
+        await connect(page);
+        await page.locator('.st-state[data-state="3"]').waitFor({ timeout: 10000 });
+        await openLiveMore(page);
+        await liveSub(page).getByText(/ESC measures 25\.\d\d V/).waitFor({ timeout: 5000 });
+        if (freeze === 'rpm') {
+            // unplugged while the motor turns: the frame MSP keeps has the old rpm too; then Change settings
+            await onFc(page, m => m.setBattery(0));
+            await page.waitForTimeout(1000);
+            await openSettings(page);
+        } else {
+            // Change settings (the motor stops, the ESC still sends at a stop), then the pack is swapped
+            await openSettings(page);
+            await page.waitForTimeout(800);
+            await onFc(page, m => m.setBattery(0));
+            await page.waitForTimeout(1500);
+        }
+        await onFc(page, m => m.setBattery(21.6));
+        // the board's reading has settled long before this (3 s at 4×); MSP still shows the old pack's frame
+        await page.waitForTimeout(4000);
+        assert.match(await page.locator('.st-live .st-meters').first().innerText(), /21\.\d\d V/, `${freeze}: the board reads the new pack`);
+        assert.match(await liveSub(page).innerText(), /ESC last sent 25\.\d\d V \(old reading\)/, `${freeze}: shown as old`);
+        assert.doesNotMatch(await page.locator('.st-live .st-warns').innerText(), /ESC measures/, `${freeze}: no warning from the old frame`);
+        assert.equal(await moreOpen(page), false, `${freeze}: More settings did not open by itself`);
+        await openMore(page);
+        const cal = page.locator('.st-cal');
+        assert.match(await cal.innerText(), /ESC voltage not fresh yet \(25\.\d\d V may be an old reading\)/, freeze);
+        assert.equal(await cal.getByRole('button', { name: /Use the ESC’s reading/ }).count(), 0, `${freeze}: not offered`);
+        assert.deepEqual(await changeKeys(page), [], 'nothing changed');
+        // negative control: the motor turns on the new pack — the ESC sends again, its reading is used (and agrees)
+        await runNowDialog(page);
+        await page.locator('.st-state[data-state="2"], .st-state[data-state="3"]').first().waitFor({ timeout: 10000 });
+        await liveSub(page).getByText(/ESC measures 21\.\d\d V/).waitFor({ timeout: 5000 });
+        assert.doesNotMatch(await page.locator('.st-live .st-warns').innerText(), /ESC measures/);
+        assert.deepEqual(errors, [], freeze);
+        await page.close();
+    }
+});
+
+test('N2: STOP while connecting is queued — never typed into a CLI left open, no false "did not reach"; a port that never answers still gives up in seconds', async () => {
+    const typed = (log: string[]) => log.join('').split('$M<').length - 1;
+    // control: the same board without STOP (the identification itself types a few frames into the open CLI)
+    const c = await open('mock=1&mockSpeed=4&mockReboot=1500&mockCliOpen=1&mockSet=autostart_delay:0');
+    await connect(c.page);
+    await c.page.waitForTimeout(500);
+    const control = typed(await onFc(c.page, m => m.cliLog));
+    await c.page.close();
+    const { page, errors } = await open('mock=1&mockSpeed=4&mockReboot=1500&mockCliOpen=1&mockSet=autostart_delay:0');
+    await page.locator('.st-connect .st-primary').click();
+    await page.locator('.st[data-phase="connecting"] .st-stopbar:not([hidden])').waitFor({ timeout: 3000 });
+    await page.waitForTimeout(300);
+    await page.locator('.st-stopbar .st-stop').click();
+    await page.locator('.st-conn').waitFor({ state: 'visible', timeout: 15000 });
+    await page.locator('.st-state').filter({ hasText: 'Stopped with STOP' }).waitFor({ timeout: 5000 });
+    await liveMsg(page).getByText(/Stopped\. It stays stopped until you press Run the program/).waitFor({ timeout: 5000 });
+    assert.equal(typed(await onFc(page, m => m.cliLog)), control, 'no STOP frame typed into the open CLI');
+    assert.doesNotMatch(await page.locator('.st-live').innerText(), /did not reach the board/);
+    assert.deepEqual(await onFc(page, m => m.motorOutputs().slice(0, 2)), [1000, 1000]);
+    assert.deepEqual(errors, []);
+    await page.close();
+    // a port that never answers, STOP pressed again and again: Connect still ends in seconds and says the STOP did not get through
+    const dead = await open('mock=1&mockSpeed=4&mockNoAnswer=1');
+    await dead.page.locator('.st-connect .st-primary').click();
+    const t0 = Date.now();
+    await dead.page.locator('.st[data-phase="connecting"] .st-stopbar:not([hidden])').waitFor({ timeout: 3000 });
+    while (Date.now() - t0 < 20000 && (await dead.page.locator('.st').getAttribute('data-phase')) === 'connecting') {
+        await dead.page.locator('.st-stopbar .st-stop').click({ timeout: 300 }).catch(() => undefined);
+        await dead.page.waitForTimeout(150);
+    }
+    const took = Date.now() - t0;
+    assert.ok(took < 12000, `connecting lasted ${took} ms`);
+    const err = await dead.page.locator('.st-error').innerText();
+    assert.match(err, /STOP did not reach the board — the motor may still be running\. Unplug the battery now\./);
+    assert.match(err, /doesn’t answer like a Betaflight flight controller/);
+    await dead.page.close();
+});
+
+test('N2: "STOP did not reach the board" goes once a later answer shows the motor stopped (outputs 1000, held); it stays while the motor runs', async () => {
+    const { page } = await open('mock=1&mockReboot=200&mockSpeed=4');
+    await connect(page);
+    await page.getByRole('button', { name: 'STOP motor' }).click();
+    await liveMsg(page).getByText(/Stopped\. It stays stopped until you press Run the program/).waitFor({ timeout: 5000 });
+    await onFc(page, m => (m.opts.noAnswer = true));
+    await page.getByRole('button', { name: 'STOP motor' }).click();
+    await liveMsg(page).getByText('STOP did not reach the board — the motor may still be running. Unplug the battery now.').waitFor({ timeout: 8000 });
+    // the board answers again: held, every output at 1000 — the alarm is not true any more
+    await onFc(page, m => (m.opts.noAnswer = false));
+    await liveMsg(page).getByText(/Stopped\. It stays stopped until you press Run the program/).waitFor({ timeout: 5000 });
+    assert.doesNotMatch(await page.locator('.st-live').innerText(), /did not reach the board/);
+    await page.close();
+    // negative control: the board runs (outputs above 1000) — the failure stays
+    const run = await open('mock=1&mockReboot=200&mockSpeed=10');
+    await connect(run.page);
+    await run.page.locator('.st-state[data-state="3"]').waitFor({ timeout: 10000 });
+    await onFc(run.page, m => (m.opts.noAnswer = true));
+    await run.page.getByRole('button', { name: 'STOP motor' }).click();
+    await liveMsg(run.page).getByText(/STOP did not reach the board/).waitFor({ timeout: 8000 });
+    await onFc(run.page, m => (m.opts.noAnswer = false));
+    await run.page.locator('.st-state[data-state="3"]').waitFor({ timeout: 5000 });
+    await run.page.waitForTimeout(1500);
+    assert.match(await liveMsg(run.page).innerText(), /STOP did not reach the board/);
+    assert.match(await run.page.locator('.st-live .st-warns').innerText(), /STOP did not reach the board/);
+    await run.page.close();
+});
+
+test('N3: an edit while the board restarts after Run now (from "Saved and checked") clears the old result at once', async () => {
+    const { page, errors } = await open('mock=1&mockSpeed=4&mockReboot=1500');
+    await connectAndRead(page);
+    await question(page, 'autostart_delay').getByText('30 s', { exact: true }).click();
+    await page.getByRole('button', { name: 'Save to board' }).click();
+    await page.locator('.st-msg[data-result="saved"]').waitFor({ timeout: 20000 });
+    await runNowDialog(page, 'saved');
+    await page.locator('.st[data-phase="rebooting"], .st[data-phase="reconnecting"]').first().waitFor({ timeout: 5000 });
+    await question(page, 'autostart_throttle').getByText('50 %', { exact: true }).click();
+    assert.match((await page.locator('.st').getAttribute('data-phase')) ?? '', /rebooting|reconnecting/, 'still restarting');
+    assert.equal((await saveMsg(page).innerText()).trim(), '', 'no "Saved and checked … Run now" next to "Will save"');
+    assert.match(await page.locator('.st-changes').innerText(), /Will save: Power: 15 % → 50 %/);
+    // negative control: without an edit a result stays through a restart
+    await page.locator('.st[data-phase="ready"]').waitFor({ timeout: 15000 });
+    await page.getByRole('button', { name: 'Undo changes' }).click();
+    assert.match(await saveMsg(page).innerText(), /Changes undone/);
+    await runNowDialog(page);
+    await page.locator('.st[data-phase="rebooting"], .st[data-phase="reconnecting"]').first().waitFor({ timeout: 5000 });
+    await page.locator('.st[data-phase="ready"]').waitFor({ timeout: 15000 });
+    assert.match(await saveMsg(page).innerText(), /Changes undone/);
+    assert.deepEqual(errors, []);
+    await page.close();
+});
+
+test('N4: unplugged in the first moments of Change settings — "disconnected, reconnects by itself", then "The board is back", never "Press Connect"', async () => {
+    for (const at of [30, 150]) {
+        const { page } = await open('mock=1&mockSpeed=1&mockReboot=300&mockLatency=30');
+        await connect(page);
+        await page.locator('.st-preread .st-primary').click();
+        await page.locator('.st[data-phase="reading"]').waitFor({ timeout: 5000 });
+        await page.waitForTimeout(at);
+        await onFc(page, m => m.unplug(1500));
+        await page.locator('.st[data-phase="ready"]').waitFor({ timeout: 10000 });
+        await page.waitForTimeout(500);
+        assert.match(await page.locator('.st-preread .st-msg').innerText(), /The board is back\./, `unplug ${at} ms into the read`);
+        assert.doesNotMatch(await page.locator('.st').innerText(), /The board is not connected\. Press Connect\./, `${at} ms`);
+        await page.close();
+    }
+});
+
+test('N5: Run the program without reading the settings — the words come from the board after the restart (Off: it did not start), never "runs from the start"', async () => {
+    const off = await open('mock=1&mockSpeed=4&mockReboot=300&mockSet=autostart_mode:OFF');
+    await connect(off.page);
+    await runNowDialog(off.page);
+    await liveMsg(off.page).getByText(/Board restarted\. The program did not start: autostart is off, waits for a button, or is held while USB is connected/).waitFor({ timeout: 10000 });
+    assert.doesNotMatch(await liveMsg(off.page).innerText(), /runs from the start/);
+    await off.page.close();
+    // no battery: plug it in
+    const nob = await open('mock=1&mockSpeed=4&mockReboot=300&mockVolts=0');
+    await connect(nob.page);
+    await runNowDialog(nob.page);
+    await liveMsg(nob.page).getByText(/Board restarted: plug in the battery to start the program\./).waitFor({ timeout: 10000 });
+    await nob.page.close();
+    // negative control: the factory program (POWER, a battery) — it does run from the start
+    const on = await open('mock=1&mockSpeed=4&mockReboot=300');
+    await connect(on.page);
+    await runNowDialog(on.page);
+    await liveMsg(on.page).getByText(/Board restarted: the program runs from the start\./).waitFor({ timeout: 10000 });
+    await on.page.close();
+});
+
+test('N6: "Battery low" from a wrong cell count (8S saved, a charged 6S pack) points to the cell count, not to charging; an empty pack still says charge', async () => {
+    const { page } = await open('mock=1&mockSpeed=4&mockReboot=300&mockSet=autostart_cells:8');
+    await connect(page);
+    await page.locator('.st-state[data-state="5"]').waitFor({ timeout: 10000 });
+    const sub = page.locator('.st-state-sub');
+    await sub.getByText(/Stopped for low battery at 24\.4 V\. If this is a charged 6S pack \(4\.07 V per cell\), the cell count or stop voltage saved on the board does not fit it: press Change settings and check Battery\. Otherwise the pack is empty: charge it\./).waitFor({ timeout: 5000 });
+    assert.doesNotMatch(await sub.innerText(), /Charge the battery/);
+    await openSettings(page);
+    await sub.getByText(/Stopped for low battery at 24\.4 V\. The board counts 8S\. If your pack is 6S \(4\.07 V per cell, charged\): set Battery to 6S in step 3 and save\. If it really is 8S: it is empty, charge it\./).waitFor({ timeout: 5000 });
+    assert.doesNotMatch(await sub.innerText(), /Charge the battery|will not help/);
+    await page.close();
+    // regression (final recheck 20.10): an EMPTY 6S at 19.5 V reads 3.90 V per cell for Betaflight's 5S guess.
+    // Voltage alone cannot tell an empty 6S from a charged 5S: both readings are offered, never "charging will not help"
+    const empty = await open('mock=1&mockSpeed=4&mockReboot=300&mockVolts=19.5&mockSet=autostart_cells:6');
+    await connect(empty.page);
+    await empty.page.locator('.st-state[data-state="5"]').waitFor({ timeout: 10000 });
+    await openSettings(empty.page);
+    const esub = empty.page.locator('.st-state-sub');
+    await esub.getByText(/If it really is 6S: it is empty, charge it\./).waitFor({ timeout: 5000 });
+    assert.doesNotMatch(await esub.innerText(), /will not help/);
+    await empty.page.close();
+    // negative control: an empty 6S pack (19.0 V, Betaflight guesses 5S at 3.80 V per cell) — charging is the advice
+    const low = await open('mock=1&mockSpeed=4&mockReboot=300&mockVolts=19.0');
+    await connect(low.page);
+    await low.page.locator('.st-state[data-state="5"]').waitFor({ timeout: 10000 });
+    assert.match(await low.page.locator('.st-state-sub').innerText(), /^Charge the battery, then plug it in again\.$/);
+    await openSettings(low.page);
+    await low.page.locator('.st-state-sub').getByText(/^Charge the battery, then switch the board off and on/).waitFor({ timeout: 5000 });
+    await low.page.close();
 });

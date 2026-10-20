@@ -140,8 +140,10 @@ export class Cli {
                 this.log('CLI open');
                 return banner;
             }
+            if (!this.transport.isOpen) throw new FcError('lost', 'the board disconnected while the CLI was being opened');
             await sleep(200);
         }
+        if (!this.transport.isOpen) throw new FcError('lost', 'the board disconnected while the CLI was being opened');
         throw new FcError('cli', 'the CLI did not open (no prompt after "#")');
     }
 
@@ -154,6 +156,8 @@ export class Cli {
         const ok = await this.collect(b => b.endsWith(PROMPT), timeoutMs);
         const raw = this.buf;
         this.buf = '';
+        // the port went away (unplugged, reset): that is a lost board, not a command line that did not answer
+        if (!ok && !this.transport.isOpen) throw new FcError('lost', `the board disconnected during "${cmd}"`);
         if (!ok) throw new FcError('cli', `no prompt after "${cmd}"`, { output: raw.slice(-400) });
         let body = raw.slice(0, raw.length - PROMPT.length);
         // strip the echoed command line
@@ -173,14 +177,23 @@ export class Cli {
         return parseSetOutput(await this.exec(`set ${name} = ${v}`), name);
     }
 
-    /** Write to flash; the board reboots and the USB port disappears. */
-    async save(): Promise<void> {
+    /**
+     * Write to flash; the board reboots and the USB port disappears. Returns whether the board said it saves
+     * ("saving" / "Rebooting"): false when the port dropped before any answer, i.e. the save may never have run.
+     */
+    async save(): Promise<boolean> {
         if (!this.active) throw new FcError('cli', 'CLI is not open');
         this.buf = '';
         await this.send('save\r\n');
-        await this.collect(b => /Rebooting/i.test(b), 3000, 0);
+        // judged inside the callback: the port drops right after "Rebooting" and that clears the buffer
+        let answered = false;
+        await this.collect(b => {
+            if (/saving|Rebooting/i.test(b)) answered = true;
+            return /Rebooting/i.test(b);
+        }, 3000, 0);
         this.active = false;
-        this.log('saved, board rebooting');
+        this.log(answered ? 'saved, board rebooting' : 'save sent, no answer before the port dropped');
+        return answered;
     }
 
     /** Leave the CLI without a reboot (the program stays stopped, MSP answers again). */
@@ -210,16 +223,25 @@ export class Cli {
     }
 
     /**
-     * A previous session may have left the CLI open; then MSP is silent. Leave it without a reboot.
+     * A previous session may have left the CLI open; then MSP is silent. That session may also have left `set`
+     * values in RAM that were never saved (a write cut short): "exit noreboot" would keep them, `get` would show
+     * them as the board's program and the next `save` would write them. So leave with a plain "exit": the board
+     * reboots and forgets them. Returns true when the board said it reboots (the caller waits for it).
      * Safe in MSP mode too: lower-case text with no "#" and no "R" is ignored by Betaflight there.
      */
-    async leaveIfStuck(): Promise<void> {
+    async leaveIfStuck(): Promise<boolean> {
         this.buf = '';
         await this.send('\r\n');
         await sleep(80);
-        await this.send('exit noreboot\r\n');
-        await this.collect(b => /leaving CLI mode/i.test(b), 600, 30);
+        await this.send('exit\r\n');
+        // judged inside the callback: the port drops right after "Rebooting" and that clears the buffer
+        let rebooting = false;
+        await this.collect(b => {
+            if (/Rebooting/i.test(b)) rebooting = true;
+            return /Rebooting|leaving CLI mode/i.test(b);
+        }, 600, 30);
         this.active = false;
         this.buf = '';
+        return rebooting;
     }
 }

@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import ipaddress
 import json
+import math
 import os
 import re
 import shutil
@@ -76,12 +77,14 @@ LIMITS = {
     "report_any": (40, 3600),    # every /api/report request, before its body is read (>= report + error)
     "report": (10, 3600),        # bug + idea (typed by a person)
     "error": (20, 3600),         # errors the configurator sends by itself
+    "error_announce": (5, 3600), # of those, announced to Telegram (the rest are stored only)
     "lead": (8, 3600),
     "event": (600, 3600),
     "go": (300, 3600),           # counted redirects (over the limit: redirected, not counted)
 }
 GLOBAL_LIMITS = {
     "report_any": (2000, 3600),
+    "error_announce": (100, 3600),
     "report": (300, 3600),
     "error": (1000, 3600),
     "lead": (100, 3600),
@@ -285,6 +288,20 @@ def _plain(v, n: int, lines: bool = False) -> str:
     return s.strip()[:n].strip()
 
 
+def _no_surrogates(v: str) -> str:
+    """A lone UTF-16 surrogate (a string cut in the middle of an emoji) cannot be written as UTF-8: dropped."""
+    return "".join(c for c in v if unicodedata.category(c) != "Cs")
+
+
+def _ms(v) -> float:
+    """Time-to-submit in ms; anything that is not a finite number (missing, text, NaN, inf) counts as 0."""
+    try:
+        t = float(v or 0)
+    except (TypeError, ValueError, OverflowError):
+        return 0.0
+    return t if math.isfinite(t) else 0.0
+
+
 def _match(rx: re.Pattern, v) -> str:
     return v if isinstance(v, str) and rx.fullmatch(v) else ""
 
@@ -361,12 +378,12 @@ def _scrub(v, depth: int = 0):
     if depth > DIAG_DEPTH:
         return None
     if isinstance(v, dict):
-        return {str(k)[:64]: _scrub(x, depth + 1) for k, x in list(v.items())[:200]
+        return {_no_surrogates(str(k)[:64]): _scrub(x, depth + 1) for k, x in list(v.items())[:200]
                 if str(k).lower().replace("_", "").replace("-", "") not in DIAG_DROP}
     if isinstance(v, list):
         return [_scrub(x, depth + 1) for x in v[:DIAG_LIST]]
     if isinstance(v, str):
-        return v[:DIAG_STR]
+        return _no_surrogates(v[:DIAG_STR])
     if isinstance(v, (bool, int, float)) or v is None:
         return v
     return None
@@ -394,12 +411,10 @@ def parse_report(b: dict) -> dict:
     if not message:
         raise BadBody(400)
     # everything but the diagnostics: the size of a lead
-    if len(json.dumps({k: v for k, v in b.items() if k != "diagnostics"}, ensure_ascii=False).encode()) > MAX_BODY:
+    # measured as UTF-8 that may carry lone surrogates: such a body is still measured (and then scrubbed)
+    if len(json.dumps({k: v for k, v in b.items() if k != "diagnostics"}, ensure_ascii=False).encode("utf-8", "surrogatepass")) > MAX_BODY:
         raise BadBody(413)
-    try:
-        t_ms = float(b.get("t") or 0)
-    except (TypeError, ValueError):
-        t_ms = 0
+    t_ms = _ms(b.get("t"))
     suspect = bool(b.get("website")) or (kind != "error" and t_ms < 3000)
     consent = b.get("diagnosticsConsent") is True
     diag = clean_diagnostics(b.get("diagnostics")) if kind in DIAG_KINDS and consent else None
@@ -587,10 +602,7 @@ def parse_lead(b: dict) -> dict:
     email = _plain(b.get("email"), 254)
     if not EMAIL_RE.match(email) or b.get("consent") is not True:
         raise BadBody(400)
-    try:
-        t_ms = float(b.get("t") or 0)
-    except (TypeError, ValueError):
-        t_ms = 0
+    t_ms = _ms(b.get("t"))
     return {"role": role, "email": email, "name": _plain(b.get("name"), 100),
             "message": _plain(b.get("message"), LEAD_MESSAGE_MAX, lines=True),
             "lang": _match(LANG_RE, b.get("lang") or b.get("locale")), "page": _match(SLUG_RE, b.get("page")),
@@ -794,6 +806,8 @@ class Handler(BaseHTTPRequestHandler):
         path = (getattr(self, "path", "") or "").split("?")[0][:200]
         print(f"{time.strftime('%H:%M:%S')} {cmd} {path} error", flush=True)
 
+    _head_only = False
+
     def _json(self, code: int, obj: dict) -> None:
         b = json.dumps(obj).encode()
         self.send_response(code)
@@ -801,7 +815,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(b)))
         self.end_headers()
-        self.wfile.write(b)
+        if not self._head_only:
+            self.wfile.write(b)
 
     def _client(self) -> str:
         return client_key(self.headers, self.client_address[0])
@@ -836,7 +851,7 @@ class Handler(BaseHTTPRequestHandler):
             raise BadBody(413)
         try:
             v = json.loads(self.rfile.read(n))
-        except ValueError as e:  # UnicodeDecodeError too
+        except (ValueError, RecursionError) as e:  # UnicodeDecodeError too; a body nested too deep
             raise BadBody(400) from e
         if not isinstance(v, dict):
             raise BadBody(400)
@@ -860,7 +875,7 @@ class Handler(BaseHTTPRequestHandler):
             raise BadBody(415)
         try:
             v = json.loads(raw)
-        except ValueError as e:
+        except (ValueError, RecursionError) as e:  # a body nested too deep too
             raise BadBody(400) from e
         if not isinstance(v, dict):
             raise BadBody(400)
@@ -871,7 +886,7 @@ class Handler(BaseHTTPRequestHandler):
         target = GO_TARGETS.get(slug)
         if target is None:
             return self._json(404, {"ok": False})
-        if S.allow("go", self._client()):
+        if not self._head_only and S.allow("go", self._client()):  # a HEAD (link checker) is no click
             lang = urllib.parse.parse_qs(qs).get("l", [""])[0]
             with S.lock:
                 S.events.add(f"go_{slug}", lang if re.fullmatch(r"[a-z]{2}", lang or "") else None, time.time())
@@ -906,6 +921,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(500, {"ok": False})
         self._json(404, {"ok": False})
 
+    def do_HEAD(self):
+        """Like GET without a body: uptime monitors and link checkers use HEAD (nginx lets it through)."""
+        self._head_only = True
+        try:
+            self.do_GET()
+        finally:
+            self._head_only = False
+
     def do_POST(self):
         path = self.path.split("?")[0]
         client = self._client()
@@ -918,6 +941,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._event(client)
         except BadBody as e:
             return self._json(e.status, {"ok": False})
+        except (ValueError, RecursionError):  # UnicodeError too: a body we cannot read or store as it is
+            return self._json(400, {"ok": False})
         except OSError:  # not stored: nothing is sent either
             return self._json(500, {"ok": False})
         self._drain(MAX_BODY)
@@ -933,6 +958,9 @@ class Handler(BaseHTTPRequestHandler):
         r["test"] = self._is_test()
         rec = store_report(r)
         notify = not rec["suspect"] and not rec.get("repeatOf") and not rec["test"]
+        # errors skip the time-to-submit check: only a few per client and hour reach Telegram, the rest are stored
+        if notify and rec["kind"] == "error" and not S.allow("error_announce", client):
+            notify = False
         mid = send_telegram(report_text(rec)) if notify else None
         self._json(200, {"ok": True, "id": rec["id"], "diagnostics": rec["diagnostics"], "delivered": mid is not None,
                          **({"test": True} if rec["test"] else {})})

@@ -17,7 +17,8 @@ const errors: string[] = [];
 const log: string[] = [];
 const extra: Record<string, unknown> = {};
 
-const clean = (s: string) => s.replace(/(https?:\/\/[^\s?#'")]+)[?#][^\s'")]*/g, '$1').substring(0, 400);
+// cut by characters, not UTF-16 units: half an emoji (a lone surrogate) would make a report unreadable for the API
+const clean = (s: string) => Array.from(s.replace(/(https?:\/\/[^\s?#'")]+)[?#][^\s'")]*/g, '$1')).slice(0, 400).join('');
 const stamp = () => new Date().toISOString().substring(11, 19);
 
 export const describe = (x: unknown): string => {
@@ -47,7 +48,18 @@ export const getLog = () => log.slice();
 export const setDiagnostic = (key: string, value: unknown) => {
     extra[key] = value;
 };
-export const toolDiagnostics = () => ({ ...extra });
+/** the configurator registers what it knows now (phase, board, firmware, verdict, last error, its log) */
+let provider: (() => Record<string, unknown>) | null = null;
+export const setDiagnosticsProvider = (fn: (() => Record<string, unknown>) | null) => {
+    provider = fn;
+};
+export const toolDiagnostics = () => {
+    let live: Record<string, unknown> = {};
+    try {
+        live = provider?.() ?? {};
+    } catch { /* a report must never fail because of this */ }
+    return { ...extra, ...live };
+};
 
 // ---------- which errors are ours
 const NOISE = /ResizeObserver loop|Transition was aborted|Viewport size changed|play\(\) (request|failed)|The play\(\) request|AbortError|NotAllowedError|InvalidStateError|NotFoundError|No port selected|The user aborted|^Script error\.?$/i;
@@ -102,12 +114,18 @@ const initBanner = () => {
     });
     document.getElementById('site-error-reload')?.addEventListener('click', () => location.reload());
     const copy = document.getElementById('site-error-copy');
+    // the label is kept once: a second click within 1.5 s must not make "Copied" the label for good
+    if (copy) copy.dataset.label ??= copy.textContent ?? '';
+    let copyTimer: ReturnType<typeof setTimeout> | null = null;
     copy?.addEventListener('click', () => {
         const text = [`release ${getRelease()}`, location.pathname, navigator.userAgent, ...recentErrors()].join('\n');
         navigator.clipboard?.writeText(text).then(() => {
-            const old = copy.textContent;
             copy.textContent = t('ui.copied');
-            setTimeout(() => { copy.textContent = old; }, 1500);
+            if (copyTimer) clearTimeout(copyTimer);
+            copyTimer = setTimeout(() => {
+                copyTimer = null;
+                copy.textContent = copy.dataset.label ?? '';
+            }, 1500);
         }).catch(() => undefined);
     });
     document.getElementById('site-error-report')?.addEventListener('click', () => {

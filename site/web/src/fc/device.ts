@@ -46,6 +46,16 @@ export interface BoardSettings {
     level: '1.0' | '1.1' | null;
     debugMode: string | null;
     dshotBidir: string | null;
+    /** feature ESC_SENSOR (the ESC's TX wire on the cable's yellow); null when `feature` could not be read */
+    escSensor: boolean | null;
+}
+
+/** The result of checking a save once the board is back by itself (after a timeout or a lost port). */
+export interface LateVerify {
+    ok: boolean;
+    verified: string[];
+    mismatches: { name: string; expected: string; got: string | null }[];
+    settings: BoardSettings;
 }
 
 export type Phase = 'idle' | 'connecting' | 'ready' | 'reading' | 'writing' | 'rebooting' | 'reconnecting' | 'closed';
@@ -114,17 +124,31 @@ export class AutostartDevice {
     readonly phaseEvents = new Emitter<Phase>();
     readonly liveEvents = new Emitter<LiveSample>();
     readonly logEvents = new Emitter<string>();
+    /** a save that could not be checked (the board came back late or the port was lost) was checked once it was back */
+    readonly lateVerifyEvents = new Emitter<LateVerify>();
+    /** STOPs that were queued and are now sent (the board is back) */
+    readonly stopFlushEvents = new Emitter<void>();
+    /** a queued STOP that could not be sent once the board was back (no answer) */
+    readonly stopFailEvents = new Emitter<unknown>();
+    /** the page stopped waiting for a board that did not come back (10 min) */
+    gaveUp = false;
     private readonly opts: Required<Omit<DeviceOptions, 'log'>> & { log?: (l: string) => void };
     private live = false;
     private liveLoop: Promise<void> | null = null;
     private wakeLoop: (() => void) | null = null;
     private misses = 0;
     private busy = false;
+    /** the operation running now (disconnect waits for it to end cleanly) */
+    private op: Promise<unknown> | null = null;
+    /** Disconnect was pressed: operations stop at their next step */
+    private closing = false;
     /** set while we expect the port to drop (save, restart) */
     private expectDrop = false;
     private dropped: (() => void) | null = null;
     private stopAfterReconnect = false;
     private recovering: Promise<void> | null = null;
+    /** values a save wrote but could not check yet: checked when the board is back */
+    private unverified: Record<string, string> | null = null;
     private abort = new AbortController();
     private offClose: () => void;
 
@@ -157,7 +181,8 @@ export class AutostartDevice {
         this.msp.failAll(new FcError('lost', 'the board disconnected'));
         if (reason === 'closed') return;
         this.dropped?.();
-        if (this.expectDrop || this.phase === 'closed' || this.phase === 'idle') return;
+        // while connecting the caller gets the error and gives up this device: nothing waits for the board then
+        if (this.expectDrop || this.closing || this.phase === 'closed' || this.phase === 'idle' || this.phase === 'connecting') return;
         // unplugged (or reset) while we were not expecting it: wait for it to come back
         this.log('board disconnected unexpectedly, waiting for it');
         this.setPhase('reconnecting');
@@ -170,12 +195,44 @@ export class AutostartDevice {
         try {
             await this.transport.reconnect(10 * 60_000, this.abort.signal);
             await this.afterReconnect();
+            if (this.unverified && !this.closing) await this.verifyLate().catch(e => this.log(`late check of the save failed: ${String(e)}`));
+            if (this.closing) return;
             this.setPhase('ready');
             this.startLive();
         } catch (e) {
             if (!isFcError(e, 'cancelled')) this.log(`reconnect failed: ${String(e)}`);
-            if (this.phase === 'reconnecting') this.setPhase('closed');
+            if (this.phase === 'reconnecting' || this.phase === 'reading') {
+                this.gaveUp = !this.closing && !isFcError(e, 'cancelled');
+                this.setPhase('closed');
+            }
         }
+    }
+
+    /** the board is back after a save that could not be checked: read it back now and tell the page */
+    private async verifyLate() {
+        const expected = this.unverified!;
+        this.unverified = null;
+        this.setPhase('reading');
+        await this.cli.enter();
+        let after: BoardSettings;
+        try {
+            after = await this.readInCli();
+        } finally {
+            await this.cli.exitNoReboot();
+        }
+        this.settings = after;
+        const mismatches = this.compare(expected, after);
+        this.log(`late check of the save: ${mismatches.length ? `${mismatches.length} differ` : 'all kept'}`);
+        this.lateVerifyEvents.emit({ ok: !mismatches.length, verified: Object.keys(expected), mismatches, settings: after });
+    }
+
+    private compare(expected: Record<string, string>, after: BoardSettings) {
+        const mismatches: { name: string; expected: string; got: string | null }[] = [];
+        for (const [name, want] of Object.entries(expected)) {
+            const got = after.raw.get(name)?.value ?? null;
+            if (got === null || got.toUpperCase() !== want.toUpperCase()) mismatches.push({ name, expected: want, got });
+        }
+        return mismatches;
     }
 
     /** exclusive operations (read/write/restart) never overlap */
@@ -186,13 +243,27 @@ export class AutostartDevice {
         // the phase first (synchronously): a STOP pressed while the last live poll finishes is then queued for
         // after the reboot or answered by the CLI, never sent as MSP into a CLI that is being opened
         this.setPhase(phase);
-        try {
+        const run = (async () => {
             await this.stopLive();
-            return await fn();
+            try {
+                return await fn();
+            } catch (e) {
+                // unplugged in the first moments of the operation: the next write finds the port closed ("not
+                // open") before the loss is reported. It is a lost board: the page reconnects by itself
+                if (isFcError(e, 'not-open') && !this.closing) throw new FcError('lost', `the board disconnected (${e.message})`);
+                throw e;
+            }
+        })();
+        this.op = run;
+        try {
+            return await run;
         } finally {
             this.busy = false;
+            this.op = null;
             const ph = this.phase as Phase; // changed inside fn()
-            if (this.transport.isOpen && ph !== 'closed') {
+            if (this.closing) {
+                // Disconnect: nothing restarts here
+            } else if (this.transport.isOpen && ph !== 'closed') {
                 this.setPhase('ready');
                 this.startLive();
             } else if (!this.transport.isOpen && ph !== 'closed' && !this.recovering) {
@@ -215,6 +286,9 @@ export class AutostartDevice {
             await this.transport.open(opts);
             this.log(`port open: ${this.transport.describe()}`);
             const id = await this.identifyWithRecovery();
+            // a STOP pressed while the board was being identified: it answers MSP now (a CLI left open was left).
+            // The board is connected either way; a STOP that does not get through is told by stopFailEvents
+            await this.flushStop().catch(e => this.log(`STOP after connecting: ${String(e)}`));
             this.setPhase('ready');
             this.startLive();
             return id;
@@ -230,9 +304,27 @@ export class AutostartDevice {
             return await this.identify();
         } catch (e) {
             if (!isFcError(e, 'timeout')) throw e;
-            // MSP is silent: a previous session may have left the CLI open
+            // MSP is silent: a previous session may have left the CLI open, maybe with unsaved `set` values in RAM.
+            // Leaving it with a reboot forgets them; the STOP right after the reboot keeps the program held, as
+            // the open CLI held it (the reboot alone would run it from the start).
             this.log('no MSP answer, trying to leave a CLI left open');
-            await this.cli.leaveIfStuck();
+            const wasExpecting = this.expectDrop;
+            this.expectDrop = true;
+            try {
+                if (await this.cli.leaveIfStuck()) {
+                    this.log('CLI left open: left with a reboot (unsaved values in RAM are discarded)');
+                    const t0 = Date.now();
+                    while (this.transport.isOpen && Date.now() - t0 < this.opts.dropTimeoutMs) await sleep(25, this.abort.signal);
+                    if (!this.transport.isOpen) await this.transport.reconnect(this.opts.reconnectTimeoutMs, this.abort.signal);
+                    this.cli.reset();
+                    await sleep(150, this.abort.signal);
+                    this.stopAfterReconnect = true;
+                    // MSP answers again only after the boot: the STOP is retried by sendStop
+                    await this.flushStop().catch(err => this.log(`STOP after leaving the CLI: ${String(err)}`));
+                }
+            } finally {
+                this.expectDrop = wasExpecting;
+            }
             try {
                 return await this.identify();
             } catch (e2) {
@@ -273,6 +365,14 @@ export class AutostartDevice {
             const v = m.get(name);
             if (v) raw.set(name, v);
         }
+        // the ESC's TX wire is used when feature ESC_SENSOR is on ("Enabled: … ESC_SENSOR …"); read-only
+        let escSensor: boolean | null = null;
+        try {
+            const m = /Enabled:([^\r\n]*)/i.exec(await this.cli.exec('feature'));
+            if (m) escSensor = m[1].trim().split(/\s+/).includes('ESC_SENSOR');
+        } catch (e) {
+            if (isFcError(e, 'lost')) throw e;
+        }
         const values: Record<string, Value> = {};
         const eff: Record<string, Effective> = {};
         const missing: string[] = [];
@@ -294,7 +394,8 @@ export class AutostartDevice {
             missing,
             level,
             debugMode: raw.get('debug_mode')?.value ?? null,
-            dshotBidir: raw.get('dshot_bidir')?.value ?? null
+            dshotBidir: raw.get('dshot_bidir')?.value ?? null,
+            escSensor
         };
         this.log(`settings read: ${Object.keys(values).length} values, firmware level ${level ?? 'none'}`);
         return s;
@@ -341,18 +442,26 @@ export class AutostartDevice {
         return this.exclusive('writing', async () => {
             await this.cli.enter();
             const applied: [string, string][] = [];
+            /** undo what was already set in RAM, leave without saving or rebooting (RAM = flash again) */
+            const undo = async () => {
+                for (const [n] of applied.slice().reverse()) {
+                    const old = cur.raw.get(n)?.value;
+                    if (old !== undefined) await this.cli.set(n, old).catch(() => undefined);
+                }
+                await this.cli.exitNoReboot().catch(() => undefined);
+            };
             for (let i = 0; i < plan.length; i++) {
                 const [name, value] = plan[i];
+                // Disconnect pressed: stop here and leave the board's RAM as its flash (never half a program)
+                if (this.closing) {
+                    await undo();
+                    throw new FcError('cancelled', 'disconnected while writing; the values written so far were undone');
+                }
                 progress({ step: 'write', done: i, total: plan.length });
                 const r = await this.cli.set(name, value);
                 if (!r.ok) {
                     this.log(`set ${name} = ${value} refused: ${r.text}`);
-                    // undo what was already set in RAM, leave without saving or rebooting
-                    for (const [n] of applied.reverse()) {
-                        const old = cur.raw.get(n)?.value;
-                        if (old !== undefined) await this.cli.set(n, old).catch(() => undefined);
-                    }
-                    await this.cli.exitNoReboot();
+                    await undo();
                     throw new FcError(r.error === 'invalid-name' ? 'cli-invalid-name' : 'cli-invalid-value', `the board refused ${name} = ${value}`, {
                         name,
                         value,
@@ -361,10 +470,16 @@ export class AutostartDevice {
                 }
                 applied.push([name, value]);
             }
+            if (this.closing) {
+                await undo();
+                throw new FcError('cancelled', 'disconnected before saving; the values written were undone');
+            }
             progress({ step: 'write', done: plan.length, total: plan.length });
 
             progress({ step: 'save' });
-            await this.expectReboot(() => this.cli.save());
+            // from here the values may be in flash: if the board cannot be checked now, it is checked once it is back
+            this.unverified = expected;
+            const answered = await this.expectReboot(() => this.cli.save());
             progress({ step: 'reboot' });
             progress({ step: 'reconnect' });
             // the program starts its countdown after the reboot: stop it at once, before the CLI does
@@ -379,21 +494,23 @@ export class AutostartDevice {
             } finally {
                 await this.cli.exitNoReboot();
             }
-            const mismatches: { name: string; expected: string; got: string | null }[] = [];
-            for (const [name, want] of Object.entries(expected)) {
-                const got = after.raw.get(name)?.value ?? null;
-                if (got === null || got.toUpperCase() !== want.toUpperCase()) mismatches.push({ name, expected: want, got });
-            }
+            this.unverified = null;
+            const mismatches = this.compare(expected, after);
             this.settings = after;
-            if (mismatches.length) throw new FcError('verify', 'the board did not keep every value', { mismatches });
+            if (mismatches.length) {
+                // the port dropped before the board said "saving": the save never ran (nothing at all was kept)
+                if (!answered && mismatches.length === Object.keys(expected).length) throw new FcError('not-saved', 'the board disconnected before it could save', { mismatches });
+                throw new FcError('verify', 'the board did not keep every value', { mismatches });
+            }
             progress({ step: 'done' });
             this.log(`saved and verified: ${Object.keys(expected).join(', ')}`);
             return { verified: Object.keys(expected), settings: after };
         });
     }
 
-    /** Run `trigger` (save / MSP reboot) and wait until the port drops. */
-    private async expectReboot(trigger: () => Promise<void>) {
+    /** Run `trigger` (save / MSP reboot) and wait until the port drops. Returns false when the trigger never got
+     *  through or got no answer (save: the board did not say "saving"). */
+    private async expectReboot(trigger: () => Promise<void | boolean>): Promise<boolean> {
         this.expectDrop = true;
         const dropped = new Promise<boolean>(resolve => {
             if (!this.transport.isOpen) return resolve(true);
@@ -404,14 +521,17 @@ export class AutostartDevice {
             };
         });
         this.setPhase('rebooting');
+        let answered = true;
         try {
-            await trigger();
+            answered = (await trigger()) !== false;
         } catch (e) {
             if (!isFcError(e, 'lost') && !isFcError(e, 'not-open')) throw e;
+            answered = false;
         }
         const ok = await dropped;
         this.dropped = null;
         if (!ok) this.log('the port did not drop after the reboot command; continuing');
+        return answered;
     }
 
     private async reconnectAfterReboot() {
@@ -437,7 +557,13 @@ export class AutostartDevice {
     private async flushStop() {
         if (!this.stopAfterReconnect) return;
         this.stopAfterReconnect = false;
-        await this.sendStop();
+        try {
+            await this.sendStop();
+        } catch (e) {
+            this.stopFailEvents.emit(e);
+            throw e;
+        }
+        this.stopFlushEvents.emit();
     }
 
     // ---------- motor ----------
@@ -449,7 +575,8 @@ export class AutostartDevice {
 
     /**
      * STOP: all outputs to 1000 via MSP_SET_MOTOR, which makes the autostart program yield until the next boot.
-     * In the CLI the program is already stopped; while rebooting the stop is sent as soon as the board is back.
+     * In the CLI the program is already stopped; while connecting or rebooting the stop is sent as soon as the
+     * board answers.
      */
     async stopMotor(): Promise<'sent' | 'already-stopped' | 'queued'> {
         // reading / writing: the CLI is open or about to be (it stops the program); MSP written now would land
@@ -458,12 +585,36 @@ export class AutostartDevice {
             this.stopAfterReconnect = true; // in case a reboot follows
             return 'already-stopped';
         }
-        if (!this.transport.isOpen || this.phase === 'rebooting' || this.phase === 'reconnecting') {
+        // connecting: the board may have a CLI left open (MSP would be typed into it) or not answer at all (STOPs
+        // would crowd out the identification); sent the moment it is identified
+        if (!this.transport.isOpen || this.phase === 'connecting' || this.phase === 'rebooting' || this.phase === 'reconnecting') {
             this.stopAfterReconnect = true;
             return 'queued';
         }
         await this.sendStop();
         return 'sent';
+    }
+
+    /**
+     * STOP through the CLI (enter, then leave without a reboot): stops the program in every state, also on
+     * firmware 1.0, which ignores MSP_SET_MOTOR during the countdown. Used when STOP did not stop it.
+     */
+    async stopByCli(): Promise<void> {
+        await this.exclusive('reading', async () => {
+            await this.cli.enter();
+            await this.cli.exitNoReboot();
+            this.log('STOP through the CLI (enter, exit noreboot)');
+        });
+    }
+
+    /** a STOP waits for the board to be back (it dies with a Disconnect) */
+    get stopQueued() {
+        return this.stopAfterReconnect;
+    }
+
+    /** a save went to the board but could not be checked yet: it is checked when the board is back by itself */
+    get awaitingCheck() {
+        return this.unverified !== null;
     }
 
     /** Reboot the board: the program starts again from the beginning (countdown, ramp). */
@@ -569,8 +720,12 @@ export class AutostartDevice {
     // ---------- teardown ----------
 
     async disconnect() {
+        this.closing = true;
         this.abort.abort();
         await this.stopLive();
+        // an operation in progress ends at its next step: a write undoes its sets and leaves the CLI first
+        // (never "exit noreboot" with half a program in RAM), a reboot wait is cancelled by the abort
+        if (this.op) await Promise.race([this.op.catch(() => undefined), sleep(8000)]);
         this.setPhase('closed');
         if (this.cli.active) await this.cli.exitNoReboot().catch(() => undefined);
         await this.transport.close().catch(() => undefined);

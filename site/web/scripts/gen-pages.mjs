@@ -26,7 +26,24 @@ const template = readFileSync(join(web, 'template.html'), 'utf8');
 const shown = (re) => new Set(template.match(re) ?? []).size;
 if (shown(/\{\{faq\.q\d+\}\}/g) !== FAQ_COUNT) throw new Error(`template shows ${shown(/\{\{faq\.q\d+\}\}/g)} FAQ items, JSON-LD has ${FAQ_COUNT}`);
 if (shown(/\{\{install\.s\d+t\}\}/g) !== INSTALL_STEPS) throw new Error(`template shows ${shown(/\{\{install\.s\d+t\}\}/g)} install steps, JSON-LD has ${INSTALL_STEPS}`);
+// the VideoObject names the reel the page shows (web/public/video/)
+const VIDEO = { file: '/video/ma-r01-720.mp4', poster: '/video/ma-r01-poster.webp', uploadDate: '2026-10-20', duration: 'PT37S' };
+for (const f of [VIDEO.file, VIDEO.poster]) {
+    if (!template.includes(`"${f}"`)) throw new Error(`template does not show ${f}, the VideoObject names it`);
+    if (!existsSync(join(web, 'public', f))) throw new Error(`web/public${f} is missing`);
+}
 const en = { ...read(join(web, 'src/i18n/en.json')), ...readOpt(join(web, 'src/i18n/tool.en.json')) };
+
+/** width × height for the <img> of web/public/img/wiring-<lang>.svg: 1600 wide, the height from its viewBox */
+const wiringSize = (lang) => {
+    const f = join(web, 'public/img', `wiring-${lang}.svg`);
+    const vb = existsSync(f) ? /viewBox="\s*[-\d.]+[\s,]+[-\d.]+[\s,]+([\d.]+)[\s,]+([\d.]+)\s*"/.exec(readFileSync(f, 'utf8').slice(0, 4000)) : null;
+    if (!vb || !(Number(vb[1]) > 0) || !(Number(vb[2]) > 0)) {
+        console.warn(`[${lang}] wiring-${lang}.svg: no viewBox, the diagram box assumes 1600×1050`);
+        return [1600, 1050];
+    }
+    return [1600, Math.round((1600 * Number(vb[2])) / Number(vb[1]))];
+};
 
 const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 const strip = (s) => s.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
@@ -77,6 +94,19 @@ for (const lang of LANGS) {
                 sameAs: ['https://github.com/AndriiShramko', 'https://www.linkedin.com/in/andrii-shramko/']
             }
         },
+        {
+            '@context': 'https://schema.org',
+            '@type': 'VideoObject',
+            name: txt('video.ldname'),
+            description: txt('video.lddesc'),
+            thumbnailUrl: `${SITE}${VIDEO.poster}`,
+            contentUrl: `${SITE}${VIDEO.file}`,
+            uploadDate: VIDEO.uploadDate,
+            duration: VIDEO.duration,
+            // the voice is English on every page
+            inLanguage: 'en',
+            transcript: txt('video.transcript_html')
+        },
         { '@context': 'https://schema.org', '@type': 'FAQPage', mainEntity: faq },
         {
             '@context': 'https://schema.org',
@@ -88,6 +118,9 @@ for (const lang of LANGS) {
 
     const html = template.replace(/\{\{([a-zA-Z0-9_.]+)\}\}/g, (_m, key) => {
         if (key === 'lang') return lang;
+        // the wiring diagram's box has the SVG's own proportions (they differ per language): a lazy image that
+        // loads with other proportions moves everything below it, and a #hash jump lands off target
+        if (key === 'wiringW' || key === 'wiringH') return String(wiringSize(lang)[key === 'wiringW' ? 0 : 1]);
         if (key === 'jsonld') return JSON.stringify(jsonld).replace(/</g, '\\u003c');
         const v = dict[key];
         if (v === undefined) throw new Error(`template key "${key}" has no English text`);

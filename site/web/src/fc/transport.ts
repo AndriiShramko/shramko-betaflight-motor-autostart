@@ -11,6 +11,7 @@ export type FcErrorCode =
     | 'not-usb' // the picked port is not a USB one (a Bluetooth headset or phone link), so not the board
     | 'not-open'
     | 'lost' // the board disappeared (unplugged, rebooting)
+    | 'lost-connect' // the board disappeared while it was being connected (nothing reconnects by itself then)
     | 'timeout' // no answer in time
     | 'reconnect-timeout' // the board did not come back after a restart
     | 'no-answer' // something answers, but not like a Betaflight board
@@ -19,6 +20,7 @@ export type FcErrorCode =
     | 'cli-invalid-value'
     | 'cli-invalid-name'
     | 'verify' // values read back after saving differ from what was written
+    | 'not-saved' // the port dropped before the board said it saves: nothing was saved
     | 'not-ours' // Betaflight without the autostart module
     | 'busy-op' // another operation is still running
     | 'internal';
@@ -247,6 +249,9 @@ export class WebSerialTransport implements Transport {
             try {
                 await w.write(bytes);
             } catch (e) {
+                // the device is gone (a write fails with NetworkError): the port is lost even if no 'disconnect'
+                // event comes, so the device layer waits for it to come back instead of polling a dead port
+                if (errName(e) === 'NetworkError' && this.port === port) void this.lost();
                 throw new FcError('lost', errMsg(e));
             } finally {
                 try {
@@ -281,6 +286,8 @@ export class WebSerialTransport implements Transport {
         if (this.open_) return;
         const deadline = Date.now() + timeoutMs;
         const old = this.port;
+        /** the board is there but its port would not open (another program took it during the reboot) */
+        let busy: FcError | null = null;
         let wake: (() => void) | null = null;
         const onConnect = () => wake?.();
         this.serial.addEventListener?.('connect', onConnect);
@@ -297,14 +304,21 @@ export class WebSerialTransport implements Transport {
                 };
                 // a re-enumerated device is a new SerialPort object; the old one stays "disconnected"
                 const candidates = ports.filter(p => same(p) && p.connected !== false).sort((a, b) => (a === old ? 1 : 0) - (b === old ? 1 : 0));
+                busy = null;
                 for (const p of candidates) {
                     try {
                         await this.openPort(p);
                         return;
-                    } catch { /* not ready yet */ }
+                    } catch (e) {
+                        /* not ready yet, or held by another program */
+                        if (isFcError(e, 'busy')) busy = e;
+                    }
                 }
                 const left = deadline - Date.now();
-                if (left <= 0) throw new FcError('reconnect-timeout', `the board did not come back in ${Math.round(timeoutMs / 1000)} s`);
+                if (left <= 0) {
+                    if (busy) throw new FcError('busy', `the board is back but its port does not open: ${busy.message}`);
+                    throw new FcError('reconnect-timeout', `the board did not come back in ${Math.round(timeoutMs / 1000)} s`);
+                }
                 await new Promise<void>(resolve => {
                     const t = setTimeout(resolve, Math.min(this.pollMs, left));
                     wake = () => {

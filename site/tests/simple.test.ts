@@ -15,8 +15,10 @@ import {
     attention,
     capOf,
     cellFit,
+    cutoffVolts,
     describeProgram,
     effective,
+    effectiveCutoffCv,
     gustMix,
     hiddenDiffs,
     joinMinSec,
@@ -89,9 +91,13 @@ test('program: gusts never dip below Power (firmware raises the gust floor), eve
     const capped = line(keep(prog({ autostart_pattern: 'GUSTS', autostart_throttle: 30, autostart_throttle_limit: 40, autostart_gust_min: 50, autostart_gust_max: 90 })), 'power')!;
     assert.deepEqual([capped.key, capped.vars.lo, capped.vars.hi, capped.vars.pct], ['power.gustsCap', 40, 40, 30]);
     assert.equal(line(keep(prog({ autostart_pattern: 'GUSTS', autostart_throttle: 30, autostart_throttle_limit: 40, autostart_gust_min: 50, autostart_gust_max: 90, autostart_ramp: 0 })), 'power')!.key, 'power.gustsCapNow');
-    // gusts weaker than Power: the firmware runs them at Power (60–60), no "random gusts of 20–60 %"
+    // gusts weaker than Power: the firmware runs them at Power, i.e. there are no gusts at all — said so
     const weak = line(keep(prog({ autostart_pattern: 'GUSTS', autostart_throttle: 60, autostart_gust_min: 20, autostart_gust_max: 40 })), 'power')!;
-    assert.deepEqual([weak.key, weak.vars.lo, weak.vars.hi], ['power.gustsOne', 60, 60]);
+    assert.deepEqual([weak.key, weak.vars.lo, weak.vars.hi], ['power.gustsNone', 60, 60]);
+    assert.equal(line(keep(prog({ autostart_pattern: 'GUSTS', autostart_throttle: 70, autostart_gust_min: 40, autostart_gust_max: 70, autostart_ramp: 0 })), 'power')!.key, 'power.gustsNoneNow', 'a peak equal to Power is no gust either');
+    // a peak just above Power is a gust (negative control)
+    assert.equal(line(keep(prog({ autostart_pattern: 'GUSTS', autostart_throttle: 70, autostart_gust_min: 71, autostart_gust_max: 71 })), 'power')!.key, 'power.gustsOne');
+    assert.equal(line(keep(prog({ autostart_pattern: 'GUSTS', autostart_throttle: 70, autostart_gust_min: 40, autostart_gust_max: 71 })), 'power')!.key, 'power.gusts');
     assert.equal(line(keep(prog({ autostart_pattern: 'GUSTS', autostart_gust_min: 70, autostart_gust_max: 70, autostart_ramp: 0 })), 'power')!.key, 'power.gustsOneNow');
     // negative control: a real range stays a range
     assert.equal(line(keep(prog({ autostart_pattern: 'GUSTS', autostart_throttle: 20 })), 'power')!.key, 'power.gusts');
@@ -222,6 +228,44 @@ test('cell count vs the live voltage: fits, a suggestion when it does not, nothi
     assert.equal(cellFit(12.6, 6)!.guess, 3);
     assert.equal(cellFit(4.8, 6), null, 'USB back-feed is no battery');
     assert.equal(cellFit(24, 0), null, 'automatic count: nothing to check');
+});
+
+test('cell count vs the stop voltage (K2): 8S on a 24.4 V pack would stop at once; the guess never has its stop above the reading', () => {
+    // 24.4 V on 8S is 3.05 V per cell (a plausible LiPo) but below 8 × 3.30 = 26.4 V: never "fits"
+    const k2 = cellFit(24.4, 8, 330)!;
+    assert.deepEqual([k2.fits, k2.below, k2.stopV, k2.guess], [false, true, 26.4, 6]);
+    // a 6S pack below its stop voltage: 19.0 and 18.5 V (stop 19.8 V)
+    assert.deepEqual([cellFit(19.0, 6, 330)!.fits, cellFit(19.0, 6, 330)!.below], [false, true]);
+    assert.equal(cellFit(18.5, 6, 330)!.below, true);
+    // a stop voltage of 4.10 V per cell on 24.4 V / 6S: stop 24.6 V
+    assert.equal(cellFit(24.4, 6, 410)!.below, true);
+    // just above the stop voltage still fits (negative control at the edge)
+    assert.equal(cellFit(19.9, 6, 330)!.fits, true, '19.9 V > 19.8 V');
+    assert.equal(cellFit(19.8, 6, 330)!.below, false, 'at the stop voltage: not below');
+    // negative controls: the same packs with the stop voltage off, and a healthy 6S
+    assert.equal(cellFit(24.4, 8, 0)!.fits, true, 'without a cut-off only the per-cell check');
+    assert.equal(cellFit(24.4, 6, 330)!.fits, true);
+    assert.equal(cellFit(24.4, 6, 330)!.below, false);
+    // 1–249 count as 2.50 V per cell, like the firmware
+    assert.equal(cellFit(14.5, 6, 100)!.below, true, '6 × 2.50 = 15.0 V');
+    assert.equal(effectiveCutoffCv(100), 250);
+    assert.equal(effectiveCutoffCv(0), 0);
+    assert.equal(effectiveCutoffCv(330), 330);
+    assert.equal(cutoffVolts(100, 6), 15);
+});
+
+test('program: a "counts as plugged in from" no pack of this count reaches; Power 0 % does not turn', () => {
+    const high = line(keep(prog({ autostart_vbat_min: 300, autostart_cells: 6 })), 'start')!;
+    assert.deepEqual([high.key, high.tone, high.vars.v, high.vars.n], ['start.vbatHigh', 'bad', 30, 6]);
+    assert.equal(line(keep(prog({ autostart_vbat_min: 250, autostart_cells: 6 })), 'start')!.key, 'start.power', '25.0 V ≤ 6 × 4.2 V: fine');
+    assert.equal(line(prog({ autostart_vbat_min: 300, autostart_cells: 0 }), 'start')!.key, 'start.power', 'automatic count: not judged');
+    const zero = keep(prog({ autostart_throttle: 0 }));
+    assert.ok(zero.some(l => l.key === 'power.zero' && l.tone === 'warn'));
+    assert.ok(!keep(prog({ autostart_throttle: 0, autostart_pattern: 'GUSTS' })).some(l => l.key === 'power.zero'), 'gusts above 0 % do turn it');
+    assert.ok(!prog().some(l => l.key === 'power.zero'));
+    // a cut-off of 1–249 is shown as the 2.50 V the firmware uses
+    const low = line(keep(prog({ autostart_cell_cutoff: 100 })), 'run')!;
+    assert.deepEqual([low.vars.cut, low.vars.v], [2.5, 15]);
 });
 
 test('negative control for the old PRESET_KEYS bug: saved Power 30, Maximum power 40, run time 120 survive gusts On and the mix', () => {

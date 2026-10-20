@@ -21,14 +21,18 @@ const initLangSwitch = () => {
 
 const initCopyButtons = () => {
     document.querySelectorAll<HTMLButtonElement>('button[data-copy]').forEach((b) => {
+        // the label is kept once: a second click within 1.5 s must not make "Copied" the label for good
+        b.dataset.label ??= b.textContent ?? '';
+        let timer: ReturnType<typeof setTimeout> | null = null;
         b.addEventListener('click', () => {
             const text = document.getElementById(b.dataset.copy!)?.textContent ?? '';
             navigator.clipboard.writeText(text).then(() => {
-                const old = b.textContent;
                 b.textContent = t('ui.copied');
                 track('copy_prompt', b.dataset.copy);
-                setTimeout(() => {
-                    b.textContent = old;
+                if (timer) clearTimeout(timer);
+                timer = setTimeout(() => {
+                    timer = null;
+                    b.textContent = b.dataset.label ?? '';
                 }, 1500);
             }).catch(() => undefined);
         });
@@ -223,6 +227,16 @@ const mountConfigurator = async () => {
     }
 };
 
+// the visitor scrolled (wheel, touch, keys): the page then never scrolls by itself any more
+let userScrolled = false;
+const noteUserScroll = () => {
+    userScrolled = true;
+};
+for (const ev of ['wheel', 'touchmove'] as const) addEventListener(ev, noteUserScroll, { passive: true, once: true });
+addEventListener('keydown', (e) => {
+    if (['PageDown', 'PageUp', 'ArrowDown', 'ArrowUp', 'Home', 'End', ' '].includes(e.key)) noteUserScroll();
+});
+
 const main = async () => {
     initLangSwitch();
     initHeader();
@@ -235,14 +249,16 @@ const main = async () => {
     initFeedbackButtonPlacement();
     initConsent();
     await mountConfigurator();
-    // a deep link into the configurator (#tool-connect, #tool-status …) exists only after the mount
-    if (!hashFound && targetOf(location.hash)) {
+    // a deep link into the configurator (#tool-connect, #tool-status …) exists only after the mount; a target
+    // below the configurator moved when it mounted (its height changed): land on it again, unless the visitor
+    // has scrolled meanwhile
+    if (targetOf(location.hash) && (!hashFound || !userScrolled)) {
         revealHash();
         targetOf(location.hash)?.scrollIntoView({ block: 'start' });
     }
     const rel = await loadRelease();
     const el = document.getElementById('release');
-    if (el) el.textContent = `release ${rel}`;
+    if (el) el.textContent = t('ui.release', { v: rel });
     track('page_view', lang);
 };
 

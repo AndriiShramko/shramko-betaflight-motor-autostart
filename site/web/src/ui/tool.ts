@@ -11,7 +11,10 @@
 
 import './tool.css';
 import enStrings from '../i18n/tool.en.json';
-import { AutostartDevice, type BoardSettings, type Identity, type LiveSample, type Phase, type WriteStep } from '../fc/device';
+import { AutostartDevice, type BoardSettings, type Identity, type LateVerify, type LiveSample, type Phase, type WriteStep } from '../fc/device';
+import { CELL_PLAUSIBLE_MAX, EscTracker, StateClock, VoltSettle, plausibleVolts, type EscView, type StateTime } from '../fc/live';
+import { keepError, logLine, setDiagnosticsProvider } from './diagnostics';
+import { track } from './api';
 import {
     CHIP_VALUES,
     DEF,
@@ -31,6 +34,7 @@ import {
     describeProgram,
     diff,
     displayStep,
+    effectiveCutoffCv,
     fromDisplay,
     gustMix,
     hiddenDiffs,
@@ -41,6 +45,7 @@ import {
     splitMinSec,
     toDisplay,
     unitDecimals,
+    unitScale,
     type MoreId,
     type Note,
     type NumDef,
@@ -77,6 +82,8 @@ const NONZERO_FALLBACK: Record<string, number> = { autostart_run_time: 60, autos
 const HISTORY_S = 60;
 /** ESC and board voltages further apart than this: the cut-off may fire too late, calibrate */
 const ESC_APART_PCT = 5;
+/** a LiPo cell at rest this high is charged (a 6S at 23.4 V and up): a "low battery" stop then is not the charge */
+const FULL_CELL_V = 3.9;
 /** "More settings" open or closed, per visitor (the page works without storage) */
 const MORE_STORE = 'sma_more_open';
 /** the factory program (docs/settings.md, this build), shown before the board's own is read */
@@ -138,7 +145,13 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
     const tag = LOCALE_TAG[locale] ?? 'en-US';
     const fmt = (n: number, digits = 0) => new Intl.NumberFormat(tag, { maximumFractionDigits: digits, minimumFractionDigits: 0, useGrouping: false }).format(n);
     const fmtFixed = (n: number, digits: number) => new Intl.NumberFormat(tag, { maximumFractionDigits: digits, minimumFractionDigits: digits, useGrouping: false }).format(n);
-    const parseNum = (s: string) => parseFloat(s.replace(/\s/g, '').replace(',', '.'));
+    /** a typed number: a decimal point or comma; English thousands ("1,000") too; anything else is not a number */
+    const parseNum = (s: string) => {
+        let t = String(s ?? '').replace(/[\s  ]/g, '');
+        if (locale === 'en' && /^[+-]?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) t = t.replace(/,/g, '');
+        else t = t.replace(',', '.');
+        return /^[+-]?(\d+(\.\d*)?|\.\d+)$/.test(t) ? parseFloat(t) : NaN;
+    };
     const fmtDuration = (total: number) => {
         const { min, sec } = splitMinSec(total);
         if (min && sec) return tr('tool.dur.minSec', { m: fmt(min), s: fmt(sec) });
@@ -175,11 +188,50 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
     /** "Other" chosen in a quick-pick question although the value equals a chip */
     const otherOn: Record<string, boolean> = {};
     let lastTimed = NONZERO_FALLBACK.autostart_run_time;
+    /** the last non-zero value of each zero-capable setting the visitor had (survives a rebuild after a save) */
+    const lastNonZero: Record<string, number> = {};
     const offs: (() => void)[] = [];
+    /** one per Connect: events and awaits of an older session are ignored (Disconnect, a new Connect) */
+    let session = 0;
+    /** Connect pressed and not finished: a second click does nothing */
+    let connecting = false;
+    /** Disconnect not finished yet: Connect waits */
+    let disconnecting = false;
+    // live data the page can trust (fc/live.ts)
+    const escTrack = new EscTracker();
+    let esc: EscView = escTrack.push(0, []);
+    const clock = new StateClock();
+    let stateTime: StateTime = { sec: 0, exact: true };
+    const settle = new VoltSettle();
+    /** the battery reading has settled after a plug-in (the firmware ignores the first 3 s too) */
+    let voltsSettled = false;
+    /** the board's battery was away in the last sample (a battery swap with USB connected restarts the ESC) */
+    let batteryGone = false;
+    /** debug[6] (s since the battery appeared) of the last sample: it starts again at a new plug-in */
+    let lastSinceBattery: number | null = null;
+    /** RAMP/RUN with power while the ESC never answered / never turned: since when (the motor may only beep) */
+    let noTurnSince: number | null = null;
+    /** STOP was pressed: check that the board really stopped */
+    let stopCheck: { at: number; samples: number; retried: boolean; quiet?: boolean } | null = null;
+    /** what the page waits to say when the board is back by itself */
+    let pendingBack: 'save' | 'run' | 'lost' | null = null;
+    let lateResult: LateVerify | null = null;
+    /** the save message reflects these pending changes; another edit makes it stale */
+    let saveMsgFor: string | null = null;
+    /** a STOP that did not reach the board: repeat the alarm while the outputs still drive the motor */
+    let stopFailed = false;
+    /** when it failed: only a later sample can show that the motor stopped after all */
+    let stopFailedAt = 0;
+    /** a Run with the mode not known (settings not read): the first answers after the restart choose the words */
+    let restartWatch: { since: number } | null = null;
 
     const addLog = (l: string) => {
         log.push(`${new Date().toISOString().substring(11, 19)} ${l}`);
         if (log.length > 80) log.shift();
+        logLine(`tool ${l}`); // the page's report log (sent only with consent)
+    };
+    const trackTool = (name: string, p?: string) => {
+        if (!mock) track(name, p); // the demo is not counted
     };
 
     // ---------- skeleton ----------
@@ -390,6 +442,11 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         el.textContent = text;
         el.className = `st-msg${kind ? ` st-${kind}` : ''}`;
         delete el.dataset.result;
+        delete el.dataset.lost;
+        delete el.dataset.queued;
+        if (el === saveMsg) saveMsgFor = null;
+        // anything else said there (STOP, a read) replaces the words a Run was still waiting for
+        if (el === liveMsg) restartWatch = null;
     };
     const focusEl = (el: HTMLElement | null) => {
         if (el && !el.hidden) el.focus();
@@ -411,8 +468,12 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
 
     const showError = (e: unknown, where: HTMLElement = errorBox, offerAllPorts = false) => {
         const text = errorText(e);
+        const code = e instanceof FcError ? e.code : 'internal';
         lastError = e instanceof FcError ? `${e.code}: ${e.message}` : String(e);
         addLog(`error ${lastError}`);
+        keepError('tool', lastError); // the page's report ring (sent only with consent)
+        // a cancelled picker is the visitor's own choice, not an error worth counting
+        if (code !== 'cancelled') trackTool('tool_error', code);
         alarm(text);
         if (where === errorBox) {
             errorBox.replaceChildren(h('p', { text }));
@@ -423,10 +484,16 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             }
             show(errorBox, true);
         } else setMsg(where, text, 'err');
+        // "disconnected" texts are replaced once the board is back by itself
+        if (code === 'lost' || code === 'reconnect-timeout') {
+            where.dataset.lost = '1';
+            if (!pendingBack) pendingBack = 'lost';
+        }
     };
     const clearError = () => {
         show(errorBox, false);
         errorBox.replaceChildren();
+        delete errorBox.dataset.lost;
     };
 
     // ---------- support ----------
@@ -438,6 +505,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         show(supportEl, !!key);
         connectBtn.disabled = support === 'none' || support === 'insecure';
         allPortsBtn.disabled = connectBtn.disabled;
+        if (support === 'none' || support === 'insecure') trackTool('tool_unsupported', support);
     };
 
     // ---------- values in words ----------
@@ -476,17 +544,24 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             .filter(Boolean)
             .join(', ');
 
+    /** a number in its unit: volts always with their decimals (3.30 V per cell, 6.0 V), the rest without trailing zeros */
+    const numText = (d: NumDef, raw: number) => {
+        const x = toDisplay(d, raw);
+        return d.unit === 'cV' || d.unit === 'dV' ? fmtFixed(x, unitDecimals(d.unit)) : fmt(x, unitDecimals(d.unit));
+    };
+    /** RC switch ids the firmware knows: 40–43 (USER1–4) and 255 (none); the CLI accepts any 0–255 */
+    const boxLabel = (v: number) => (v === 255 ? tr('tool.opt.autostart_box.255') : v >= 40 && v <= 43 ? `USER${v - 39}` : tr('tool.opt.autostart_box.unknown', { n: v }));
     const showValue = (name: string, v: Value): string => {
         const d = DEF[name];
         if (!d) return String(v);
         if (d.kind === 'enum') return optLabel(name, v);
-        if (d.kind === 'choice') return Number(v) === 255 ? tr('tool.opt.autostart_box.255') : `USER${Number(v) - 39}`;
+        if (d.kind === 'choice') return boxLabel(Number(v));
         if (d.kind === 'mask') return maskList(v);
         if (d.zero && Number(v) === 0) return tr(`tool.zero.${name}`);
         if (name === 'autostart_run_time') return fmtDuration(Number(v));
         if (name === 'autostart_cells') return tr('tool.chip.cells', { n: fmt(Number(v)) });
         const u = unitLabel(d);
-        return `${fmt(toDisplay(d, Number(v)), unitDecimals(d.unit))}${u ? ` ${u}` : ''}`;
+        return `${numText(d, Number(v))}${u ? ` ${u}` : ''}`;
     };
     const itemText = (name: string, v: Value = edited[name]) => tr('tool.item', { name: labelOf(name), value: showValue(name, v) });
     /** every item by name: the closed drawer must name each hidden value that differs (no "and N more") */
@@ -497,10 +572,11 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         const d = e.def;
         if (n.kind === 'swapped') return tr('tool.note.swapped');
         if (n.kind === 'mask-empty') return tr('tool.note.mask');
+        if (n.kind === 'rounded') return tr('tool.note.rounded', { to: showValue(n.name, n.to!) });
         if (n.kind === 'invalid') return tr('tool.note.invalid', { to: showValue(n.name, n.to!) });
         if (d.kind === 'num') {
             const lo = d.minNonZero && e.min === 0 ? d.minNonZero : d.zero && e.min === 0 ? 1 : e.min;
-            return tr('tool.note.clamped', { to: showValue(n.name, n.to!), min: fmt(toDisplay(d, lo), unitDecimals(d.unit)), max: fmt(toDisplay(d, e.max), unitDecimals(d.unit)) });
+            return tr('tool.note.clamped', { to: showValue(n.name, n.to!), min: numText(d, lo), max: numText(d, e.max) });
         }
         return tr('tool.note.invalid', { to: showValue(n.name, n.to!) });
     };
@@ -508,7 +584,8 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
     /** numbers of a program line as text (volts, durations, …) */
     const progVars = (vars: Record<string, number>) => {
         const out: Record<string, string> = {};
-        for (const [k, v] of Object.entries(vars)) out[k] = k === 'time' ? fmtDuration(v) : k === 'cut' ? fmtFixed(v, 2) : k === 'v' ? fmt(v, 2) : fmt(v, 1);
+        // pack volts with one decimal (19.8 V, 30.0 V), per-cell volts with two (3.30 V)
+        for (const [k, v] of Object.entries(vars)) out[k] = k === 'time' ? fmtDuration(v) : k === 'cut' ? fmtFixed(v, 2) : k === 'v' ? fmtFixed(v, 1) : fmt(v, 1);
         return out;
     };
     const programList = (lines: ProgramLine[]) =>
@@ -531,7 +608,8 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         closed: 'tool.status.closed'
     };
 
-    const connected = () => !!device && device.phase !== 'idle' && device.phase !== 'closed';
+    /** a board is on the other end: from the moment its port is open (also while it is being identified) */
+    const connected = () => !!device && device.phase !== 'idle' && device.phase !== 'closed' && (device.phase !== 'connecting' || device.transport.isOpen);
     /** the module is there (build says so or the settings showed it) */
     const hasModule = () => (board ? !!board.level : identity?.verdict === 'autostart');
     /** Motor status and Step 3 make sense only for a board with the module */
@@ -576,24 +654,30 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
     };
 
     let lastStatusKey = '';
+    /** why the last session ended: a plain Disconnect, or one that left the board running (said once, in idle) */
+    let closedKey = 'tool.status.closed';
     const renderPhase = () => {
         const p: Phase = device?.phase ?? 'idle';
         const on = connected();
         // a restart the page started (save, Run, reload) is not an unplugged board: "Waiting for the board…"
-        const key = p === 'reconnecting' && opBusy ? 'tool.step.reconnect' : phaseText[p];
-        statusEl.textContent = key ? tr(key) : p === 'idle' && closedNote ? tr('tool.status.closed') : '';
-        statusEl.className = `st-status st-phase-${p}`;
+        let key = p === 'reconnecting' && opBusy ? 'tool.step.reconnect' : phaseText[p];
+        // the page stopped waiting (10 min): not the same as a Disconnect
+        if (p === 'closed' && device?.gaveUp) key = 'tool.status.gaveUp';
+        statusEl.textContent = key ? tr(key) : p === 'idle' && closedNote ? tr(closedKey) : '';
+        statusEl.className = `st-status st-phase-${p}${p === 'idle' && closedNote && closedKey !== 'tool.status.closed' ? ' st-warn-text' : ''}`;
+        const busyConnect = p === 'connecting' || connecting || disconnecting;
         show(intro, !on);
-        show(connectRow, !on);
-        connectBtn.textContent = p === 'connecting' ? tr('tool.connecting') : tr('tool.connect');
-        connectBtn.disabled = p === 'connecting' || support === 'none' || support === 'insecure';
+        show(connectRow, !on || p === 'connecting');
+        connectBtn.textContent = busyConnect && !disconnecting ? tr('tool.connecting') : tr('tool.connect');
+        connectBtn.disabled = busyConnect || support === 'none' || support === 'insecure';
         allPortsBtn.disabled = connectBtn.disabled;
         connLine.textContent = connText();
-        // the row also holds the STOP bar (fixed): shown in every connected phase but connecting
-        show(connRow, on && p !== 'connecting');
+        // the row also holds the STOP bar (fixed): shown whenever a board is on the other end, from the moment its
+        // port is open (a board may already be running its program while it is identified)
+        show(connRow, on);
         show(connLine, !!identity);
         show(disconnectBtn, !!identity);
-        show(stopBar, on && p !== 'connecting');
+        show(stopBar, on);
         for (const b of stopButtons) if (b !== stopBtn) show(b, on);
         show(factsDet, on && !!identity);
         const usable = on && boardUsable();
@@ -648,11 +732,69 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         } else show(levelNote, false);
     };
 
-    const onPhase = () => {
-        if (device?.phase === 'ready') {
-            identity = device.identity;
-            renderFacts();
+    /** the board came back by itself: replace "disconnected" texts with what is true now */
+    const onBack = () => {
+        const what = pendingBack;
+        pendingBack = null;
+        if (what === 'save') {
+            const r = lateResult;
+            lateResult = null;
+            if (r?.ok && device) {
+                // the save went through: the board has the values; show them and say so
+                board = r.settings;
+                edited = { ...board.values };
+                extra = {};
+                clearNotes();
+                justSaved = true;
+                resetOther();
+                buildForm();
+                renderFacts();
+                showSaved(r.verified.length, tr('tool.back.saved'));
+                return;
+            }
+            if (r && !r.ok) {
+                board = r.settings;
+                buildForm();
+                showError(new FcError('verify', 'late check', { mismatches: r.mismatches }), saveMsg);
+                return;
+            }
+            setMsg(saveMsg, tr('tool.back.unknown'), 'warn');
+            say(tr('tool.back.unknown'));
+            return;
         }
+        if (what === 'run') {
+            const text = tr(heldBy === 'stop' ? 'tool.restart.stopped' : 'tool.back.run');
+            setMsg(liveMsg, text, 'ok');
+            say(text);
+            return;
+        }
+        if (what === 'lost') {
+            // the error texts that said "disconnected" are not true any more
+            if (!errorBox.hidden && errorBox.dataset.lost === '1') clearError();
+            for (const el of [liveMsg, saveMsg, preMsg]) if (el.dataset.lost === '1') setMsg(el, tr('tool.back.ok'), 'ok');
+            say(tr('tool.back.ok'));
+        }
+    };
+
+    let prevPhase: Phase = 'idle';
+    const onPhase = () => {
+        const p = device?.phase ?? 'idle';
+        // the board restarts: what MSP shows next may be from before (ESC voltage, uptime)
+        if (p === 'rebooting' || p === 'reconnecting') {
+            escTrack.restart('board');
+            settle.reset();
+            voltsSettled = false;
+            noTurnSince = null;
+            // debug[6] starts again with the board: that is not a battery plug-in
+            lastSinceBattery = null;
+            if (p === 'reconnecting' && !opBusy && prevPhase !== 'rebooting' && !pendingBack) pendingBack = 'lost';
+        }
+        if (p === 'ready') {
+            identity = device!.identity;
+            renderFacts();
+            if (!opBusy && (prevPhase === 'reconnecting' || prevPhase === 'reading') && pendingBack) onBack();
+        }
+        prevPhase = p;
         renderPhase();
     };
 
@@ -667,6 +809,20 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         justSaved = false;
         lastMain = undefined;
         autoOpened.clear();
+        escTrack.reset();
+        esc = escTrack.push(0, []);
+        clock.reset();
+        settle.reset();
+        voltsSettled = false;
+        batteryGone = false;
+        lastSinceBattery = null;
+        noTurnSince = null;
+        stopCheck = null;
+        stopFailed = false;
+        pendingBack = null;
+        lateResult = null;
+        prevPhase = 'idle';
+        for (const k of Object.keys(lastNonZero)) delete lastNonZero[k];
         buildForm();
         setMsg(liveMsg, '');
         setMsg(preMsg, '');
@@ -675,52 +831,132 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         delete liveWarn.dataset.sig;
     };
 
+    /** the end of a device: its events no longer reach the page */
+    const dropDevice = () => offs.splice(0).forEach(f => f());
+
     const connect = async (anyPort = false) => {
+        // a double click, or a Disconnect still finishing: one Connect at a time
+        if (connecting || disconnecting || (device && device.phase !== 'closed' && device.phase !== 'idle')) return;
+        connecting = true;
+        const my = ++session;
+        renderPhase(); // Connect disabled at once (synchronously)
         clearError();
         closedNote = false;
-        if (device) await device.disconnect().catch(() => undefined);
-        offs.splice(0).forEach(f => f());
-        let serial: SerialLike;
         try {
-            if (mock) {
-                const m = await import('../fc/mockfc');
-                serial = new m.MockSerial(new m.MockFc(m.mockOptionsFromQuery(params)));
-            } else serial = await (serialReady ?? browserSerial());
-        } catch (e) {
-            showError(e, errorBox, true);
-            return;
-        }
-        const timeout = mock && params.has('mockReconnectTimeout') ? Number(params.get('mockReconnectTimeout')) : 20000;
-        const dev = new AutostartDevice(new WebSerialTransport(serial), { reconnectTimeoutMs: Number.isFinite(timeout) ? timeout : 20000, log: addLog });
-        device = dev;
-        offs.push(dev.phaseEvents.on(onPhase), dev.liveEvents.on(onLive));
-        resetSession();
-        renderPhase();
-        try {
-            identity = await dev.connect({ anyPort });
-            renderFacts();
+            if (device) {
+                const old = device;
+                device = null;
+                dropDevice();
+                await old.disconnect().catch(() => undefined);
+            }
+            let serial: SerialLike;
+            try {
+                if (mock) {
+                    const m = await import('../fc/mockfc');
+                    const fc = new m.MockFc(m.mockOptionsFromQuery(params));
+                    // demo only: the emulated boards are reachable from the console and the tests (window.__mocks)
+                    const w = window as unknown as { __mocks?: unknown[] };
+                    (w.__mocks ??= []).push(fc);
+                    serial = new m.MockSerial(fc);
+                } else serial = await (serialReady ?? browserSerial());
+            } catch (e) {
+                showError(e, errorBox, true);
+                return;
+            }
+            if (my !== session) return;
+            const timeout = mock && params.has('mockReconnectTimeout') ? Number(params.get('mockReconnectTimeout')) : 20000;
+            const dev = new AutostartDevice(new WebSerialTransport(serial), { reconnectTimeoutMs: Number.isFinite(timeout) ? timeout : 20000, log: addLog });
+            device = dev;
+            resetSession();
+            // only the current device's events reach the page
+            offs.push(
+                dev.phaseEvents.on(() => device === dev && onPhase()),
+                dev.liveEvents.on(s => device === dev && onLive(s)),
+                dev.logEvents.on(l => device === dev && l.startsWith('port open') && renderPhase()),
+                dev.lateVerifyEvents.on(r => {
+                    if (device === dev) lateResult = r;
+                }),
+                dev.stopFlushEvents.on(() => {
+                    // a STOP the visitor pressed while the board was away has been sent now: check it took effect
+                    if (device !== dev || liveMsg.dataset.queued !== '1') return;
+                    // inside Save / Run the operation says what happened; the check stays quiet then
+                    stopCheck = { at: Date.now(), samples: 0, retried: false, quiet: opBusy };
+                    if (opBusy) return;
+                    setMsg(liveMsg, tr('tool.stop.checking'), 'ok');
+                    say(tr('tool.stop.checking'));
+                }),
+                dev.stopFailEvents.on(e => {
+                    // the board is back, but the STOP the visitor pressed meanwhile did not get through
+                    if (device !== dev || liveMsg.dataset.queued !== '1') return;
+                    stopNotSent(e);
+                })
+            );
             renderPhase();
-            say(connText());
-            // the Connect button is gone: focus the connection line (the next Tab is STOP), unless the
-            // visitor already moved on to something else
-            const a = document.activeElement;
-            if (!a || a === document.body || connectCard.contains(a)) connLine.focus();
-        } catch (e) {
-            if (device === dev) device = null;
-            showError(e, errorBox, true);
+            try {
+                identity = await dev.connect({ anyPort });
+                if (device !== dev) return;
+                renderFacts();
+                renderPhase();
+                say(connText());
+                trackTool('tool_connect');
+                // the Connect button is gone: focus the connection line (the next Tab is STOP), unless the
+                // visitor already moved on to something else
+                const a = document.activeElement;
+                if (!a || a === document.body || connectCard.contains(a)) connLine.focus();
+            } catch (e) {
+                if (device !== dev) return;
+                // a STOP pressed while connecting waited for the board to answer: it never did
+                const stopLost = dev.stopQueued && liveMsg.dataset.queued === '1';
+                // this device is given up for good: nothing of it keeps waiting, polling or holding the port
+                device = null;
+                dropDevice();
+                await dev.disconnect().catch(() => undefined);
+                resetSession();
+                const code = e instanceof FcError ? e.code : 'internal';
+                trackTool('tool_connect_fail', code);
+                // unplugged while connecting: nothing reconnects by itself here
+                showError(code === 'lost' || code === 'not-open' ? new FcError('lost-connect', String(e)) : e, errorBox, true);
+                if (stopLost) {
+                    // said first and loudest: the motor may be running and nothing here can stop it
+                    const why = errorBox.querySelector('p')?.textContent ?? '';
+                    errorBox.prepend(h('p', { class: 'st-note st-bad', text: tr('tool.stop.failed') }));
+                    alarm(`${tr('tool.stop.failed')} ${why}`.trim());
+                }
+            }
+        } finally {
+            connecting = false; // one Connect at a time: this was it
+            renderPhase();
         }
-        renderPhase();
     };
 
     const disconnect = async (refocus = false) => {
         const d = device;
+        // what the board does once the page lets go of it (said in the status line)
+        closedKey = 'tool.status.closed';
+        if (d) {
+            const p = d.phase;
+            const s = last;
+            const running = !!s && s.state !== null && s.state >= 1 && s.state <= 3 && !s.flags?.held;
+            if (p === 'rebooting' || p === 'reconnecting') closedKey = 'tool.status.closedRestart';
+            else if (running) closedKey = s!.state === 1 ? 'tool.status.closedStarting' : 'tool.status.closedRunning';
+        }
+        session++;
         device = null;
-        if (d) await d.disconnect().catch(() => undefined);
-        offs.splice(0).forEach(f => f());
+        disconnecting = true;
+        // the old device's events stop here, before the await: a Connect clicked meanwhile is never unsubscribed
+        dropDevice();
+        renderPhase();
+        try {
+            if (d) await d.disconnect().catch(() => undefined);
+        } finally {
+            disconnecting = false;
+        }
+        if (device) return; // a new Connect already took over
         resetSession();
         renderFacts();
         closedNote = !!d;
         renderPhase();
+        if (closedKey !== 'tool.status.closed') alarm(tr(closedKey));
         // Disconnect disappeared with the connection line: back to Connect
         if (refocus) focusEl(connectBtn);
     };
@@ -735,32 +971,69 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
     const stateLine = (s: LiveSample): [string, string] => {
         if (s.misses >= 3) return [tr('tool.live.noAnswer'), ''];
         if (s.state === null) return [tr('tool.state.unknown'), ''];
-        const sec = (s.msInState ?? 0) / 1000;
+        // the time in the state, also past the firmware's 655 s (1.0: 327 s) counter
+        const { sec, exact } = stateTime;
         const delay = savedNum('autostart_delay');
         const ramp = savedNum('autostart_ramp');
         const run = savedNum('autostart_run_time');
+        const mode = board?.values.autostart_mode;
+        const held = !!s.flags?.held;
+        // why the board holds the program: this page's settings or STOP, or something else (a reload, the
+        // Betaflight App's CLI or Motors tab, an ESC tool) — then no "Stopped with STOP"
+        const heldLine = (): [string, string] =>
+            heldBy === 'settings' ? [tr('tool.live.paused'), tr('tool.live.pausedSub')] : heldBy === 'stop' ? [tr('tool.live.stopped'), tr('tool.live.stoppedSub')] : [tr('tool.live.held'), tr('tool.live.heldSub')];
         switch (s.state) {
             case 0: {
                 if (s.motors.slice(0, 8).some(m => m > 1000)) return [tr('tool.live.manual'), ''];
-                if (s.flags?.held) return heldBy === 'settings' ? [tr('tool.live.paused'), tr('tool.live.pausedSub')] : [tr('tool.live.stopped'), tr('tool.live.stoppedSub')];
-                const mode = board?.values.autostart_mode;
+                if (held) return heldLine();
                 if (mode === 'OFF') return [tr('tool.live.off'), tr('tool.live.offSub')];
                 if (board?.values.autostart_usb_inhibit === 'ON' && s.flags?.usb) return [tr('tool.live.usbHeld'), tr('tool.live.usbHeldSub')];
                 if (mode === 'BUTTON') return [tr('tool.live.waitButton'), ''];
-                if (s.flags && !s.flags.battery && savedNum('autostart_vbat_min') !== 0)
+                if (s.flags && !s.flags.battery && savedNum('autostart_vbat_min') !== 0) {
+                    // a battery is there, but below "Battery counts as plugged in from": plugging it in again won't help
+                    const v = s.battery?.volts ?? 0;
+                    const vmin = savedNum('autostart_vbat_min');
+                    if (v >= 1 && vmin !== null && v < vmin / 10) return [tr('tool.live.waitBattery'), tr('tool.live.belowVbatMin', { v: fmtFixed(v, 1), min: fmtFixed(vmin / 10, 1) })];
                     return [tr('tool.live.waitBattery'), delay !== null ? tr('tool.live.waitBatterySub', { s: fmt(Math.max(delay, MIN_START_S)) }) : ''];
+                }
                 return [tr('tool.state.0'), ''];
             }
-            case 1:
-                return [tr('tool.state.1'), delay !== null ? tr('tool.live.countdown', { s: fmt(Math.max(0, Math.ceil(delay - sec))) }) : tr('tool.live.elapsed', { s: fmt(Math.floor(sec)) })];
+            case 1: {
+                if (delay === null) return [tr('tool.state.1'), tr('tool.live.elapsed', { s: fmt(Math.floor(sec)) })];
+                // the ramp never starts before the ESC had 3 s of stop frames since the battery appeared
+                const sinceBattery = s.sinceBatteryS ?? s.uptimeS ?? Infinity;
+                const byDelay = delay - sec;
+                const left = Math.max(byDelay, MIN_START_S - sinceBattery, 0);
+                const arming = byDelay <= 0 && left > 0;
+                return [tr('tool.state.1'), tr(arming ? 'tool.live.countdownEsc' : 'tool.live.countdown', { s: fmt(Math.ceil(left)) })];
+            }
             case 2:
                 return [tr('tool.state.2'), ramp !== null ? tr('tool.live.rampLeft', { s: fmt(Math.max(0, ramp / 10 - sec), 1) }) : tr('tool.live.elapsed', { s: fmt(Math.floor(sec)) })];
             case 3:
-                return [tr('tool.state.3'), run ? tr('tool.live.runLeft', { s: fmt(Math.max(0, Math.ceil(run - sec))) }) : ''];
+                if (!run) return [tr('tool.state.3'), ''];
+                // connected after the counter had stopped: only an upper bound of what is left is known
+                if (!exact) return [tr('tool.state.3'), tr('tool.live.runLeftMax', { t: fmtDuration(Math.max(1, Math.ceil(run - sec))) })];
+                return [tr('tool.state.3'), tr('tool.live.runLeft', { s: fmt(Math.max(0, Math.ceil(run - sec))) })];
             case 4:
+                // held: nothing starts again until a restart (a battery replug does nothing then)
+                if (held) return [tr('tool.state.4'), tr('tool.live.heldDoneSub')];
+                // a run started by the RC switch: switch it off and on; BUTTON: a click; POWER: Run or a replug
+                if (s.source === 3) return [tr('tool.state.4'), tr('tool.live.finishedRc')];
+                if (mode === 'BUTTON') return [tr('tool.state.4'), tr('tool.live.finishedButton')];
                 return [tr('tool.state.4'), tr('tool.live.finishedSub')];
-            case 5:
-                return [tr('tool.state.5'), tr('tool.live.lowSub')];
+            case 5: {
+                // a pack that reads charged for Betaflight's own cell guess, stopped for "low battery": a cell count
+                // (or stop voltage) on the board that does not fit this pack — charging would not help
+                const v = s.battery?.volts ?? 0;
+                const g = s.battery?.cells ?? 0;
+                if (g > 0 && v / g >= FULL_CELL_V && v / g <= CELL_PLAUSIBLE_MAX) {
+                    const n = board?.level ? savedNum('autostart_cells') : null;
+                    const vars = { v: fmtFixed(v, 1), c: fmtFixed(v / g, 2), g };
+                    if (n && n > 0 && n !== g) return [tr('tool.state.5'), tr('tool.live.lowCells', { ...vars, n })];
+                    if (!board?.level) return [tr('tool.state.5'), tr('tool.live.lowCheck', vars)];
+                }
+                return [tr('tool.state.5'), tr(held ? 'tool.live.heldLowSub' : 'tool.live.lowSub')];
+            }
             default:
                 return [tr('tool.state.unknown'), ''];
         }
@@ -780,29 +1053,54 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         const p = device?.phase ?? 'idle';
         let text = '';
         let pctText = '';
-        if (p === 'rebooting' || p === 'reconnecting') text = tr(p === 'rebooting' ? 'tool.bar.rebooting' : 'tool.bar.reconnecting');
+        if (p === 'connecting') text = tr('tool.status.connecting');
+        else if (p === 'rebooting' || p === 'reconnecting') text = tr(p === 'rebooting' ? 'tool.bar.rebooting' : 'tool.bar.reconnecting');
         else if (p === 'reading' || p === 'writing') text = tr(`tool.status.${p}`);
         else if (last) {
             const pct = samplePct(last);
             text = stateLine(last)[0];
-            if (pct !== null) pctText = ` · ${fmt(pct)} %`;
+            // the separator lives in its own flex item: CSS gives the gap (a leading space would collapse)
+            if (pct !== null) pctText = `· ${fmt(pct)} %`;
         }
         if (stopText.textContent !== text) stopText.textContent = text;
         if (stopPct.textContent !== pctText) stopPct.textContent = pctText;
     }
 
-    const escVolts = (): number => {
-        const s0 = last;
-        if (!s0 || s0.bestOutput < 0) return 0;
-        const v = s0.esc[s0.bestOutput]?.volts ?? 0;
-        return v > 1 ? v : 0;
+    /** the cell count a voltage is judged against: the one in the form, else the saved one; null = not known */
+    const judgeCells = (): number | null => {
+        const e = Number(edited.autostart_cells);
+        if (board?.level && board.eff.autostart_cells?.present && e > 0) return e;
+        const c = savedNum('autostart_cells');
+        return c && c > 0 ? c : null;
+    };
+    type EscUse = { ev: number; use: boolean; why: 'none' | 'stale' | 'odd' | 'settling' | 'clamped' | 'ok'; n: number | null };
+    /**
+     * The ESC's voltage, and whether it may be used to judge or calibrate the board: only when the ESC is sending
+     * now (after a restart MSP keeps the LAST value until the motor turns), it fits the cell count, the board's
+     * reading has settled after a plug-in, and the scale it gives is inside the allowed range.
+     */
+    const escReading = (): EscUse => {
+        const v = last?.battery?.volts ?? 0;
+        const ev = esc.output >= 0 ? esc.volts : 0;
+        const n = judgeCells();
+        if (!(ev > 1)) return { ev: 0, use: false, why: 'none', n };
+        if (!esc.fresh) return { ev, use: false, why: 'stale', n };
+        if (!plausibleVolts(ev, n)) return { ev, use: false, why: 'odd', n };
+        if (!voltsSettled || v < 1) return { ev, use: false, why: 'settling', n };
+        const old = Number(board?.values.vbat_scale);
+        if (old > 0) {
+            const r = calibrateVbatScale(old, ev, v);
+            if (r.ok && r.clamped) return { ev, use: false, why: 'clamped', n };
+        }
+        return { ev, use: true, why: 'ok', n };
     };
     /** battery-voltage trouble the live data shows: the board's reading implausible, or the ESC disagrees */
     const calTrouble = () => {
         const v = last?.battery?.volts ?? 0;
-        const ev = escVolts();
-        const apart = ev > 0 && v >= 1 ? (Math.abs(v - ev) / ev) * 100 : 0;
-        return { implausible: !!last?.flags?.implausible && v >= 1, apart, mismatch: apart > ESC_APART_PCT, v, ev };
+        const r = escReading();
+        const apart = r.use && v >= 1 ? (Math.abs(v - r.ev) / r.ev) * 100 : 0;
+        // the board reads higher than the ESC: its battery stop comes too late (lower: too early)
+        return { implausible: !!last?.flags?.implausible && v >= 1 && voltsSettled, apart, mismatch: apart > ESC_APART_PCT, v, ev: r.ev, high: v > r.ev };
     };
     /** cell count the firmware uses: the saved one, else Betaflight's guess */
     const usedCells = () => {
@@ -826,32 +1124,129 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             const text = n ? tr('tool.warn.implausible', { v: fmtFixed(c.v, 2), n, c: fmtFixed(c.v / n, 2) }) : tr('tool.warn.implausibleAny', { v: fmtFixed(c.v, 2) });
             out.push(h('p', { class: 'st-note st-warn' }, text, ' ', calBtn()));
         }
-        if (c.mismatch) out.push(h('p', { class: 'st-note st-warn' }, tr('tool.warn.mismatch', { fc: fmtFixed(c.v, 2), esc: fmtFixed(c.ev, 2), d: fmtFixed(c.apart, 1) }), ' ', calBtn()));
+        if (c.mismatch) out.push(h('p', { class: 'st-note st-warn' }, tr(c.high ? 'tool.warn.mismatchHigh' : 'tool.warn.mismatchLow', { fc: fmtFixed(c.v, 2), esc: fmtFixed(c.ev, 2), d: fmtFixed(c.apart, 1) }), ' ', calBtn()));
         return out;
     };
     const calSig = () => {
         const c = calTrouble();
-        return `${c.implausible}|${c.mismatch}|${c.implausible || c.mismatch ? `${c.v.toFixed(1)}|${c.ev.toFixed(1)}|${usedCells()}|${board?.level}` : ''}`;
+        return `${c.implausible}|${c.mismatch}|${c.high}|${c.implausible || c.mismatch ? `${c.v.toFixed(1)}|${c.ev.toFixed(1)}|${usedCells()}|${board?.level}` : ''}`;
+    };
+
+    /** the saved pack is already below its stop voltage: the motor would stop at once (never starts) */
+    const belowStop = (): { v: number; stop: number; n: number } | null => {
+        if (board?.level !== '1.1' || !voltsSettled) return null;
+        const v = last?.battery?.volts ?? 0;
+        const n = savedNum('autostart_cells') || 0;
+        const f = cellFit(v, n, savedNum('autostart_cell_cutoff') ?? 0);
+        return f?.below && f.stopV !== null ? { v, stop: f.stopV, n } : null;
     };
 
     const renderLiveWarnings = () => {
         const lvl = board?.level ?? null;
         const cut = savedNum('autostart_cell_cutoff');
         const cells = savedNum('autostart_cells');
-        const sig = `${lvl}|${cut}|${cells}|${calSig()}`;
+        const below = belowStop();
+        const beep = noTurnSince !== null && !!last && last.at - noTurnSince >= 3000;
+        const sig = `${lvl}|${cut}|${cells}|${calSig()}|${below ? `${below.v.toFixed(1)}|${below.stop}` : ''}|${beep}|${stopFailed}`;
         rebuild(liveWarn, sig, () => {
             const out: Kid[] = [];
+            if (stopFailed) out.push(h('p', { class: 'st-note st-bad', text: tr('tool.stop.failed') }));
+            // the ESC stayed powered while the board restarted (USB bench, BLHeli_32): it beeps and does not turn
+            if (beep) out.push(h('p', { class: 'st-note st-warn', text: tr('tool.warn.beep') }));
             if (lvl === '1.0') out.push(h('p', { class: 'st-note st-bad' }, tr('tool.warn.fw10'), ' ', h('a', { href: RELEASES, target: '_blank', rel: 'noopener', text: tr('tool.level.link') })));
             else if (lvl) {
                 if (cut === 0) out.push(h('p', { class: 'st-note st-bad', text: tr('tool.warn.noCut') }));
                 if (cells === 0) out.push(h('p', { class: 'st-note st-warn', text: tr('tool.warn.auto') }));
+                if (below) out.push(h('p', { class: 'st-note st-bad', text: tr('tool.warn.belowStop', { v: fmtFixed(below.v, 1), stop: fmtFixed(below.stop, 1), n: below.n }) }));
             }
             return [...out, ...calWarnings()];
         });
     };
 
+    /** the words for a board that stopped: "stays stopped until Run" only when it says it holds the program (bit 64) */
+    const stoppedText = (s: LiveSample) => tr(s.flags?.held ? 'tool.stop.sent' : board?.level === '1.0' ? 'tool.stop.sent10' : 'tool.stop.sentNoHold');
+    /** STOP was sent: did the board really stop? (firmware 1.0 ignores it in the countdown) */
+    const checkStop = (s: LiveSample) => {
+        if (stopFailed && s.motors.slice(0, 8).some(m => m > 1000) && s.at - lastStopAlarm > 5000) {
+            lastStopAlarm = s.at;
+            alarm(tr('tool.stop.failed'));
+        }
+        // "STOP did not reach the board" is not true any more once a later answer shows every output at 1000 and the
+        // program held (bit 64) or not running (a countdown at 1000 would still start the motor)
+        if (stopFailed && s.misses === 0 && s.motors.length > 0 && s.at > stopFailedAt && !s.motors.slice(0, 8).some(m => m > 1000)) {
+            const st = s.state;
+            if (s.flags?.held || (st !== null && (st === 0 || st >= 4))) {
+                stopFailed = false;
+                if (liveMsg.textContent === tr('tool.stop.failed')) {
+                    const text = stoppedText(s);
+                    setMsg(liveMsg, text, 'ok');
+                    say(text);
+                }
+            }
+        }
+        if (!stopCheck || s.state === null || !device || device.phase !== 'ready') return;
+        stopCheck.samples++;
+        const outputsOn = s.motors.slice(0, 8).some(m => m > 1000);
+        const active = (s.state >= 1 && s.state <= 3) || outputsOn;
+        if (!active) {
+            const quiet = !!stopCheck.quiet && !stopFailed;
+            stopCheck = null;
+            stopFailed = false;
+            if (quiet) return;
+            // "stays stopped until Run" only when the board says it holds the program (bit 64, firmware 1.1)
+            const text = stoppedText(s);
+            setMsg(liveMsg, text, 'ok');
+            say(text);
+            return;
+        }
+        if (stopCheck.samples < 3) return;
+        if (!stopCheck.retried) {
+            // still counting down or running: once more — through the CLI in the countdown (firmware 1.0 needs it)
+            stopCheck.retried = true;
+            stopCheck.samples = 0;
+            const dev = device;
+            void (s.state === 1 && !outputsOn ? dev.stopByCli() : dev.stopMotor()).catch(() => undefined);
+            return;
+        }
+        stopCheck = null;
+        stopFailed = true;
+        stopFailedAt = s.at;
+        lastStopAlarm = s.at;
+        setMsg(liveMsg, tr('tool.stop.failed'), 'err');
+        alarm(tr('tool.stop.failed'));
+        void device.stopMotor().catch(() => undefined);
+    };
+    let lastStopAlarm = 0;
+
     const onLive = (s: LiveSample) => {
         last = s;
+        // what the page can trust: held ESC answers (sparse TX wire), the time past the firmware's counters, the
+        // battery reading only once it has settled after a plug-in
+        if (s.misses === 0) {
+            const mask = typeof board?.values.autostart_motors === 'number' ? board.values.autostart_motors : 0xff;
+            // the battery went away (unplugged, swapped) with USB connected: the ESC restarts and sends nothing until
+            // the motor turns, while MSP keeps the old pack's last frame — nothing from before counts any more
+            const bv = s.battery?.volts ?? null;
+            const gone = (bv !== null && bv < 1) || (s.flags !== null && !s.flags.battery);
+            const replugged = s.sinceBatteryS !== null && lastSinceBattery !== null && s.sinceBatteryS + 0.5 < lastSinceBattery;
+            if ((gone && !batteryGone) || replugged) {
+                escTrack.restart('battery');
+                settle.reset();
+                noTurnSince = null;
+            }
+            batteryGone = gone;
+            lastSinceBattery = s.sinceBatteryS;
+            esc = escTrack.push(s.at, s.esc, mask, s.motors);
+            if (s.state !== null) stateTime = clock.update(s, board?.level ?? null);
+            voltsSettled = settle.update(s.battery?.volts ?? 0, s.sinceBatteryS);
+            // RAMP/RUN with power, but the ESC (known to answer) does not turn: it may only be beeping
+            const driving = (s.state === 2 || s.state === 3) && (samplePct(s) ?? 0) >= 3;
+            const expectEsc = esc.seen || board?.dshotBidir === 'ON';
+            if (driving && expectEsc && (esc.output < 0 || esc.rpm === 0)) noTurnSince ??= s.at;
+            else noTurnSince = null;
+        }
+        checkStop(s);
+        watchRestart(s);
         const [line, sub] = stateLine(s);
         stateEl.textContent = line;
         stateEl.dataset.state = String(s.state ?? 'x');
@@ -896,8 +1291,9 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
                 parts.push(tr('tool.live.noCut'));
                 noCut = true;
             } else {
+                // the cut-off the firmware uses (1–249 count as 2.50 V per cell)
                 cut = cutoffVolts(cutCv ?? 0, cells);
-                if (cut !== null) parts.push(tr(savedCells ? 'tool.live.cells' : 'tool.live.cellsAuto', { n: cells, v: fmt(cut, 2) }));
+                if (cut !== null) parts.push(tr(savedCells ? 'tool.live.cells' : 'tool.live.cellsAuto', { n: cells, v: fmtFixed(cut, 1) }));
             }
             batSub.textContent = parts.join(' · ');
             batSub.classList.toggle('st-bad-text', noCut);
@@ -913,19 +1309,25 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             } else show(batBar, false);
         }
         renderLiveWarnings();
-        // ESC
-        if (s.bestOutput >= 0) {
-            const e = s.esc[s.bestOutput];
-            rpmVal.textContent = `${fmt(e.rpm)} ${tr('tool.unit.rpm')}`;
-            const parts = [tr('tool.live.rpmValue', { n: s.bestOutput + 1, bad: fmt(e.invalidPct, 1) })];
-            if (e.tempC > 0) parts.push(tr('tool.live.escTemp', { t: fmt(e.tempC) }));
-            if (e.volts > 0) parts.push(tr('tool.live.escVolts', { v: fmtFixed(e.volts, 2) }));
-            rpmSub.textContent = parts.join(' · ');
+        // ESC: an answer is held for a few seconds (the TX wire's samples are sparse), so the line does not flicker
+        let rv: string;
+        let rs: string;
+        if (esc.output >= 0) {
+            rv = `${fmt(esc.rpm)} ${tr('tool.unit.rpm')}`;
+            // bad frames exist only with DShot telemetry; over the TX wire they are always 0 and mean nothing
+            const parts = [esc.dshot && board?.dshotBidir !== 'OFF' ? tr('tool.live.rpmValue', { n: esc.output + 1, bad: fmt(esc.invalidPct, 1) }) : tr('tool.live.rpmOutput', { n: esc.output + 1 })];
+            if (esc.tempC > 0) parts.push(tr('tool.live.escTemp', { t: fmt(esc.tempC) }));
+            if (esc.volts > 0) parts.push(tr(esc.fresh ? 'tool.live.escVolts' : 'tool.live.escVoltsOld', { v: fmtFixed(esc.volts, 2) }));
+            rs = parts.join(' · ');
         } else {
-            rpmVal.textContent = '—';
-            // no ESC answers: without bidirectional DShot (and no ESC sensor wire) that is expected
-            rpmSub.textContent = board?.dshotBidir === 'OFF' ? tr('tool.live.noTelemetry') : s.esc.length ? tr('tool.live.noEsc') : '';
+            rv = '—';
+            // nothing answers: once an ESC answered in this session it is "no answer"; otherwise say what is wired
+            if (esc.seen || board?.dshotBidir === 'ON') rs = tr('tool.live.noEsc');
+            else if (board && board.escSensor === false && board.dshotBidir === 'OFF') rs = tr('tool.live.noTelemetry');
+            else rs = s.esc.length || board ? tr('tool.live.escWaitTurn') : '';
         }
+        if (rpmVal.textContent !== rv) rpmVal.textContent = rv;
+        if (rpmSub.textContent !== rs) rpmSub.textContent = rs;
         // flags
         const flagSig = s.flags ? (['usb', 'battery', 'rx', 'button', 'gust'] as const).map(k => (s.flags![k] ? 1 : 0)).join('') : '';
         rebuild(chips, flagSig, () => (s.flags ? (['usb', 'battery', 'rx', 'button', 'gust'] as const).map(k => h('li', { class: s.flags![k] ? 'st-on' : '', text: tr(`tool.live.flags.${k}`) })) : []));
@@ -951,7 +1353,8 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         updateStopState();
         calRender();
         renderBatteryQ();
-        // calibration needed: the drawer opens itself at the Battery fieldset (once, focus not moved)
+        // calibration needed: the drawer opens itself at the Battery fieldset (once, focus not moved); only for a
+        // settled reading and an ESC voltage that is fresh and plausible (calTrouble checks both)
         const c = calTrouble();
         if (board?.level && moreFs.battery && (c.implausible || c.mismatch) && !autoOpened.has('cal')) {
             autoOpened.add('cal');
@@ -967,17 +1370,30 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
     const moreFs: Partial<Record<MoreId, HTMLElement>> = {};
     let calBox: HTMLElement | null = null;
     let calRender: () => void = () => undefined;
+    /** forget the calibration box's last result (Undo, Reset) */
+    let calReset: () => void = () => undefined;
     let renderBatteryQ: () => void = () => undefined;
 
     const clearNotes = () => {
         for (const k of Object.keys(notes)) delete notes[k];
     };
-    /** a quick-pick question shows "Other" when its value matches no chip */
+    /** min/max pairs the firmware (and the save) will swap: both fields say so as soon as it happens */
+    const swapped = new Set<string>();
+    /** a quick-pick question shows "Other" when its value matches no chip (never for "counted automatically" = 0) */
     const resetOther = () => {
-        for (const [k, chipsOf] of Object.entries(CHIP_VALUES)) otherOn[k] = !chipsOf.includes(Number(edited[k]));
+        for (const [k, chipsOf] of Object.entries(CHIP_VALUES)) {
+            const v = Number(edited[k]);
+            otherOn[k] = !(DEF[k]?.kind === 'num' && (DEF[k] as NumDef).zero && v === 0) && !chipsOf.includes(v);
+        }
     };
+    /** remember the last non-zero value of a zero-capable setting (for when its "0" switch is turned off again) */
+    const keepNonZero = (name: string, v: Value | undefined) => {
+        if (Number(v) > 0) lastNonZero[name] = Number(v);
+    };
+    const nonZeroOf = (name: string, fallback: number) => lastNonZero[name] ?? (Number(board?.values[name]) || NONZERO_FALLBACK[name] || fallback);
 
     const setValue = (name: string, v: Value) => {
+        keepNonZero(name, edited[name]);
         edited[name] = v;
         justSaved = false;
         delete notes[name];
@@ -996,7 +1412,8 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             const changed = board!.values[name] !== undefined && !sameValue(board!.values[name], edited[name]);
             wrap.classList.toggle('st-changed', changed);
             wasEl.textContent = changed ? tr('tool.changed.from', { v: showValue(name, board!.values[name]) }) : '';
-            noteEl.textContent = notes[name] ?? '';
+            const note = notes[name] ?? (swapped.has(name) ? tr('tool.note.swapped') : '');
+            if (noteEl.textContent !== note) noteEl.textContent = note;
             wrap.dataset.value = String(edited[name]);
         };
         return { id, wasEl, noteEl, help, wrap, mark };
@@ -1011,16 +1428,28 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         const commit = (finalize: boolean) => {
             const raw = parseNum(input.value);
             const n: Note[] = [];
-            let v = Number.isFinite(raw) ? clampValue(e, fromDisplay(nd, raw), n) : clampValue(e, input.value, n);
+            let v: Value;
+            if (Number.isFinite(raw)) {
+                // the unit allows fewer decimals than typed: say so (0.333 s → 0.333, 3,3 s → 3)
+                const scaled = raw * unitScale(nd.unit);
+                v = clampValue(e, Math.round(scaled), n);
+                if (!n.length && Math.abs(scaled - Math.round(scaled)) > 1e-6) n.push({ name, kind: 'rounded', from: raw, to: v });
+            } else {
+                // half-typed ("", "-", "12abc"): wait for the box to be left, then keep the value it had
+                if (!finalize) return;
+                v = edited[name];
+                n.push({ name, kind: 'invalid', from: input.value, to: v });
+            }
             if (nd.zero && Number(v) === 0) {
                 if (!finalize) return;
                 v = clampValue(e, nd.minNonZero ?? Math.max(1, e.min));
                 n.splice(0, n.length, { name, kind: 'clamped', from: 0, to: v });
             }
+            keepNonZero(name, edited[name]);
             edited[name] = v;
             justSaved = false;
             if (finalize) {
-                if (n.length && n[0].kind !== 'rounded') notes[name] = noteText(n[0]);
+                if (n.length) notes[name] = noteText(n[0]);
                 else delete notes[name];
                 refreshForm();
             } else {
@@ -1043,7 +1472,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         const sync: Syncer = except => {
             if (except === name && document.activeElement === input) return; // keep what the visitor is typing
             const v = Number(edited[name]);
-            input.value = nd.zero && v === 0 ? '' : fmt(toDisplay(nd, v), dec);
+            input.value = nd.zero && v === 0 ? '' : numText(nd, v);
         };
         return { input, sync };
     };
@@ -1075,11 +1504,34 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             wrap.append(h('span', { class: 'st-flabel', id: `${id}-l` }, h('span', { text: labelOf(name) }), wasEl), group, help);
             sync = () => radios.forEach(r => (r.checked = sameValue(r.value, edited[name])));
         } else if (d.kind === 'choice') {
-            const sel = h('select', { id, 'aria-describedby': desc });
-            for (const c of d.choices) sel.append(h('option', { value: c, text: showValue(name, c) }));
+            // HGLRC_F405_S8: USER1 / USER2 also switch PINIO1 / PINIO2 (config.h): USER3 and USER4 are listed first
+            const pinio = /HGLRC_F405_S8/i.test(`${identity?.board.boardName ?? ''} ${identity?.board.targetName ?? ''}`);
+            const order = pinio ? [255, 42, 43, 40, 41] : d.choices;
+            const label = (c: number) => (pinio && (c === 40 || c === 41) ? tr('tool.opt.autostart_box.pinio', { user: boxLabel(c), n: c - 39 }) : showValue(name, c));
+            const sel = h('select', { id, 'aria-describedby': `${desc} ${id}-p` });
+            for (const c of order) sel.append(h('option', { value: c, text: label(c) }));
+            // an id the CLI accepted but the firmware ignores: shown as it is until it is changed
+            let odd: HTMLOptionElement | null = null;
+            const pinioNote = h('p', { class: 'st-fnote st-warn', id: `${id}-p`, hidden: true });
             sel.addEventListener('change', () => setValue(name, Number(sel.value)));
-            wrap.append(h('label', { for: id, class: 'st-flabel' }, h('span', { text: labelOf(name) }), wasEl), sel, help);
-            sync = () => (sel.value = String(edited[name]));
+            wrap.append(h('label', { for: id, class: 'st-flabel' }, h('span', { text: labelOf(name) }), wasEl), sel, help, pinioNote);
+            sync = () => {
+                const v = Number(edited[name]);
+                if (!d.choices.includes(v)) {
+                    if (!odd || odd.value !== String(v)) {
+                        odd?.remove();
+                        odd = h('option', { value: v, text: boxLabel(v) });
+                        sel.append(odd);
+                    }
+                } else if (odd) {
+                    odd.remove();
+                    odd = null;
+                }
+                sel.value = String(v);
+                const warn = pinio && (v === 40 || v === 41);
+                show(pinioNote, warn);
+                pinioNote.textContent = warn ? tr('tool.note.pinio', { n: v - 39 }) : '';
+            };
         } else if (d.kind === 'mask') {
             const motorCount = Math.max(4, last?.esc.length ?? 0, Number(board!.values[name]) & 0xf0 ? 8 : 0);
             const boxes: HTMLInputElement[] = [];
@@ -1116,24 +1568,29 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             const inrow = h('div', { class: 'st-inrow' }, num.input, h('span', { class: 'st-unit', text: unitLabel(nd) }), range);
             wrap.append(h('label', { for: id, class: 'st-flabel' }, h('span', { text: labelOf(name) }), wasEl), inrow);
             let zeroBox: HTMLInputElement | null = null;
-            const lastNonZero = { v: Number(board!.values[name]) || NONZERO_FALLBACK[name] || e.min };
             if (nd.zero) {
                 zeroBox = h('input', { type: 'checkbox', id: `${id}-z` });
                 const zb = zeroBox;
                 zb.addEventListener('change', () => {
                     if (zb.checked) {
-                        if (Number(edited[name]) !== 0) lastNonZero.v = Number(edited[name]);
+                        keepNonZero(name, edited[name]);
                         if (name === 'autostart_cell_cutoff') {
                             zb.checked = false; // only the confirm turns the battery protection off
                             void confirmZero(name, zb);
                         } else setValue(name, 0);
-                    } else setValue(name, clampValue(e, lastNonZero.v));
+                    } else setValue(name, clampValue(e, nonZeroOf(name, e.min)));
                 });
                 wrap.append(h('label', { class: 'st-check', for: `${id}-z` }, zb, h('span', { text: tr(`tool.box.${name}`) })));
             }
             const total = h('p', { class: 'st-help st-total' });
+            // a value that cannot work with this battery, said right at the field (Battery counts as plugged in from)
+            const fieldWarn = h('p', { class: 'st-fnote st-warn', id: `${id}-x`, hidden: true });
             wrap.append(help);
             if (name === 'autostart_cell_cutoff') wrap.append(total);
+            if (name === 'autostart_cell_cutoff' || name === 'autostart_vbat_min') {
+                wrap.append(fieldWarn);
+                num.input.setAttribute('aria-describedby', `${num.input.getAttribute('aria-describedby') ?? ''} ${fieldWarn.id}`.trim());
+            }
             sync = except => {
                 num.sync(except);
                 const v = Number(edited[name]);
@@ -1141,11 +1598,23 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
                 show(inrow, !isZero); // never an empty disabled box
                 if (zeroBox) zeroBox.checked = isZero;
                 if (range) range.value = String(v);
+                let warn = '';
                 if (name === 'autostart_cell_cutoff') {
                     const cells = Number(edited.autostart_cells) || last?.battery?.cells || 0;
                     const tv = cutoffVolts(v, cells);
-                    total.textContent = tv !== null ? tr('tool.cutoff.total', { v: fmt(tv, 2), n: cells }) : '';
+                    total.textContent = tv !== null ? tr('tool.cutoff.total', { v: fmtFixed(tv, 1), n: cells }) : '';
+                    // the CLI accepts 1–249; the firmware uses 2.50 V then, and saving writes 2.50
+                    const onBoard = Number(board!.values[name]);
+                    if (onBoard > 0 && onBoard < 250) warn = tr('tool.note.cutLow', { v: fmtFixed(onBoard / 100, 2) });
                 }
+                if (name === 'autostart_vbat_min' && v > 0) {
+                    const cells = Number(edited.autostart_cells) || 0;
+                    const live = last?.battery?.volts ?? 0;
+                    if (cells > 0 && v / 10 > cells * 4.2) warn = tr('tool.note.vbatHigh', { v: fmtFixed(v / 10, 1), n: cells });
+                    else if (live >= 1 && voltsSettled && v / 10 > live) warn = tr('tool.note.vbatLive', { v: fmtFixed(v / 10, 1), live: fmtFixed(live, 1) });
+                }
+                if (fieldWarn.textContent !== warn) fieldWarn.textContent = warn;
+                show(fieldWarn, !!warn);
             };
         }
         // a setting that does nothing with the current values says so in full contrast (not by fading the help)
@@ -1168,15 +1637,16 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         const name = 'autostart_cells';
         const id = `${uid}-cells-auto`;
         const box = h('input', { type: 'checkbox', id, 'aria-describedby': `${id}-h` });
-        const lastCells = { v: Number(board!.values[name]) || NONZERO_FALLBACK[name] };
         box.addEventListener('change', () => {
             if (box.checked) {
                 box.checked = false;
-                if (Number(edited[name]) > 0) lastCells.v = Number(edited[name]);
+                keepNonZero(name, edited[name]);
                 void confirmZero(name, box);
             } else {
-                otherOn[name] = !CHIP_VALUES[name].includes(lastCells.v);
-                setValue(name, lastCells.v);
+                // back to the count the visitor had before (also after a save with the automatic count)
+                const n = nonZeroOf(name, 6);
+                otherOn[name] = !CHIP_VALUES[name].includes(n);
+                setValue(name, n);
             }
         });
         const wrap = h(
@@ -1290,12 +1760,33 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             byPointer = false;
         });
         const commit = (finalize: boolean) => {
-            const s = parseNum(secIn.value);
-            const total = Number(clampValue(e, joinMinSec(parseNum(minIn.value), s)));
+            const mText = minIn.value.trim();
+            const sText = secIn.value.trim();
+            const m = mText === '' ? 0 : parseNum(mText);
+            const s = sText === '' ? 0 : parseNum(sText);
+            // half-typed or not a number: wait for the box to be left, then keep the time it had
+            if (!Number.isFinite(m) || !Number.isFinite(s) || m < 0 || s < 0) {
+                if (!finalize) return;
+                notes[name] = tr('tool.note.invalid', { to: fmtDuration(Number(edited[name]) || lastTimed) });
+                refreshForm();
+                return;
+            }
+            // "1,5" minutes is 1 min 30 s; seconds go 0–59; the total 1 s … 1092 min 15 s (what the board takes)
+            const whole = Math.floor(m);
+            const fromMin = Math.round((m - whole) * 60);
+            const wanted = whole * 60 + fromMin + s;
+            const total = Number(clampValue(e, fromMin ? Math.min(65535, Math.max(1, Math.round(wanted))) : joinMinSec(whole, s)));
             edited[name] = total;
             lastTimed = total;
             justSaved = false;
-            if (finalize && Number.isFinite(s) && (s > 59 || s < 0)) notes[name] = tr('tool.note.sec');
+            let note = '';
+            if (finalize) {
+                if (s > 59 && !fromMin) note = tr('tool.note.sec');
+                else if (wanted > 65535) note = tr('tool.note.runMax', { t: fmtDuration(65535) });
+                else if (Math.round(wanted) < 1) note = tr('tool.note.runMin');
+                else if (fromMin || s !== Math.round(s)) note = tr('tool.note.rounded', { to: fmtDuration(total) });
+            }
+            if (note) notes[name] = note;
             else delete notes[name];
             refreshForm(finalize ? undefined : name);
         };
@@ -1375,22 +1866,27 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         renderBatteryQ = () => {
             if (!board?.level || !board.eff.autostart_cells?.present) return;
             const cells = Number(edited.autostart_cells);
-            const cutCv = Number(edited.autostart_cell_cutoff);
+            // the cut-off the firmware uses (1–249 count as 2.50 V per cell)
+            const cutCv = effectiveCutoffCv(Number(edited.autostart_cell_cutoff));
             const tm = Number(edited.autostart_cutoff_time);
             show(qAuto, cells === 0);
+            // the check against the live voltage, once the reading has settled after a plug-in (like the firmware)
+            const v = last?.battery?.volts ?? 0;
+            const f = voltsSettled ? cellFit(v, cells, cutCv) : null;
             let prot: string;
             let tone: string;
             if (cutCv === 0) [prot, tone] = [tr('tool.prot.off'), 'bad'];
-            else if (cells > 0) [prot, tone] = [tr('tool.prot.on', { v: fmt((cells * cutCv) / 100, 2), n: cells, c: fmtFixed(cutCv / 100, 2), t: fmt(tm) }), 'ok'];
+            // "Protected" is not good news when the pack is already below the stop voltage
+            else if (cells > 0) [prot, tone] = [tr('tool.prot.on', { v: fmtFixed((cells * cutCv) / 100, 1), n: cells, c: fmtFixed(cutCv / 100, 2), t: fmt(tm) }), f?.below ? 'warn' : 'ok'];
             else [prot, tone] = [tr('tool.prot.onAuto', { c: fmtFixed(cutCv / 100, 2), t: fmt(tm) }), 'warn'];
             if (qProt.textContent !== prot) qProt.textContent = prot;
             qProt.className = `st-qline st-tone-${tone}`;
-            const v = last?.battery?.volts ?? 0;
-            const f = cellFit(v, cells);
-            rebuild(qFit, f ? `${f.fits}|${f.guess}|${v.toFixed(1)}|${cells}` : '', () => {
+            const fitText = (x: NonNullable<typeof f>) =>
+                x.below && x.stopV !== null ? tr('tool.fit.below', { v: fmtFixed(v, 1), stop: fmtFixed(x.stopV, 1), n: cells }) : tr('tool.fit.bad', { v: fmtFixed(v, 1), n: cells });
+            rebuild(qFit, f ? `${f.fits}|${f.below}|${f.guess}|${v.toFixed(1)}|${cells}|${cutCv}` : '', () => {
                 if (!f) return [];
                 if (f.fits) return [tr('tool.fit.ok', { v: fmtFixed(v, 1), n: cells })];
-                const out: Kid[] = [tr('tool.fit.bad', { v: fmtFixed(v, 1), n: cells })];
+                const out: Kid[] = [fitText(f)];
                 if (f.guess) {
                     const use = h('button', { type: 'button', class: 'st-btn st-small' }, tr('tool.fit.use', { g: f.guess }));
                     const g = f.guess;
@@ -1402,7 +1898,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
                 }
                 return out;
             });
-            qFit.className = `st-qline${f && !f.fits ? ' st-tone-warn' : ''}`;
+            qFit.className = `st-qline${f && !f.fits ? (f.below ? ' st-tone-bad' : ' st-tone-warn') : ''}`;
             show(qFit, !!f);
             rebuild(qCal, calSig(), calWarnings);
             // a wrong cell count picked by keyboard is not silent: "Doesn't fit 4S. Is it 6S?" once
@@ -1412,7 +1908,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             }
             if (f && !f.fits && fitSaidFor !== cells) {
                 fitSaidFor = cells;
-                say(`${tr('tool.fit.bad', { v: fmtFixed(v, 1), n: cells })}${f.guess ? ` ${tr('tool.fit.guess', { g: f.guess })}` : ''}`, true);
+                say(`${fitText(f)}${f.guess ? ` ${tr('tool.fit.guess', { g: f.guess })}` : ''}`, true);
             }
             describe.autostart_cells?.();
         };
@@ -1444,43 +1940,71 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             const s = v >= 1 ? tr('tool.cal.shown', { v: fmtFixed(v, 2) }) : tr('tool.cal.noReading');
             if (shown.textContent !== s) shown.textContent = s;
             apply.disabled = v < 1 || device?.phase !== 'ready';
-            const ev = escVolts();
-            if (ev > 0 && v >= 1) {
-                const apart = (Math.abs(v - ev) / ev) * 100;
-                escHint.textContent = tr('tool.cal.escHint', { esc: fmtFixed(ev, 2), fc: fmtFixed(v, 2), d: fmtFixed(apart, 1) });
-                escHint.className = apart > ESC_APART_PCT ? 'st-help st-warn' : 'st-help';
-                escApply.textContent = tr('tool.cal.escApply', { v: fmtFixed(ev, 2) });
-                escApply.disabled = device?.phase !== 'ready';
-                show(escApply, true);
-            } else {
-                escHint.textContent = tr('tool.cal.escNone');
-                escHint.className = 'st-help';
-                show(escApply, false);
+            const r = escReading();
+            let hint: string;
+            let warn = false;
+            let offer = false;
+            if (r.why === 'none' || v < 1) hint = tr('tool.cal.escNone');
+            // after a restart MSP keeps the ESC's LAST value until the motor turns: never offered then
+            else if (r.why === 'stale') hint = tr('tool.cal.escStale', { v: fmtFixed(r.ev, 2) });
+            else if (r.why === 'odd') hint = r.n ? tr('tool.cal.escOdd', { v: fmtFixed(r.ev, 2), n: r.n }) : tr('tool.cal.escOddAny', { v: fmtFixed(r.ev, 2) });
+            else if (r.why === 'settling') hint = tr('tool.cal.escSettling');
+            else if (r.why === 'clamped') hint = tr('tool.cal.escClamped', { v: fmtFixed(r.ev, 2) });
+            else {
+                const apart = (Math.abs(v - r.ev) / r.ev) * 100;
+                warn = apart > ESC_APART_PCT;
+                // within 5 %: fine, nothing to do (the button is not offered as if something were wrong)
+                hint = tr(warn ? 'tool.cal.escHintBad' : 'tool.cal.escHintOk', { esc: fmtFixed(r.ev, 2), fc: fmtFixed(v, 2), d: fmtFixed(apart, 1) });
+                offer = warn;
             }
+            if (escHint.textContent !== hint) escHint.textContent = hint;
+            escHint.className = warn ? 'st-help st-warn' : 'st-help';
+            if (offer) escApply.textContent = tr('tool.cal.escApply', { v: fmtFixed(r.ev, 2) });
+            escApply.disabled = device?.phase !== 'ready';
+            show(escApply, offer);
         };
-        const go = () => {
+        /** apply a reading the board should show: only one that fits the battery and gives an allowed scale */
+        const go = (fromEsc = false) => {
             const shownV = last?.battery?.volts ?? 0;
             const old = Number(board?.values.vbat_scale ?? 0);
-            const r = calibrateVbatScale(old, parseNum(input.value), shownV);
-            if (!r.ok) {
-                msg.textContent = r.reason === 'no-reading' ? tr('tool.cal.noReading') : tr('tool.cal.badInput');
+            const real = parseNum(input.value);
+            const r = calibrateVbatScale(old, real, shownV);
+            const refuse = (text: string) => {
+                msg.textContent = text;
                 msg.className = 'st-fnote st-warn';
+                say(text);
+            };
+            if (!r.ok) return refuse(r.reason === 'no-reading' ? tr('tool.cal.noReading') : tr('tool.cal.badInput'));
+            // a slipped decimal point (244 for 24.4, 2.44) is refused, never saved as a scale the page then flags
+            // the count in the form (or saved); unknown (automatic count, firmware 1.0): it must fit some LiPo
+            const n = judgeCells();
+            if (!plausibleVolts(real, n)) {
+                const cells = n ?? 0;
+                return refuse(cells ? tr('tool.cal.implausible', { v: fmt(real, 2), n: cells, lo: fmtFixed(cells * 2.5, 1), hi: fmtFixed(cells * 4.45, 1) }) : tr('tool.cal.badInput'));
+            }
+            if (r.clamped) return refuse(tr('tool.cal.clampedRefuse'));
+            if (r.scale === old && sameValue(edited.vbat_scale, old)) {
+                msg.textContent = tr('tool.cal.same', { old });
+                msg.className = 'st-fnote st-ok';
                 say(msg.textContent);
                 return;
             }
             setValue('vbat_scale', r.scale);
-            msg.textContent = tr('tool.cal.result', { new: r.scale, old }) + (r.clamped ? ` ${tr('tool.cal.clamped')}` : '');
+            msg.textContent = tr(fromEsc ? 'tool.cal.resultEsc' : 'tool.cal.result', { new: r.scale, old });
             msg.className = 'st-fnote st-ok';
             say(msg.textContent);
         };
+        calReset = () => {
+            msg.textContent = '';
+            msg.className = 'st-fnote';
+        };
         escApply.addEventListener('click', () => {
-            const ev = escVolts();
-            if (ev > 0) {
-                input.value = fmtFixed(ev, 2);
-                go();
-            }
+            const r = escReading();
+            if (!r.use) return calRender();
+            input.value = fmtFixed(r.ev, 2);
+            go(true);
         });
-        apply.addEventListener('click', go);
+        apply.addEventListener('click', () => go());
         input.addEventListener('keydown', ev => {
             if (ev.key === 'Enter') {
                 ev.preventDefault();
@@ -1503,15 +2027,23 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             case 'gusts': {
                 if (!sameValue(edited.autostart_pattern, 'GUSTS')) return tr('tool.legend.gustsOff');
                 const range = (a: string, b: string, div: number, dec: number) => `${fmt(Math.min(n(a), n(b)) / div, dec)}–${fmt(Math.max(n(a), n(b)) / div, dec)}`;
+                // the peaks as the firmware runs them (as the program box says): raised to Power, capped by Maximum power
+                const limit = has('autostart_throttle_limit') ? Math.min(100, Math.max(1, n('autostart_throttle_limit'))) : 100;
+                const thr = n('autostart_throttle');
+                const gLo = Math.min(n('autostart_gust_min'), n('autostart_gust_max'));
+                const gHi = Math.max(n('autostart_gust_min'), n('autostart_gust_max'));
+                if (gHi <= thr) return tr('tool.legend.gustsNone', { thr: fmt(Math.min(thr, limit)) });
+                const lo = Math.min(limit, Math.max(thr, gLo));
+                const hi = Math.min(limit, Math.max(thr, gHi));
                 return tr('tool.legend.gusts', {
-                    pct: range('autostart_gust_min', 'autostart_gust_max', 1, 0),
-                    len: range('autostart_gust_len_min', 'autostart_gust_len_max', 1000, 2),
+                    pct: lo < hi ? `${fmt(lo)}–${fmt(hi)}` : fmt(hi),
+                    len: range('autostart_gust_len_min', 'autostart_gust_len_max', 1000, 3),
                     pause: range('autostart_gust_pause_min', 'autostart_gust_pause_max', 10, 1)
                 });
             }
             case 'battery': {
                 if (!has('autostart_cell_cutoff')) return tr('tool.legend.battery10'); // firmware 1.0: the calibration only
-                const base = n('autostart_cell_cutoff') === 0 ? tr('tool.legend.batteryOff') : tr('tool.legend.battery', { cut: fmtFixed(n('autostart_cell_cutoff') / 100, 2), t: fmt(n('autostart_cutoff_time')) });
+                const base = n('autostart_cell_cutoff') === 0 ? tr('tool.legend.batteryOff') : tr('tool.legend.battery', { cut: fmtFixed(effectiveCutoffCv(n('autostart_cell_cutoff')) / 100, 2), t: fmt(n('autostart_cutoff_time')) });
                 return n('autostart_cells') === 0 ? `${base} · ${tr('tool.legend.cellsAuto')}` : base;
             }
             case 'outputs': {
@@ -1520,7 +2052,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
                 return tr('tool.legend.outputs', { list: maskList(edited.autostart_motors), usb: usb.charAt(0).toLocaleLowerCase(tag) + usb.slice(1) });
             }
             case 'expert': {
-                const vars = { v: fmt(n('autostart_vbat_min') / 10, 1), box: showValue('autostart_box', edited.autostart_box), scale: String(edited.vbat_scale ?? '—') };
+                const vars = { v: fmtFixed(n('autostart_vbat_min') / 10, 1), box: showValue('autostart_box', edited.autostart_box), scale: String(edited.vbat_scale ?? '—') };
                 return tr(n('autostart_vbat_min') === 0 ? 'tool.legend.expertNoWait' : 'tool.legend.expert', vars);
             }
         }
@@ -1643,7 +2175,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             att.length ? h('span', { class: 'st-badge st-badge-warn', text: tr('tool.more.attention', { list: fullList(att) }) }) : null,
             cap !== null ? h('span', { class: 'st-badge', text: tr('tool.more.cap', { v: fmt(cap) }) }) : null,
             diffs.length ? h('span', { class: 'st-more-line', text: tr('tool.more.diff', { list: fullList(diffs) }) }) : null,
-            inside ? h('span', { class: 'st-more-line', text: tr('tool.more.pending', { n: inside }) }) : null
+            inside ? h('span', { class: 'st-more-line', text: tr(inside === 1 ? 'tool.more.pendingOne' : 'tool.more.pending', { n: inside }) }) : null
         ]);
         // safety-relevant values open the drawer by themselves (never closed by the tool)
         const fresh = att.filter(k => !autoOpened.has(k));
@@ -1655,6 +2187,14 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
 
     function refreshForm(except?: string) {
         if (!board?.level) return;
+        // a min above its max (or the other way round) is swapped by the firmware and by the save: say it now
+        swapped.clear();
+        for (const note of normalize(board.eff, edited).notes) {
+            if (note.kind !== 'swapped') continue;
+            const pair = (DEF[note.name] as NumDef).pair;
+            swapped.add(note.name);
+            if (pair) swapped.add(pair.other);
+        }
         for (const s of syncers) s(except);
         refreshProgram();
         renderBatteryQ();
@@ -1668,6 +2208,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         for (const k of Object.keys(moreFs)) delete moreFs[k as MoreId];
         calBox = null;
         calRender = () => undefined;
+        calReset = () => undefined;
         renderBatteryQ = () => undefined;
         formEl.replaceChildren();
         if (!board?.level) return;
@@ -1718,6 +2259,19 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
                 capNote.textContent = text;
             });
         }
+        // no gust peak above Power: the firmware raises every gust to Power, so there are no gusts at all
+        if (gMax) {
+            const none = h('p', { class: 'st-fnote st-warn', hidden: true, id: `${uid}-gnone` });
+            gMax.append(none);
+            const box = gMax.querySelector<HTMLInputElement>('input.st-num');
+            if (box) box.setAttribute('aria-describedby', `${box.getAttribute('aria-describedby') ?? ''} ${none.id}`.trim());
+            syncers.push(() => {
+                const on = sameValue(edited.autostart_pattern, 'GUSTS') && Math.max(Number(edited.autostart_gust_max), Number(edited.autostart_gust_min)) <= Number(edited.autostart_throttle);
+                const text = on ? tr('tool.note.gustsNone', { v: fmt(Number(edited.autostart_throttle)) }) : '';
+                show(none, on);
+                if (none.textContent !== text) none.textContent = text;
+            });
+        }
         formEl.append(programBox, qs, moreDet, actions);
         refreshForm();
     }
@@ -1728,6 +2282,26 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         const out = diff(board.values, values);
         for (const [k, v] of Object.entries(extra)) if (board.debugMode !== null && String(v) !== board.debugMode) out[k] = v;
         return out;
+    };
+
+    const pendingSig = () => {
+        const ch = pendingChanges();
+        return Object.keys(ch)
+            .map(k => `${k}=${ch[k]}`)
+            .join('|');
+    };
+    /** a result in the save area, valid for the form as it is now (the next edit clears it) */
+    const resultMsg = () => {
+        saveMsgFor = pendingSig();
+    };
+    /** "Saved and checked on the board: N values" + what happens next + [Run now…]; focus there */
+    const showSaved = (n1: number, lead = '') => {
+        const runNow = h('button', { type: 'button', class: 'st-btn st-small' }, tr('tool.saved.run'));
+        runNow.addEventListener('click', () => openRun(runNow));
+        saveMsg.replaceChildren(...(lead ? [lead, ' '] : []), h('strong', { text: tr(n1 === 1 ? 'tool.saved.one' : 'tool.saved.other', { n: n1 }) }), ' ', tr('tool.saved.after'), ' ', runNow, ' ', h('span', { class: 'st-muted', text: tr('tool.hint.beep') }));
+        saveMsg.className = 'st-msg st-ok';
+        saveMsg.dataset.result = 'saved';
+        resultMsg();
     };
 
     const changeItem = (k: string, v: Value): HTMLElement => {
@@ -1746,7 +2320,12 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         undoBtn.disabled = !ready || names.length === 0;
         reloadBtn.disabled = !ready || names.length > 0;
         show(reloadHint, names.length > 0);
-        rebuild(changesEl, `${names.map(k => `${k}=${ch[k]}`).join('|')}|${justSaved}`, () => {
+        // a result (Saved and checked, Changes undone, Defaults are in the form …) belongs to the form it was said
+        // for: another edit makes it stale, so it goes (with its Run now button) — in every phase, also while the
+        // board restarts after Run now (step messages of a Save in progress are no result: saveMsgFor is null then)
+        const sig = `${names.map(k => `${k}=${ch[k]}`).join('|')}`;
+        if (saveMsgFor !== null && saveMsgFor !== sig) setMsg(saveMsg, '');
+        rebuild(changesEl, `${sig}|${justSaved}`, () => {
             if (names.length) {
                 const items: Kid[] = [];
                 names.slice(0, 3).forEach((k, i) => items.push(i ? ' · ' : '', changeItem(k, ch[k])));
@@ -1792,10 +2371,12 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
     const openRun = (opener: HTMLElement) => {
         dlgBody.replaceChildren();
         if (board?.level) {
-            // what WILL run: the values saved on the board, not the form
-            dlgBody.append(h('p', { text: tr('tool.restart.body') }), h('div', { class: 'st-program' }, programList(describeProgram(board.values, board.level))));
+            // what WILL run: the values saved on the board (as the firmware uses them), not the form
+            dlgBody.append(h('p', { text: tr('tool.restart.body') }), h('div', { class: 'st-program' }, programList(describeProgram(normalize(board.eff, board.values).values, board.level))));
             if (Object.keys(pendingChanges()).length) dlgBody.append(h('p', { class: 'st-note st-warn', text: tr('tool.restart.unsaved') }));
         } else dlgBody.append(h('p', { text: tr('tool.restart.bodyUnknown') }));
+        // a BLHeli_32 that stayed on the battery while the board restarts may only beep afterwards
+        dlgBody.append(h('p', { class: 'st-muted st-small', text: tr('tool.hint.beep') }));
         dlgCheck.checked = false;
         dlgConfirm.disabled = true;
         runOpener = opener;
@@ -1813,30 +2394,34 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
     });
 
     // ---------- operations ----------
-    const run = async (fn: () => Promise<void>, msgEl: HTMLElement) => {
-        if (opBusy) return;
+    /** one operation at a time; an error of a session that was closed or replaced meanwhile is never shown */
+    const run = async (fn: (dev: AutostartDevice) => Promise<void>, msgEl: HTMLElement) => {
+        const dev = device;
+        if (opBusy || !dev) return;
+        const my = session;
         opBusy = true;
         clearError();
         renderPhase();
         try {
-            await fn();
+            await fn(dev);
         } catch (e) {
-            showError(e, msgEl);
+            if (my === session && device === dev) showError(e, msgEl);
         } finally {
             opBusy = false;
-            renderPhase();
+            if (my === session) renderPhase();
         }
     };
 
     /** read the settings (enters the CLI: the board then holds the program until Run or a power cycle) */
-    async function readNow() {
-        if (!device) return;
+    async function readNow(dev: AutostartDevice) {
         setMsg(saveMsg, '');
         setMsg(preMsg, '');
         setMsg(liveMsg, ''); // "program running from the start" is no longer true once the CLI holds it
         heldBy = 'settings';
-        board = await device.readSettings();
-        identity = device.identity;
+        const b = await dev.readSettings();
+        if (device !== dev) return;
+        board = b;
+        identity = dev.identity;
         edited = { ...board.values };
         extra = {};
         clearNotes();
@@ -1864,11 +2449,12 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
     });
 
     saveBtn.addEventListener('click', async () => {
-        await run(async () => {
-            if (!device || !board) return;
+        await run(async dev => {
+            if (!board) return;
             setMsg(liveMsg, ''); // "the program runs from the start" is not true once the save holds it
             const { values, notes: n } = normalize(board.eff, edited);
-            for (const note of n) if (note.kind === 'swapped') notes[note.name] = noteText(note);
+            // min/max pairs the save swaps: named in the result too (the fields' own notes go with the rebuild)
+            const swaps = n.filter(note => note.kind === 'swapped').map(note => `${labelOf(note.name)} ↔ ${labelOf((DEF[note.name] as NumDef).pair!.other)}`);
             edited = values;
             const changes = pendingChanges();
             if (!Object.keys(changes).length) return;
@@ -1880,7 +2466,8 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             setMsg(saveMsg, tr('tool.step.write', { done: 1, total: Object.keys(changes).length }));
             say(tr('tool.status.writing'));
             try {
-                const r = await device.writeSettings(changes, s => setMsg(saveMsg, stepText(s)));
+                const r = await dev.writeSettings(changes, s => device === dev && setMsg(saveMsg, stepText(s)));
+                if (device !== dev) return;
                 heldBy = 'settings';
                 board = r.settings;
                 edited = { ...board.values };
@@ -1891,16 +2478,16 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
                 resetOther();
                 buildForm();
                 renderFacts();
-                const runNow = h('button', { type: 'button', class: 'st-btn st-small' }, tr('tool.saved.run'));
-                runNow.addEventListener('click', () => openRun(runNow));
-                const n1 = r.verified.length;
-                saveMsg.replaceChildren(h('strong', { text: tr(n1 === 1 ? 'tool.saved.one' : 'tool.saved.other', { n: n1 }) }), ' ', tr('tool.saved.after'), ' ', runNow);
-                saveMsg.className = 'st-msg st-ok';
-                saveMsg.dataset.result = 'saved';
+                showSaved(r.verified.length);
+                if (swaps.length) saveMsg.append(' ', h('span', { text: tr('tool.saved.swapped', { list: swaps.join(', ') }) }));
+                trackTool('tool_save', sameValue(board.values.autostart_pattern, 'GUSTS') ? 'gusts' : 'steady');
             } catch (e) {
+                if (device !== dev) throw e;
+                // the save may be in flash: once the board is back by itself it is checked and the result shown
+                if (dev.awaitingCheck) pendingBack = 'save';
                 // a failed verify re-read the board: show what it really has, keep the visitor's edits
-                if (device.settings && device.settings !== board) {
-                    board = device.settings;
+                if (dev.settings && dev.settings !== board) {
+                    board = dev.settings;
                     buildForm();
                 }
                 throw e;
@@ -1916,9 +2503,11 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         extra = {};
         clearNotes();
         resetOther();
+        calReset(); // "New scale … Press Save" is not true once the scale is back
         refreshForm();
         setMsg(liveMsg, '');
         setMsg(saveMsg, tr('tool.undo.done'));
+        resultMsg();
         focusEl(saveMsg);
     });
 
@@ -1928,19 +2517,25 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         const changes = diff(edited, target);
         if (!Object.keys(changes).length) {
             setMsg(saveMsg, tr('tool.defaults.none'));
+            resultMsg();
             focusEl(saveMsg);
             return;
         }
         const items = Object.keys(changes).map(k => tr('tool.change.item', { name: labelOf(k), from: showValue(k, edited[k]), to: showValue(k, changes[k]) }));
         const ok = await ask({ title: tr('tool.defaults.title'), body: tr('tool.defaults.body'), items, ok: tr('tool.defaults.ok'), opener: resetBtn });
         if (!ok || !board) return;
-        Object.assign(edited, changes);
+        for (const [k, v] of Object.entries(changes)) {
+            keepNonZero(k, edited[k]);
+            edited[k] = v;
+        }
         clearNotes();
         justSaved = false;
         resetOther();
+        calReset();
         refreshForm();
         setMsg(liveMsg, '');
         setMsg(saveMsg, tr('tool.defaults.note'));
+        resultMsg();
         focusEl(saveMsg);
     });
 
@@ -1948,21 +2543,63 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
     let stopSeq = 0;
     /** STOP: the button, the one in every dialog and 'sma:stop' from the page; never disabled by a busy step */
     async function doStop() {
-        if (!device) return;
+        const dev = device;
+        if (!dev) return;
         stopSeq++;
         heldBy = 'stop';
+        trackTool('tool_stop');
+        const phase = dev.phase;
         try {
-            const r = await device.stopMotor();
-            const text = tr(r === 'sent' ? 'tool.stop.sent' : r === 'queued' ? 'tool.stop.queued' : 'tool.stop.already');
-            setMsg(liveMsg, text, 'ok');
-            say(text);
+            const r = await dev.stopMotor();
+            if (device !== dev) return;
+            if (r === 'sent') {
+                // the next samples tell whether the board really stopped (checkStop): firmware 1.0 ignores a STOP
+                // in the countdown; "stays stopped until Run" is said only once the board says it holds (bit 64)
+                stopCheck = { at: Date.now(), samples: 0, retried: false };
+                setMsg(liveMsg, tr('tool.stop.checking'), 'ok');
+                say(tr('tool.stop.checking'));
+            } else if (r === 'queued') {
+                // restarting (Save, Run), being connected, or simply not connected (unplugged): sent the moment the
+                // board answers
+                const restarting = phase === 'rebooting' || (phase === 'reconnecting' && opBusy);
+                const text = tr(phase === 'connecting' ? 'tool.stop.queuedConnect' : restarting ? 'tool.stop.queued' : 'tool.stop.queuedOff');
+                setMsg(liveMsg, text, 'ok');
+                liveMsg.dataset.queued = '1';
+                say(text);
+            } else {
+                setMsg(liveMsg, tr('tool.stop.already'), 'ok');
+                say(tr('tool.stop.already'));
+            }
         } catch (e) {
-            showError(e, liveMsg);
+            if (device !== dev) return;
+            stopNotSent(e);
         }
+    }
+    /** STOP itself did not get through: the motor may still be running. Loud, and the button stays for another try;
+     *  the alarm repeats while the outputs still drive the motor, and goes once a sample shows the motor stopped */
+    function stopNotSent(e: unknown) {
+        lastError = e instanceof FcError ? `${e.code}: ${e.message}` : String(e);
+        addLog(`STOP failed: ${lastError}`);
+        keepError('tool', `STOP failed: ${lastError}`);
+        stopFailed = true;
+        stopFailedAt = Date.now();
+        stopCheck = null;
+        setMsg(liveMsg, tr('tool.stop.failed'), 'err');
+        alarm(tr('tool.stop.failed'));
+        renderLiveWarnings();
     }
     stopBtn.addEventListener('click', () => void doStop());
     const onStopEvent = () => void doStop();
     window.addEventListener('sma:stop', onStopEvent);
+
+    /** what the board does right after a restart, in its mode (saved values when read, else the live flags) */
+    const restartText = () => {
+        const mode = board?.values.autostart_mode;
+        if (mode === 'OFF') return tr('tool.restart.doneOff');
+        if (mode === 'BUTTON') return tr('tool.restart.doneButton');
+        const noBattery = savedNum('autostart_vbat_min') !== 0 && !!last && ((last.battery?.volts ?? 0) < 1 || (last.flags !== null && !last.flags.battery));
+        return tr(noBattery ? 'tool.restart.doneNoBattery' : 'tool.restart.done');
+    };
 
     restartBtn.addEventListener('click', () => openRun(restartBtn));
     testBtn.addEventListener('click', () => openRun(testBtn));
@@ -1974,11 +2611,17 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         runOpener = stopBtn;
         closeDialog();
         stopBtn.focus();
-        void run(async () => {
-            if (!device) return;
+        void run(async dev => {
             setMsg(liveMsg, tr('tool.status.rebooting'));
             const seq = stopSeq;
-            await device.restartProgram();
+            try {
+                await dev.restartProgram();
+            } catch (e) {
+                // the board did not come back in time: when it does, say what it does then
+                if (device === dev && e instanceof FcError && e.code === 'reconnect-timeout') pendingBack = 'run';
+                throw e;
+            }
+            if (device !== dev) return;
             history.length = 0;
             if (stopSeq !== seq) {
                 // STOP while the board restarted: it was sent once the board was back and holds the program
@@ -1988,10 +2631,64 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
                 return;
             }
             heldBy = null;
-            setMsg(liveMsg, tr('tool.restart.done'), 'ok');
-            say(tr('tool.restart.done'));
+            if (!board?.values.autostart_mode) {
+                // the settings were not read: what the program does is told by the board's first answers
+                setMsg(liveMsg, tr('tool.restart.checking'), 'ok');
+                const watch = { since: Date.now() };
+                restartWatch = watch;
+                // no live answer decided it in 4 s (no live status, or no samples): never leave "checking…" up
+                setTimeout(() => {
+                    if (restartWatch !== watch || device !== dev) return;
+                    restartWatch = null;
+                    showRestarted(tr('tool.restart.doneNoLive'));
+                }, 4000);
+                return;
+            }
+            showRestarted(restartText());
         }, liveMsg);
     });
+    const showRestarted = (text: string) => {
+        liveMsg.replaceChildren(text, ' ', h('span', { class: 'st-muted', text: tr('tool.hint.beep') }));
+        liveMsg.className = 'st-msg st-ok';
+        say(text);
+    };
+    /**
+     * After a Run with the mode unknown: the words from the first answers after the restart. A countdown or a run:
+     * from the start; still idle once the battery reading has settled (or the board has been up 3 s): it did not
+     * start — no battery, or a mode that does not start by itself (Off, button, held while USB is connected).
+     */
+    const watchRestart = (s: LiveSample) => {
+        if (!restartWatch || s.misses > 0) return;
+        if (s.state === null) {
+            // no live status on this board (debug_mode): the words as before, from what is known
+            if (s.at - restartWatch.since > 1500) {
+                restartWatch = null;
+                showRestarted(tr('tool.restart.doneNoLive'));   // the mode is not known here: claim nothing
+            }
+            return;
+        }
+        const st = s.state;
+        let key: string | null = null;
+        if (st >= 1 && st <= 3) key = 'tool.restart.done';
+        else if (st === 0 && s.motors.slice(0, 8).every(m => m <= 1000) && (voltsSettled || (s.uptimeS ?? 0) >= 3)) {
+            const noBattery = (s.battery?.volts ?? 0) < 1 || (s.flags !== null && !s.flags.battery);
+            key = noBattery ? 'tool.restart.doneNoBattery' : 'tool.restart.doneIdle';
+        } else if (st >= 4) key = 'tool.restart.done';
+        if (!key) return;
+        restartWatch = null;
+        showRestarted(tr(key));
+    };
+
+    // leaving the page while the board is being written or restarted (or with unsaved changes) asks first:
+    // a real board could be left in its CLI with values in RAM, and the edits would be lost
+    const onBeforeUnload = (ev: BeforeUnloadEvent) => {
+        const p = device?.phase;
+        const busy = p === 'writing' || p === 'rebooting' || p === 'reconnecting' || (p === 'reading' && opBusy);
+        if (!busy && !(connected() && board?.level && Object.keys(pendingChanges()).length)) return;
+        ev.preventDefault();
+        ev.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
 
     connectBtn.addEventListener('click', () => void connect());
     allPortsBtn.addEventListener('click', () => void connect(true));
@@ -2006,6 +2703,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             await disconnect();
             if (sayTimer) clearTimeout(sayTimer);
             window.removeEventListener('sma:stop', onStopEvent);
+            window.removeEventListener('beforeunload', onBeforeUnload);
             ro?.disconnect();
             stopBar.hidden = true;
             applyStopSpace();
@@ -2027,5 +2725,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         })
     };
     current = handle;
+    // the page's bug report carries this tool's state and log (only with the visitor's consent)
+    setDiagnosticsProvider(() => (current ? { ...current.diagnostics() } : {}));
     return handle;
 }

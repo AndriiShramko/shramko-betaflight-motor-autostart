@@ -132,12 +132,103 @@ test('values are validated before sending: out of range is clamped, pairs swappe
     await device.disconnect();
 });
 
-test('a CLI left open by an earlier session is closed without a reboot, then identify works', async () => {
+test('a CLI left open by an earlier session is left with a reboot (RAM forgotten), the STOP after it keeps the program held', async () => {
     const { mock, device, log } = rig({ cliOpenAtStart: true });
     const id = await device.connect();
     assert.equal(id.verdict, 'autostart');
-    assert.equal(mock.reboots, 0);
+    assert.equal(mock.reboots, 1, 'plain "exit": the board reboots');
     assert.ok(log.some(l => l.includes('CLI left open')));
+    assert.equal(mock.yielded, true, 'the STOP right after the reboot holds the program, as the open CLI did');
+    assert.equal(mock.cliMode, false);
+    await device.disconnect();
+});
+
+test('a CLI left open with unsaved values in RAM: they never show up as the board’s program, never get saved', async () => {
+    const { mock, device } = rig({ cliUnsaved: { autostart_delay: 45, autostart_throttle: 60 } });
+    assert.equal(mock.ram.autostart_delay, '45', 'the emulator starts with the unsaved values in RAM');
+    await device.connect();
+    const s = await device.readSettings();
+    assert.equal(s.values.autostart_delay, 10, 'the flash value, not the half-written 45');
+    assert.equal(s.values.autostart_throttle, 15);
+    // a later save of another value writes only that one: no leftovers go to flash
+    await device.writeSettings({ autostart_ramp: 50 });
+    assert.equal(mock.flash.autostart_delay, '10');
+    assert.equal(mock.flash.autostart_throttle, '15');
+    assert.equal(mock.flash.autostart_ramp, '50');
+    await device.disconnect();
+});
+
+test('Disconnect while writing: the sets already made are undone, the CLI is left, nothing is saved', async () => {
+    const { mock, device } = rig({ latencyMs: 15 });
+    await device.connect();
+    await device.readSettings();
+    const p = device.writeSettings({ autostart_delay: 30, autostart_throttle: 40, autostart_ramp: 50, autostart_gust_min: 20 }).catch(e => e);
+    await waitFor(() => mock.cliLog.some(l => l.startsWith('set ')), 4000, 'first set');
+    await device.disconnect();
+    const err = await p;
+    assert.ok(err instanceof FcError && err.code === 'cancelled', String(err));
+    assert.equal(mock.cliMode, false, 'left the CLI');
+    assert.equal(mock.reboots, 0, 'no save, no reboot');
+    for (const [k, v] of Object.entries({ autostart_delay: '10', autostart_throttle: '15', autostart_ramp: '100', autostart_gust_min: '40' })) {
+        assert.equal(mock.ram[k], v, `RAM ${k} back to the flash value`);
+        assert.equal(mock.flash[k], v, `flash ${k} untouched`);
+    }
+});
+
+test('the board comes back after the reconnect timeout: the save is checked then (late verify)', async () => {
+    const { mock, device } = rig({ neverReturnAfterReboot: true }, { reconnectTimeoutMs: 400 });
+    await device.connect();
+    await device.readSettings();
+    const late: { ok: boolean; verified: string[] }[] = [];
+    device.lateVerifyEvents.on(r => late.push(r));
+    await assert.rejects(device.writeSettings({ autostart_delay: 33 }), (e: unknown) => e instanceof FcError && e.code === 'reconnect-timeout');
+    assert.equal(device.awaitingCheck, true);
+    mock.boot(); // the board is back by itself
+    await waitFor(() => device.phase === 'ready', 5000, 'ready again');
+    assert.deepEqual(late.map(r => [r.ok, r.verified]), [[true, ['autostart_delay']]]);
+    assert.equal(device.settings!.values.autostart_delay, 33);
+    assert.equal(device.awaitingCheck, false);
+    assert.equal(mock.yielded, true, 'held after the late check (STOP after the reboot, then the CLI)');
+    await device.disconnect();
+});
+
+test('a board that is back but whose port does not open (busy) is reported as busy, not as "did not come back"', async () => {
+    const { mock, device } = rig({ rebootMs: 100 }, { reconnectTimeoutMs: 600 });
+    await device.connect();
+    await device.readSettings();
+    const p = device.writeSettings({ autostart_delay: 7 });
+    await waitFor(() => device.phase === 'rebooting' || device.phase === 'reconnecting', 3000, 'reboot');
+    (mock.opts as { busy: boolean }).busy = true; // another program took the port during the reboot
+    await assert.rejects(p, (e: unknown) => e instanceof FcError && e.code === 'busy');
+    (mock.opts as { busy: boolean }).busy = false;
+    await device.disconnect();
+});
+
+test('unplugged while connecting: connect fails, and the device does not keep reconnecting or polling', async () => {
+    const { mock, device } = rig();
+    let n = 0;
+    const off = device.phaseEvents.on(() => undefined);
+    const p = device.connect();
+    // the 2nd MSP request of identify: the board goes away and comes back
+    await waitFor(() => mock.mspLog.length >= 2, 3000, 'identify');
+    mock.unplug(200);
+    await assert.rejects(p);
+    await device.disconnect();
+    n = mock.mspLog.length;
+    await new Promise(r => setTimeout(r, 1200));
+    assert.equal(mock.mspLog.length, n, 'nothing polls the board any more');
+    assert.equal(device.phase, 'closed');
+    off();
+});
+
+test('a write that fails with NetworkError (device gone, no disconnect event) counts as a lost port', async () => {
+    const { mock, device, transport } = rig();
+    await device.connect();
+    // the device vanishes silently: present=false without the presence event
+    (mock as unknown as { present: boolean }).present = false;
+    await device.stopMotor().catch(() => undefined);
+    await waitFor(() => !transport.isOpen, 2000, 'lost');
+    assert.equal(device.phase, 'reconnecting');
     await device.disconnect();
 });
 
@@ -239,6 +330,96 @@ test('STOP while the board is identified after a restart is still sent (not left
     await device.disconnect();
 });
 
+test('N2: STOP while connecting is queued (never MSP into a CLI left open) and sent right after the board is identified', async () => {
+    // a CLI left open: the identification leaves it with a reboot; a STOP written at once would be typed into it
+    const control = rig({ cliOpenAtStart: true, rebootMs: 300 });
+    await control.device.connect();
+    const typed = (log: string[]) => log.join('').split('$M<').length - 1;
+    const withoutStop = typed(control.mock.cliLog);
+    await control.device.disconnect();
+    const { mock, device } = rig({ cliOpenAtStart: true, rebootMs: 300 });
+    const p = device.connect();
+    await waitFor(() => device.phase === 'connecting' && device.transport.isOpen, 2000, 'port open');
+    assert.equal(await device.stopMotor(), 'queued');
+    await waitFor(() => mock.cliLog.length > 0 || mock.reboots > 0, 4000, 'identify tried');
+    assert.equal(await device.stopMotor(), 'queued', 'still connecting');
+    await p;
+    assert.equal(typed(mock.cliLog), withoutStop, 'no STOP frame typed into the open CLI');
+    assert.ok(mock.mspLog.includes(214), 'the STOP went out once the board answered MSP');
+    assert.equal(mock.yielded, true, 'held by it');
+    assert.equal(device.stopQueued, false, 'not left queued');
+    await device.disconnect();
+    // a port that never answers: STOPs pressed all the time do not keep it "connecting" (they used to crowd out
+    // the identification for over a minute)
+    const dead = rig({ noAnswer: true });
+    const t0 = Date.now();
+    const q = dead.device.connect().catch(e => e);
+    const presser = setInterval(() => void dead.device.stopMotor().catch(() => undefined), 100);
+    const err = await Promise.race([q, new Promise(r => setTimeout(() => r('still connecting after 15 s'), 15000))]);
+    clearInterval(presser);
+    assert.ok(err instanceof FcError && err.code === 'no-answer', String(err));
+    assert.ok(Date.now() - t0 < 12000, `connect gave up after ${Date.now() - t0} ms`);
+    await dead.device.disconnect();
+});
+
+test('N4: unplugged in the first moments of a read — the error is "lost" (the page reconnects by itself), never "not open"', async () => {
+    for (const at of [0, 30]) {
+        const { mock, device } = rig({ rebootMs: 150, latencyMs: 5 });
+        await device.connect();
+        const p = device.readSettings().catch(e => e);
+        await new Promise(r => setTimeout(r, at));
+        mock.unplug(400);
+        const err = await p;
+        assert.ok(err instanceof FcError && err.code === 'lost', `unplug at ${at} ms: ${String(err)}`);
+        await waitFor(() => device.phase === 'ready', 5000, 'back by itself');
+        await device.disconnect();
+    }
+});
+
+test('N1 emulator: a battery swap with USB connected leaves MSP with the ESC’s last frame until the motor turns on the new pack', async () => {
+    const { mock, device } = rig({ esc: 'sensor', escFreeze: true, batteryVolts: 25.2, speed: 20 });
+    await device.connect();
+    await waitFor(() => mock.program().state === 3, 4000, 'running');
+    await device.stopLive();
+    const live = await device.pollOnce();
+    assert.ok(live!.esc[0].rpm > 0 && Math.abs(live!.esc[0].volts - 25.2) < 0.2, JSON.stringify(live!.esc[0]));
+    assert.equal(await device.stopMotor(), 'sent');
+    await device.pollOnce(); // the ESC still sends at a stop: rpm 0, 25.2 V
+    mock.setBattery(0);
+    const off = await device.pollOnce();
+    assert.equal(off!.battery!.volts, 0);
+    assert.ok(Math.abs(off!.esc[0].volts - 25.2) < 0.01, 'the old frame stays');
+    mock.setBattery(21.6);
+    const back = await device.pollOnce();
+    assert.ok(Math.abs(back!.battery!.volts - 21.6) < 0.05, 'the board reads the new pack');
+    assert.ok(Math.abs(back!.esc[0].volts - 25.2) < 0.01, 'MSP still has the old pack’s ESC frame');
+    assert.equal(back!.esc[0].rpm, 0);
+    assert.ok(back!.sinceBatteryS! < 3, `debug[6] counts from the plug-in: ${back!.sinceBatteryS}`);
+    // the motor turns on the new pack: the ESC sends again
+    await device.restartProgram();
+    await device.stopLive();
+    await waitFor(() => mock.program().state === 3, 4000, 'running again');
+    const fresh = await device.pollOnce();
+    assert.ok(fresh!.esc[0].rpm > 0 && Math.abs(fresh!.esc[0].volts - 21.6) < 0.2, JSON.stringify(fresh!.esc[0]));
+    await device.disconnect();
+    // 'rpm': unplugged while the motor turned — the old rpm is kept too; without the option nothing is kept
+    for (const [freeze, rpmKept, volts] of [['rpm', true, 25.2], [false, false, 0]] as const) {
+        const r = rig({ esc: 'sensor', escFreeze: freeze, batteryVolts: 25.2, speed: 20 });
+        await r.device.connect();
+        await waitFor(() => r.mock.program().state === 3, 4000, 'running');
+        await r.device.stopLive();
+        assert.ok((await r.device.pollOnce())!.esc[0].rpm > 0, 'turning when the battery goes');
+        r.mock.setBattery(0);
+        // held while the battery is out: the motor does not turn on the new pack
+        assert.equal(await r.device.stopMotor(), 'sent');
+        r.mock.setBattery(21.6);
+        const s = await r.device.pollOnce();
+        assert.equal(s!.esc[0].rpm > 0, rpmKept, `freeze ${freeze}: rpm`);
+        assert.ok(Math.abs(s!.esc[0].volts - volts) < 0.2, `freeze ${freeze}: ${s!.esc[0].volts}`);
+        await r.device.disconnect();
+    }
+});
+
 test('pickBestOutput: fewest bad frames among enabled outputs', () => {
     const e = (rpm: number, inv: number) => ({ rpm, invalidPct: inv, tempC: 0, volts: 0, amps: 0, mah: 0 });
     assert.equal(pickBestOutput([e(0, 100), e(5000, 0.4), e(0, 100), e(0, 100)]), 1);
@@ -251,9 +432,14 @@ test('pickBestOutput: fewest bad frames among enabled outputs', () => {
 });
 
 test('debug flag 32: a miscalibrated board reports an implausible voltage, a calibrated one does not', async () => {
-    const bad = rig({ flash: { vbat_scale: 120 } });
+    const bad = rig({ flash: { vbat_scale: 120 }, speed: 2 });
     await bad.device.connect();
     await bad.device.stopLive();
+    // like the firmware: hidden for the first 3 s after the battery appeared (the filtered voltage still rises)
+    const early = await bad.device.pollOnce();
+    assert.ok(early!.uptimeS! < 3);
+    assert.equal(early!.flags!.implausible, false, 'not in the first 3 s');
+    await waitFor(() => Date.now() - bad.mock.bootAt > 1600, 3000, '3 s of board time');
     const s = await bad.device.pollOnce();
     assert.equal(s!.flags!.implausible, true);
     assert.ok(s!.battery!.volts < 15);

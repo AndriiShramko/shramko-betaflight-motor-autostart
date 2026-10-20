@@ -220,7 +220,8 @@ export const diff = (board: Record<string, Value>, edited: Record<string, Value>
 // ---------- units ----------
 
 const SCALE: Record<Unit, number> = { s: 1, ds: 10, ms: 1000, pct: 1, cV: 100, dV: 10, cells: 1, raw: 1 };
-const DECIMALS: Record<Unit, number> = { s: 0, ds: 1, ms: 2, pct: 0, cV: 2, dV: 1, cells: 0, raw: 0 };
+// ms: 3 decimals of a second, so the box shows exactly what is stored (0.333 s = 333 ms)
+const DECIMALS: Record<Unit, number> = { s: 0, ds: 1, ms: 3, pct: 0, cV: 2, dV: 1, cells: 0, raw: 0 };
 
 export const unitScale = (u: Unit) => SCALE[u];
 export const unitDecimals = (u: Unit) => DECIMALS[u];
@@ -384,8 +385,12 @@ export const describeProgram = (values: Record<string, Value>, level: '1.0' | '1
     const out: ProgramLine[] = [];
     const delay = num('autostart_delay');
     const tooSoon = delay < MIN_START_S ? 'Min' : '';
+    const vbatMin = num('autostart_vbat_min') / 10;
+    const knownCells = v11 ? num('autostart_cells') : 0;
     if (mode === 'BUTTON') out.push({ row: 'start', key: 'start.button', vars: { delay } });
-    else out.push({ row: 'start', key: `start.${num('autostart_vbat_min') === 0 ? 'always' : 'power'}${tooSoon}`, vars: { delay } });
+    // a pack of this cell count never reaches "counts as plugged in from" (full LiPo 4.2 V per cell): no start
+    else if (vbatMin > 0 && knownCells > 0 && vbatMin > knownCells * 4.2) out.push({ row: 'start', key: 'start.vbatHigh', vars: { v: vbatMin, n: knownCells }, tone: 'bad' });
+    else out.push({ row: 'start', key: `start.${vbatMin === 0 ? 'always' : 'power'}${tooSoon}`, vars: { delay } });
 
     const limit = v11 ? Math.min(100, Math.max(1, num('autostart_throttle_limit'))) : 100;
     const thr = num('autostart_throttle');
@@ -400,14 +405,17 @@ export const describeProgram = (values: Record<string, Value>, level: '1.0' | '1
     const lo = Math.min(limit, Math.max(thr, gLo));
     const hi = Math.min(limit, Math.max(thr, gHi));
     // every gust the same: "gusts at N %", or "capped at N % by Maximum power" when the cap made them so
-    const shape = !gusts ? 'steady' : lo < hi ? 'gusts' : Math.max(thr, gHi) > limit ? 'gustsCap' : 'gustsOne';
+    // no peak above Power: every gust is raised to Power, i.e. there are no gusts at all
+    const shape = !gusts ? 'steady' : gHi <= thr ? 'gustsNone' : lo < hi ? 'gusts' : Math.max(thr, gHi) > limit ? 'gustsCap' : 'gustsOne';
     if (gusts) Object.assign(vars, { lo, hi });
     out.push({ row: 'power', key: `power.${shape}${ramp > 0 ? '' : 'Now'}`, vars });
     if (limit < 100) out.push({ row: 'cap', key: 'cap', vars: { limit, thr }, tone: thr > limit || (gusts && gHi > limit) ? 'warn' : undefined });
 
+    // Power 0 %: the motor never turns (a ramp to 0, gusts only if a peak is above it)
+    if (thr === 0 && !(gusts && hi > 0)) out.push({ row: 'power', key: 'power.zero', vars: {}, tone: 'warn' });
     if (!v11) out.push({ row: 'run', key: 'run.fw10', vars: {}, tone: 'bad' });
     else {
-        const cutCv = num('autostart_cell_cutoff');
+        const cutCv = effectiveCutoffCv(num('autostart_cell_cutoff'));
         const cells = num('autostart_cells');
         const run = num('autostart_run_time');
         const prot = cutCv === 0 ? 'Off' : cells === 0 ? 'Auto' : '';
@@ -430,16 +438,36 @@ export const CELL_REST_MIN = 3.0;
 export const CELL_REST_MAX = 4.35;
 const FIT_ORDER = [3, 4, 6, 8, 1, 2, 5, 7, 9, 10, 11, 12];
 
+export interface CellFit {
+    /** the count fits the voltage and the motor would run (not below the stop voltage) */
+    fits: boolean;
+    perCell: number;
+    /** the voltage is below cells × stop voltage: the motor would stop at once (never starts) */
+    below: boolean;
+    /** the stop voltage of the chosen count, when there is a cut-off */
+    stopV: number | null;
+    guess: number | null;
+}
+
 /**
  * Does the live voltage fit the chosen cell count? null without a battery (under 6 V) or without a count.
- * When it does not, `guess` is the first count (common packs first) that fits — a suggestion, never applied by itself.
+ * With a cut-off (`cellCutoffCv`, 0.01 V per cell; 1–249 count as 2.50) it also has to be above cells × cut-off:
+ * a pack already below it would stop the motor at once (the cut-off counts in the countdown too).
+ * When it does not fit, `guess` is the first count (common packs first) that fits and whose stop voltage is below
+ * the reading — a suggestion, never applied by itself.
  */
-export const cellFit = (volts: number, cells: number): { fits: boolean; perCell: number; guess: number | null } | null => {
+export const cellFit = (volts: number, cells: number, cellCutoffCv = 0): CellFit | null => {
     if (!(volts >= 6) || !(cells > 0)) return null;
-    const ok = (n: number) => volts / n >= CELL_REST_MIN && volts / n <= CELL_REST_MAX;
+    const cut = effectiveCutoffCv(cellCutoffCv) / 100;
+    // strict: the firmware stops when the reading stays below cells × cut-off (at rest or under load alike)
+    const below = (n: number) => cut > 0 && volts < n * cut - 1e-9;
+    const ok = (n: number) => volts / n >= CELL_REST_MIN && volts / n <= CELL_REST_MAX && !below(n);
     const fits = ok(cells);
-    return { fits, perCell: volts / cells, guess: fits ? null : FIT_ORDER.find(ok) ?? null };
+    return { fits, perCell: volts / cells, below: below(cells), stopV: cut > 0 ? Math.round(cells * cut * 100) / 100 : null, guess: fits ? null : FIT_ORDER.find(ok) ?? null };
 };
+
+/** The cut-off the firmware uses: 0 = none; 1–249 are raised to 2.50 V per cell (programStart). */
+export const effectiveCutoffCv = (cv: number) => (cv > 0 ? Math.max(250, cv) : 0);
 
 /** Board defaults for every present setting except the voltage calibration. */
 export const defaultValues = (eff: Record<string, Effective>): Record<string, Value> => {
@@ -461,8 +489,8 @@ export const calibrateVbatScale = (oldScale: number, realVolts: number, shownVol
     return { ok: true, scale, clamped: scale !== raw };
 };
 
-/** Cut-off voltage of the whole pack, or null when off / cell count unknown. */
-export const cutoffVolts = (cellCutoff: number, cells: number) => (cellCutoff > 0 && cells > 0 ? (cellCutoff * cells) / 100 : null);
+/** Cut-off voltage of the whole pack as the firmware uses it (1–249 count as 2.50 V), or null when off / cell count unknown. */
+export const cutoffVolts = (cellCutoff: number, cells: number) => (cellCutoff > 0 && cells > 0 ? (effectiveCutoffCv(cellCutoff) * cells) / 100 : null);
 
 /** True when a setting matters for the current pattern (gust fields only for GUSTS). */
 export const isRelevant = (name: string, values: Record<string, Value>) => {

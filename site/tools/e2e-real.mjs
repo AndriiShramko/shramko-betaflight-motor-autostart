@@ -95,8 +95,9 @@ if (!usbOnly && !batteryConnected) {
   process.exit(2);
 }
 if (usbOnly) {
-  // "Stopped with STOP": still held by the previous run's CLI check (exit noreboot); step 3 restarts it
-  await waitText(/Waiting for the battery|Stopped with STOP/, 15000, 'Motor status: waiting for the battery, or held since the last run (USB only)');
+  // "Held by the computer": still held by the previous run's CLI check (this page session did not cause it, so
+  // it is not "Stopped with STOP"); step 3 restarts it
+  await waitText(/Waiting for the battery|Stopped with STOP|Held by the computer/, 15000, 'Motor status: waiting for the battery, or held since the last run (USB only)');
   check(true, 'Motor status: no battery on USB power');
 } else check(/\d[.,]\d+ V/.test(battery), 'Motor status: the battery voltage is shown (--battery-connected)');
 await shot('live-usb');
@@ -110,7 +111,8 @@ const stopIfBattery = async (what) => {
 
 // 3. STOP, then Run the program (real reboot, page reconnects by itself)
 await btn(/STOP motor/).click();
-await waitText(/Stopped\. It stays stopped|already stopped/, 8000, 'STOP acknowledged');
+// the page checks the next samples: "stays stopped until Run" once the board says it holds (bit 64)
+await waitText(/Stopped\. It stays stopped|already stopped|does not hold the program/, 8000, 'STOP acknowledged');
 await waitText(/Stopped with STOP/, 10000, 'Motor status: stopped with STOP');
 await shot('stopped');
 await btn(/Run the program/).click();

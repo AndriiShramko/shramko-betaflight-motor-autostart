@@ -1,17 +1,43 @@
 # Shramko Motor Autostart
 
-> Betaflight 2025.12.1 firmware module plus a browser configurator (https://autostart.flyreelstudio.eu) by Andrii Shramko that turns a flight controller into a standalone motor / ESC driver: on power-up it waits for the battery, counts down, ramps the throttle linearly and holds it (optionally with random gusts, a run time and a LiPo cut-off) - no transmitter, receiver or switch. The configurator talks to the board over USB with Web Serial, in the visitor's browser. Open source, GPL-3.0-or-later: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart
+> Betaflight 2025.12.1 firmware module plus a browser configurator (https://autostart.flyreelstudio.eu) by Andrii Shramko that turns a flight controller into a standalone motor / ESC driver: plug in the battery and the motor starts by itself - wait, smooth linear speed-up, then it holds the power (optionally with random gusts, a set run time and a LiPo battery stop) - no transmitter, receiver or switch. The configurator talks to the board over USB with Web Serial, in the visitor's browser. Open source, GPL-3.0-or-later: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart
 
-## Key facts
-- Ready firmware (.hex): HGLRC F405 8S V2 (Betaflight board_name HGLRC_F405_S8), tested with a Flycolor X-Cross HV3 160A (BLHeli_32) on 6S. Releases: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/releases/latest
-- Other Betaflight boards: build from source (Docker; add #define USE_AUTOSTART to the board's config.h).
-- Flashing: https://app.betaflight.com -> Firmware Flasher -> Load Firmware [Local]. Windows "DFU device not found": ImpulseRC Driver Fixer or Zadig (WinUSB). The first boot after flashing resets settings once; the build's defaults are the project settings.
-- Defaults: autostart_mode POWER, autostart_delay 10 s, autostart_ramp 100 (10.0 s), autostart_throttle 15 %, autostart_motors 15 (motors 1-4), autostart_vbat_min 60 (6.0 V). Firmware 1.1 adds autostart_pattern STEADY/GUSTS, autostart_run_time, autostart_throttle_limit, autostart_cells / autostart_cell_cutoff / autostart_cutoff_time (battery cut-off).
-- States (debug_mode AUTOSTART, debug[0]): 0 IDLE, 1 DELAY, 2 RAMP, 3 RUN, 4 DONE, 5 LOW_BATTERY.
-- Stops the program (no automatic restart): entering the CLI, the Configurator Motors tab, arming via a receiver, a valid receiver link (unless autostart_box), run time over, battery cut-off, battery unplugged, a button click while running.
-- Measured on hardware: ramp starts 10.01 s after power-on, takes 10.02 s, max deviation 1 us; 26 unit tests.
-- Browsers: Chrome, Edge, Opera on Windows/macOS/Linux (Web Serial). Firefox 151+ (one-time site permission). Android: Chrome 148+ with USB-OTG, only on phones whose Android supports USB serial (Google: limited set of devices). iPhone/iPad: not possible (no Web Serial / WebUSB in iOS browsers).
-- Safety: remove the propeller; never more than 8S on the board's B pin; ground use only.
+## The page, in task order
+- Step 1 - Put the firmware on the board: the ready .hex for the HGLRC F405 8S V2 (Betaflight board_name HGLRC_F405_S8), flashed with https://app.betaflight.com -> Firmware Flasher -> Load Firmware [Local]. Windows "DFU device not found": ImpulseRC Driver Fixer or Zadig (WinUSB). Other Betaflight boards: build from source (Docker; #define USE_AUTOSTART in the board's config.h). Going back: the release's ..._stock.hex.
+- Step 2 - Connect the board: Chrome/Edge over USB, propeller off. Shows the board, the firmware level and the Motor status (state in plain words, Power %, Battery V, every battery warning, Run the program..., a fixed STOP bar).
+- Step 3 - Choose what it does: the program in words ("What the board will do"), five questions (Wait before start, Power, How long, Random gusts, Battery) and one "More settings" drawer with everything else; Save to board writes only the changes, restarts the board and reads every value back.
+- Zero clicks for the factory program: 10 s after the battery is plugged in, 10 s speed-up to 15 %, run until the battery stays below 19.8 V (6 x 3.30 V) for 5 s.
+
+## Plain words on the page = Betaflight CLI names (docs/settings.md)
+- What starts the motor = autostart_mode (POWER battery plugged in / BUTTON / OFF)
+- Wait before start = autostart_delay (s, 0-600; never sooner than 3 s after the ESC gets power)
+- Speed-up time = autostart_ramp (0.1 s)
+- Power = autostart_throttle (%); Maximum power = autostart_throttle_limit (%)
+- How long = autostart_run_time (s; 0 = until the battery stop or power off)
+- Random gusts = autostart_pattern STEADY/GUSTS; gust details = autostart_gust_min/_max (%; a peak below Power is raised to Power), _len_min/_max (ms), _pause_min/_max (0.1 s)
+- Battery = autostart_cells (0 = Betaflight guesses); stop voltage per cell = autostart_cell_cutoff (0.01 V; 0 = no battery protection; 1-249 count as 2.50 V); wait before the battery stop = autostart_cutoff_time (s)
+- Battery counts as plugged in from = autostart_vbat_min (0.1 V); RC switch = autostart_box (40-43 = USER1-4; on HGLRC_F405_S8 USER1/USER2 also switch PINIO1/2, use USER3/USER4); motor outputs = autostart_motors (bitmask); with a computer connected = autostart_usb_inhibit; voltage scale = vbat_scale
+
+## Firmware 1.1 behaviour the page follows
+- States (debug_mode AUTOSTART, debug[0]): 0 IDLE, 1 DELAY, 2 RAMP, 3 RUN, 4 DONE (run time over), 5 LOW_BATTERY (battery stop).
+- Held by the computer: opening the settings (CLI), STOP (MSP_SET_MOTOR) or the Configurator Motors tab hold the program - nothing starts by itself, not even on a battery re-plug, until the board restarts (Run the program, a save, or USB and the battery off and on). debug[4] bit 64 shows it.
+- The battery stop counts in DELAY, RAMP and RUN, from 3 s after the battery appeared; after it only a new battery starts the program again. The RC switch starts the program only from IDLE: after the run time turn it off and on.
+- debug[2] (ms in state / 10) is unsigned and stops at 655.35 s; debug[3] (uptime) stops at 3276.7 s; the "implausible voltage" flag (bit 32) is hidden for the first 3 s after the battery appeared.
+
+## ESC telemetry
+- Recommended: the ESC's TX pad on the cable's yellow (R, UART5) + feature ESC_SENSOR: the page shows the ESC's voltage, rpm and temperature and calibrates vbat_scale without a multimeter. On the HGLRC F405 8S V2 the R pin of both 8-pin connectors is the same input.
+- After a board restart the ESC sends over the TX wire only once the motor has turned; until then MSP keeps the last value, so the page never offers an ESC voltage that is not fresh or does not fit the cell count. TX-wire samples are sparse (some are empty): the page holds an answer for 3 s.
+- Bidirectional DShot (dshot_bidir ON, BLHeli_32 32.10+) also works, but a BLHeli_32 that stays on the battery while the board restarts (USB bench) can lock and only beep: replug the battery after a Save or Run.
+
+## Numbers
+- Measured on hardware: the speed-up starts 10.01 s after power-on, takes 10.02 s, max deviation from a straight line 1 us.
+- Firmware: 76 unit tests (one of them a randomized property test).
+
+## Browsers
+- Chrome, Edge, Opera on Windows/macOS/Linux (Web Serial). Firefox 151+ (one-time site permission). Android: Chrome 148+ with USB-OTG, only on phones whose Android supports USB serial. iPhone/iPad: not possible (no Web Serial / WebUSB in iOS browsers).
+
+## Safety
+- Remove the propeller; never more than 8S on the board's B pin; the cable's red carries battery voltage - insulate every unused wire separately; ground use only.
 
 ## Pages
 - English: https://autostart.flyreelstudio.eu/en/

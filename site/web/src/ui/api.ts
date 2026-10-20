@@ -24,9 +24,29 @@ const gzip = async (text: string): Promise<Uint8Array | null> => {
     return new Uint8Array(await new Response(stream).arrayBuffer());
 };
 
-/** POST JSON; bodies over 8 KB are gzipped. Returns the parsed JSON or throws. */
+/** A failed API call; `status` is the HTTP status (0 = no answer at all). */
+export class ApiError extends Error {
+    constructor(message: string, readonly status: number) {
+        super(message);
+        this.name = 'ApiError';
+    }
+}
+
+/** Lone UTF-16 surrogates (a string cut in the middle of an emoji) become U+FFFD: the API must be able to encode them. */
+export const wellFormed = (s: string): string =>
+    typeof (s as unknown as { toWellFormed?: () => string }).toWellFormed === 'function'
+        ? (s as unknown as { toWellFormed: () => string }).toWellFormed()
+        : s.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '�');
+const deepWellFormed = (v: unknown): unknown => {
+    if (typeof v === 'string') return wellFormed(v);
+    if (Array.isArray(v)) return v.map(deepWellFormed);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v as Record<string, unknown>).map(([k, x]) => [wellFormed(k), deepWellFormed(x)]));
+    return v;
+};
+
+/** POST JSON; bodies over 8 KB are gzipped. Returns the parsed JSON or throws an ApiError. */
 const post = async (path: string, body: unknown): Promise<any> => {
-    const text = JSON.stringify(body);
+    const text = JSON.stringify(deepWellFormed(body));
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     let payload: BodyInit = text;
     if (text.length > 8192) {
@@ -36,9 +56,14 @@ const post = async (path: string, body: unknown): Promise<any> => {
             headers['Content-Encoding'] = 'gzip';
         }
     }
-    const r = await fetch(path, { method: 'POST', headers, body: payload, credentials: 'omit', keepalive: text.length < 60000 });
+    let r: Response;
+    try {
+        r = await fetch(path, { method: 'POST', headers, body: payload, credentials: 'omit', keepalive: text.length < 60000 });
+    } catch (e) {
+        throw new ApiError(`no answer: ${e instanceof Error ? e.message : String(e)}`, 0);
+    }
     const json = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(`HTTP ${r.status}${json?.error ? `: ${json.error}` : ''}`);
+    if (!r.ok) throw new ApiError(`HTTP ${r.status}${json?.error ? `: ${json.error}` : ''}`, r.status);
     return json;
 };
 

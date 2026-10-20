@@ -6,11 +6,11 @@ web/src/i18n/tool.*.json) belongs to the serial-core lane; this lane ships only 
 
 ## Status
 
-- [ ] 1. package.json, tsconfig.json, vite.config.mjs, gen-pages.mjs, post-build.mjs
-- [ ] 2. template.html + styles.css + main.ts + ui/{feedback,diagnostics,api,i18n}.ts + stub tool.ts
-- [ ] 3. i18n en.json (master) + es/pl/ru
-- [ ] 4. web/public: favicon, robots, sitemap, llms.txt, og.png, img/
-- [ ] 5. api/server.py (+ /go/<slug>) + tests
+- [x] 1. package.json, tsconfig.json, vite.config.mjs, gen-pages.mjs, post-build.mjs
+- [x] 2. template.html + styles.css + main.ts + ui/{feedback,diagnostics,api,i18n}.ts + stub tool.ts
+- [x] 3. i18n en.json (master) + es/pl/ru
+- [x] 4. web/public: favicon, robots, sitemap, llms.txt, og.png, img/
+- [x] 5. api/server.py (+ /go/<slug>) + tests
 - [ ] 6. deploy/ (compose, nginx.conf, scripts, hub.env.example, README) + tools/reports/pull.py
 - [ ] 7. repo files: AGENT_SETUP.md, AGENTS.md, SECURITY.md, docs/warnings.md, llms.txt, .gitignore
 - [ ] 8. gates: npm install + build green, screenshots 1440/375 en+ru, lang switch, feedback dialog, no console errors

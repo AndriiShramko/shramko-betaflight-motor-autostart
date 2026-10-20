@@ -109,6 +109,7 @@ export class AutostartDevice {
     private readonly opts: Required<Omit<DeviceOptions, 'log'>> & { log?: (l: string) => void };
     private live = false;
     private liveLoop: Promise<void> | null = null;
+    private wakeLoop: (() => void) | null = null;
     private misses = 0;
     private busy = false;
     /** set while we expect the port to drop (save, restart) */
@@ -473,6 +474,7 @@ export class AutostartDevice {
 
     async stopLive() {
         this.live = false;
+        this.wakeLoop?.();
         await this.liveLoop;
         this.liveLoop = null;
     }
@@ -486,7 +488,15 @@ export class AutostartDevice {
                 if (s && this.live) this.liveEvents.emit(s);
             }
             const wait = period - (Date.now() - t0);
-            if (wait > 0) await new Promise(r => setTimeout(r, wait));
+            if (wait > 0 && this.live)
+                await new Promise<void>(r => {
+                    const t = setTimeout(r, wait);
+                    this.wakeLoop = () => {
+                        clearTimeout(t);
+                        r();
+                    };
+                });
+            this.wakeLoop = null;
         }
     }
 

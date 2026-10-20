@@ -300,7 +300,7 @@ export const calibrateVbatScale = (oldScale: number, realVolts: number, shownVol
 };
 
 /** Cut-off voltage of the whole pack, or null when off / cell count unknown. */
-export const cutoffVolts = (cellCutoff: number, cells: number) => (cellCutoff > 0 && cells > 0 ? (cellCutoff / 100) * cells : null);
+export const cutoffVolts = (cellCutoff: number, cells: number) => (cellCutoff > 0 && cells > 0 ? (cellCutoff * cells) / 100 : null);
 
 /** True when a setting matters for the current pattern (gust fields only for GUSTS). */
 export const isRelevant = (name: string, values: Record<string, Value>) => {

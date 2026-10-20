@@ -146,8 +146,18 @@ export class MockFc {
         return () => this.presence.delete(cb);
     }
 
+    private batch: Uint8Array[] | null = null;
+
     private out(s: string | Uint8Array) {
         const bytes = typeof s === 'string' ? enc.encode(s) : s;
+        if (this.batch) {
+            this.batch.push(bytes);
+            return;
+        }
+        this.send(bytes);
+    }
+
+    private send(bytes: Uint8Array) {
         const gen = this.generation;
         // deliver in small chunks, like USB packets, after a little latency
         this.outQueue = this.outQueue.then(async () => {
@@ -160,9 +170,28 @@ export class MockFc {
         });
     }
 
-    /** bytes from the host */
+    /** bytes from the host (everything answered to one chunk goes out as one USB transfer) */
     input(bytes: Uint8Array) {
         if (!this.present) return;
+        this.batch = [];
+        try {
+            this.inputChunk(bytes);
+        } finally {
+            const parts = this.batch;
+            this.batch = null;
+            if (parts.length) {
+                const all = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+                let o = 0;
+                for (const p of parts) {
+                    all.set(p, o);
+                    o += p.length;
+                }
+                this.send(all);
+            }
+        }
+    }
+
+    private inputChunk(bytes: Uint8Array) {
         if (this.cliMode) {
             for (const b of bytes) this.cliChar(b);
             return;
@@ -610,7 +639,7 @@ export class MockSerial extends EventTarget implements SerialLike {
         return p;
     }
 
-    async requestPort(): Promise<SerialPortLike> {
+    async requestPort(_options?: unknown): Promise<SerialPortLike> {
         if (this.mock.opts.cancelPicker || !this.mock.present) throw domError('NotFoundError', 'No port selected by the user.');
         return this.portFor(this.mock.generation);
     }

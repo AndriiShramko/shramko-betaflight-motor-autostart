@@ -4,3 +4,23 @@ out/
 *.elf
 __pycache__/
 docs/research-*.json
+
+# web configurator (site/): dependencies, builds, generated pages
+site/node_modules/
+site/dist/
+site/dist-*/
+site/web/en/
+site/web/es/
+site/web/pl/
+site/web/ru/
+site/web/index.html
+site/docs/wip/shots/
+# never in git: hub address/user/key/paths, server secrets, neighbour snapshots, visitor reports, API data
+site/deploy/hub.env
+site/deploy/snapshots/
+site/tools/reports/inbox/
+site/api/data/
+config.env
+*.log
+.DS_Store
+Thumbs.db

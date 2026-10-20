@@ -1,0 +1,48 @@
+{
+  "name": "shramko-motor-autostart-site",
+  "version": "1.0.0",
+  "description": "Shramko Motor Autostart web configurator: connect a Betaflight flight controller over USB (Web Serial), edit the motor autostart settings, save them to the board and watch the motor live - in the browser.",
+  "scripts": {
+    "pages": "node web/scripts/gen-pages.mjs",
+    "dev": "node web/scripts/gen-pages.mjs && vite",
+    "build": "node web/scripts/gen-pages.mjs && tsc -p . && vite build && node web/scripts/post-build.mjs",
+    "preview": "vite preview",
+    "typecheck": "tsc -p .",
+    "test:api": "python -m unittest discover -s api/tests",
+    "shots": "node tools/shots.mjs dist docs/wip/shots",
+    "og": "node tools/og.mjs"
+  },
+  "keywords": [
+    "betaflight",
+    "flight-controller",
+    "esc",
+    "dshot",
+    "blheli_32",
+    "web-serial",
+    "configurator",
+    "motor-autostart",
+    "no-receiver",
+    "blower",
+    "fan-controller"
+  ],
+  "author": "Andrii Shramko <zmei116@gmail.com> (https://github.com/AndriiShramko)",
+  "license": "GPL-3.0-or-later",
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "playwright": "1.63.0",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3",
+    "vite": "6.4.3"
+  },
+  "private": true,
+  "type": "module",
+  "homepage": "https://autostart.flyreelstudio.eu",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AndriiShramko/shramko-betaflight-motor-autostart.git",
+    "directory": "site"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

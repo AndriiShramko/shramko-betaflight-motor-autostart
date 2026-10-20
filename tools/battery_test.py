@@ -14,7 +14,6 @@ import serial
 
 sys.path.insert(0, __file__.rsplit("\\", 1)[0] if "\\" in __file__ else __file__.rsplit("/", 1)[0])
 from autostart_selftest import msp, open_port  # noqa: E402
-import bf_cli  # noqa: F401,E402  (imported for its CLI helpers when run as a module)
 
 STATE = {0: "IDLE", 1: "DELAY", 2: "RAMP", 3: "RUN", 4: "DONE", 5: "LOW_BATTERY"}
 

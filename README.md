@@ -53,7 +53,7 @@ Safety: the ESC always gets ≥ 3 s of stop frames after it is powered before th
 | `autostart_usb_inhibit` | `OFF` (generic builds: `ON`) | `OFF`, `ON` | `ON`: never spin while a USB host is connected |
 | `autostart_box` | `255` (none) | 40–43 | `BOXUSER1..4` permanent id: an AUX switch runs the program while the receiver link is valid |
 | `resource AUTOSTART 1 <pin>` | none | any free pin | push-button between that pad and GND (internal pull-up) |
-| `dshot_bidir` | `OFF` | `OFF`, `ON` | turn `ON` before plugging the battery to see the ESC's RPM over USB (needs BLHeli_32 ≥ 32.7) |
+| `dshot_bidir` | `OFF` | `OFF`, `ON` | keep `OFF` and take RPM/voltage from the ESC's TX wire. With `ON`, a BLHeli_32 ESC that stays powered while the board restarts (USB bench: every Save) sometimes stops answering until the battery is re-plugged — 2 of ~25 restarts on the real bench, 0 of 50+ with `OFF` (2026-10-20) |
 | `debug_mode = AUTOSTART` | on in this build | — | debug[0..7] = state, % ×10, ms in state /10, uptime 0.1 s, flags (USB·RX·button·battery), battery 0.1 V, time since battery 0.1 s, source |
 
 Change the target to 80 %:
@@ -67,7 +67,7 @@ save
 
 ![Wiring diagram](docs/img/wiring-en.png)
 
-- Use the 8-wire cable that comes with the FC (colours on the `4321RCGB` connector: white ×4, yellow, green, black, red). Three joints: ESC **yellow** → cable **white** (pin `1`; this build drives all four whites), ESC **black** → cable **black** (`G`), a new thin wire from **battery +** → cable **red** (`B`). The cable's yellow/green and the other whites are cut and insulated.
+- Use the 8-wire cable that comes with the FC (colours on the `4321RCGB` connector: white ×4, yellow, green, black, red). Three joints: ESC **yellow** → cable **white** (pin `1`; this build drives all four whites), ESC **black** → cable **black** (`G`), a new thin wire from **battery +** → cable **red** (`B`). **Recommended 4th joint:** ESC pad **`TX`** → cable **yellow** (`R`, telemetry input; on this board the yellow of either 8-pin cable works): the ESC's voltage, RPM and temperature, used by the web configurator to calibrate the battery voltage without a multimeter — `TX` sits next to `V+`, no solder bridge. The green, the other whites (and the yellow without TX) are cut and insulated, each separately; the cable's red carries battery voltage.
 - The FC's ground comes through the ESC's black signal wire (the ESC's `GND` pad is the battery minus); the ESC has no BEC. **Max 8S on `B`.**
 - Optional button: top-side pads **`RX4`** (PA1) + the **`GND`** pad next to it → `resource SERIAL_RX 4 NONE`, `resource AUTOSTART 1 A01`.
 - Correct wiring = on battery the ESC plays 3 rising tones, then 1 low + 1 high tone (signal seen, armed).
@@ -101,7 +101,7 @@ Details and sources: [docs/wiring.md](docs/wiring.md).
 | … link lost | motor stops, no restart |
 | Reviewed firmware, final ramp | delay 10.01 s, ramp 10.00 s (host clock 10.03 s), max deviation 1.0 µs |
 
-Tools: `tools/autostart_selftest.py` (timing measured on the FC clock, independent of the expected values; `--self-check` proves the evaluator rejects a ramp 1 s early/late or a wrong plateau), `tools/interference_test.py`, `tools/rx_arbitration_test.py`. Raw data: [docs/selftest/](docs/selftest/). 42 unit tests of the state machine (incl. battery plugged later / unplugged / glitch, settings change while running, CLI session, Motors-tab takeover, hold until reboot after CLI/STOP on a USB bench, EMI spikes on the button pin; the safety cases are checked with code mutants that must fail them) (Betaflight googletest harness) + regression tests of the touched modules: `docker run --rm -v "$PWD:/repo" shramko-bf-build:2025.12.1 bash /repo/build/test.sh`.
+Tools: `tools/autostart_selftest.py` (timing measured on the FC clock, independent of the expected values; `--self-check` proves the evaluator rejects a ramp 1 s early/late or a wrong plateau), `tools/interference_test.py`, `tools/rx_arbitration_test.py`. Raw data: [docs/selftest/](docs/selftest/). 76 unit tests of the state machine plus a randomized property test (1760 random sequences, 10.5 M ticks, 47 invariants checked every tick) (incl. battery plugged later / unplugged / glitch, settings change while running, CLI session, Motors-tab takeover, hold until reboot after CLI/STOP on a USB bench, EMI spikes on the button pin; the safety cases are checked with code mutants that must fail them) (Betaflight googletest harness) + regression tests of the touched modules: `docker run --rm -v "$PWD:/repo" shramko-bf-build:2025.12.1 bash /repo/build/test.sh`.
 
 ### Web configurator on the real board (2026-10-20, Chrome on Windows 10, live site)
 

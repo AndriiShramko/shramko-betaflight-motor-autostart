@@ -16,7 +16,7 @@
 | thick red / black | battery + / − | battery |
 | **yellow** thin (middle pad `S`) | throttle signal | FC connector `4321RCGB`, pin **`1`** (motor 1 = PC9, TIM8 CH4) |
 | **black** thin (pad `GND`) | signal ground | FC connector pin **`G`** |
-| `TX` (empty) | KISS telemetry | optional → pin `R` (UART5 RX, PD2) + `feature ESC_SENSOR` |
+| `TX` | KISS telemetry | **recommended** → cable **yellow**, pin `R` (UART5 RX, PD2; `feature ESC_SENSOR`, on in this build). On the HGLRC F405 8S V2 the `R` pins of both 8-pin connectors are the same input: the yellow of the second cable (`8765RCGB`) works too (verified 2026-10-20) |
 | A / B / C | motor phases | motor, any order (direction is set in BLHeliSuite32 or via DShot commands) |
 
 ## FC underside connector `4321RCGB` (JST-SH 8-pin) and its cable
@@ -28,7 +28,8 @@ Silkscreen order `4 3 2 1 R C G B` = `M4 M3 M2 M1 RX5 CU GND BAT`. The supplied 
 | `1` | motor 1 | **white next to the yellow** | ESC **yellow** (signal, pad `S`) |
 | `G` | ground | **black** | ESC **black** (pad `GND`) |
 | `B` | board power in | **red** | **new** thin wire 22–24 AWG from battery + (ESC `V+` pad or the + cup of the ESC's battery plug) |
-| `4 3 2 R C` | unused | 3 other whites, **yellow**, green | cut short, insulate **each** |
+| `R` | ESC telemetry in | **yellow** | **recommended:** ESC pad `TX` (gives the ESC's voltage, RPM, temperature; the web configurator calibrates the board's voltage from it without a multimeter). `TX` sits next to `V+` on the ESC: check for a solder bridge |
+| `4 3 2 C` | unused | 3 other whites, green (and the yellow without TX) | cut short, insulate **each** |
 
 - The cable's **yellow is not the signal** — it is the ESC-telemetry input (UART5 RX). The ESC's yellow goes to a **white**.
 - This build drives motors 1–4 with the same signal (`autostart_motors = 15`), so any of the four whites works; the one next to the yellow is pin 1.

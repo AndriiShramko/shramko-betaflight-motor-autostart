@@ -175,10 +175,10 @@ index e4267ea..a3c40a6 100644
  
 diff --git a/src/main/fc/autostart.c b/src/main/fc/autostart.c
 new file mode 100644
-index 0000000..9fbccda
+index 0000000..16023b6
 --- /dev/null
 +++ b/src/main/fc/autostart.c
-@@ -0,0 +1,706 @@
+@@ -0,0 +1,788 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -208,7 +208,9 @@ index 0000000..9fbccda
 + *      -> program stopped, our motor_disarmed[] entries released, boot trigger consumed.
 + *   2. RX link valid for AUTOSTART_RX_CONFIRM_MS -> stock Betaflight owns the motors:
 + *      program stopped, unless autostart_box (BOXUSER1..4) is active, in which case the
-+ *      same program (delay -> ramp -> hold) runs while the box stays active.
++ *      same program (delay -> ramp -> hold) runs while the box stays active. The box starts it
++ *      only from IDLE: after the run time (DONE) it must be switched off and on again, after a
++ *      battery cut-off (LOW_BATTERY) only a new battery starts it again.
 + *   3. No RX link -> button click toggles the program; mode POWER starts it once at boot.
 + *      A program that was started by the RC box is stopped when the link is lost.
 + *
@@ -265,18 +267,22 @@ index 0000000..9fbccda
 +
 +#include "fc/autostart.h"
 +
-+#define AUTOSTART_MIN_UPTIME_MS      3000    // never drive before 3 s uptime: ESC sees >= 3 s of stop frames, USB host can enumerate
++// never drive before 3 s uptime and 3 s after the battery appeared (USB host can enumerate, the ESC gets stop
++// frames; they start at motorEnable() at the end of init, so with the battery at boot the ESC sees ~1.5 s less)
++#define AUTOSTART_MIN_UPTIME_MS      3000
 +#define AUTOSTART_DEBOUNCE_MS        60      // button level must be stable this long (3+ ticks)
 +#define AUTOSTART_BUTTON_READS       8       // pin reads per tick; all must agree (rejects coupled spikes)
 +#define AUTOSTART_RX_CONFIRM_MS      500     // RX link must stay valid this long before it takes over
 +#define AUTOSTART_COUNTDOWN_BEEP_MS  1000    // one short beep per second during the delay
 +#define AUTOSTART_POWER_CONFIRM_MS   300     // battery voltage must be stable this long to count as plugged in
 +#define AUTOSTART_POWER_LOSS_MS      500     // ... and absent this long to count as unplugged (ignores ADC glitches)
++#define AUTOSTART_POWER_GONE_TICKS   2       // with a USB host the board outlives the battery: < 1 V this many ticks = unplugged
 +#define AUTOSTART_BOOT_POWER_WINDOW_MS 2500  // battery seen this early = it powered the board: count from boot
 +#define AUTOSTART_LOWBAT_BEEP_MS     3000    // after a cut-off: ESC beacon / buzzer every 3 s
 +#define AUTOSTART_NO_BATTERY_CV      100     // below 1.00 V there is no battery to protect (USB-only bench)
 +#define AUTOSTART_CELL_PLAUSIBLE_MIN 250     // a LiPo cell reads 2.50..4.45 V; outside that the voltage
 +#define AUTOSTART_CELL_PLAUSIBLE_MAX 445     // calibration (vbat_scale) or the cell count is wrong
++#define AUTOSTART_CELL_CUTOFF_MIN    250     // autostart_cell_cutoff 1..249 is raised to this (docs: 0 or 250..420)
 +
 +typedef enum {
 +    AUTOSTART_STATE_IDLE = 0,
@@ -306,6 +312,7 @@ index 0000000..9fbccda
 +static bool rxSeen;
 +static bool rxWasValid;
 +static timeMs_t rxValidSinceMs;
++static bool rxConfirmedLatched;     // latched: comparing with an old timestamp turns negative after 2^31 ms (24.8 days)
 +
 +static uint8_t rcBoxId = BOXID_NONE;
 +
@@ -354,9 +361,14 @@ index 0000000..9fbccda
 +static timeMs_t powerDetectMs;      // ESC power-up: 0 if the battery was there at the first check, else when it appeared
 +static bool powerFirstCheckDone;
 +static bool powerAtFirstCheck;
++static bool bootWindowOver;         // latched (millis() wraps after 49.7 days): later raw changes are not "at boot"
++static bool powerRawChangeAtBoot;   // the last raw change happened inside AUTOSTART_BOOT_POWER_WINDOW_MS
++static uint8_t noBatteryTicks;      // consecutive ticks with the latest reading below AUTOSTART_NO_BATTERY_CV
++static bool escReady;               // the ESC had its 3 s of stop frames (escReadyUpdate()), latched like rxConfirmedLatched
 +
 +static IO_t buttonIo = IO_NONE;
 +static bool buttonRawPressed;
++static bool buttonRawValid;         // false after mixed reads: the next consistent level counts as a fresh change
 +static bool buttonStablePressed;
 +static timeMs_t buttonChangeMs;
 +
@@ -386,17 +398,18 @@ index 0000000..9fbccda
 +
 +static void releaseOutputs(void)
 +{
++    commandedPermille = 0;
 +    if (!outputsWritten) {
 +        return;
 +    }
 +    const uint8_t mask = program.motorMask;
 +    for (int i = 0; i < autostartMotorCount(); i++) {
-+        if (mask & (1U << i)) {
++        // a motor another writer (CLI "motor", Motors tab) changed keeps its value; ours go back to stop
++        if ((mask & (1U << i)) && motor_disarmed[i] == lastWritten) {
 +            motor_disarmed[i] = mixerRuntime.disarmMotorOutput;
 +        }
 +    }
 +    outputsWritten = false;
-+    commandedPermille = 0;
 +}
 +
 +// DELAY / RAMP / RUN; DONE and LOWBAT are finished programs that only wait for a new battery
@@ -422,6 +435,16 @@ index 0000000..9fbccda
 +    return lo + rngNext() % (hi - lo + 1);
 +}
 +
++// seeded at the first RUN tick: the exact moment and the ADC noise differ on every power-up, while millis() of a
++// power-on start is nearly the same every time (the gusts would repeat on every boot)
++static void rngSeed(void)
++{
++    rngState = (micros() * 2654435761U) ^ ((uint32_t)getBatteryVoltageLatest() * 40503U) ^ 0x9E3779B9U;
++    if (rngState == 0) {
++        rngState = 1;
++    }
++}
++
 +static uint8_t batteryCells(void)
 +{
 +    const uint8_t cells = autostartConfig()->cells;
@@ -433,7 +456,8 @@ index 0000000..9fbccda
 +{
 +    const uint16_t vbat = getBatteryVoltage();
 +    const uint8_t cells = batteryCells();
-+    if (!powerPresent || cells == 0 || vbat < AUTOSTART_NO_BATTERY_CV) {
++    // escReady: like the cut-off, wait the ~1.5 s Betaflight's filtered voltage needs to rise after a plug-in
++    if (!powerPresent || !escReady || cells == 0 || vbat < AUTOSTART_NO_BATTERY_CV) {
 +        return false;
 +    }
 +    const uint16_t perCell = vbat / cells;
@@ -463,20 +487,19 @@ index 0000000..9fbccda
 +    program.motorMask = cfg->motorMask;
 +    program.pattern = cfg->pattern;
 +    program.runTimeSeconds = cfg->runTimeSeconds;
-+    program.gustMin = MIN(cfg->gustMinPercent, cfg->gustMaxPercent);
-+    program.gustMax = MAX(cfg->gustMinPercent, cfg->gustMaxPercent);
++    // gusts are bursts on top of the steady level: a peak below it is raised to it (a 0 % "gust" would be a
++    // DShot STOP in the middle of the run)
++    program.gustMin = MAX(MIN(cfg->gustMinPercent, cfg->gustMaxPercent), program.throttlePercent);
++    program.gustMax = MAX(MAX(cfg->gustMinPercent, cfg->gustMaxPercent), program.gustMin);
 +    program.gustLenMin = MIN(cfg->gustLenMinMs, cfg->gustLenMaxMs);
 +    program.gustLenMax = MAX(cfg->gustLenMinMs, cfg->gustLenMaxMs);
 +    program.gustPauseMin = MIN(cfg->gustPauseMinDs, cfg->gustPauseMaxDs) * 100U;
 +    program.gustPauseMax = MAX(cfg->gustPauseMinDs, cfg->gustPauseMaxDs) * 100U;
-+    program.cellCutoffCv = cfg->cellCutoffCv;
++    // the CLI accepts 1..249, which would mean almost no protection (6 x 0.33 V): raise it to 2.50 V/cell
++    program.cellCutoffCv = cfg->cellCutoffCv ? MAX(cfg->cellCutoffCv, AUTOSTART_CELL_CUTOFF_MIN) : 0;
 +    program.cutoffTimeSeconds = MAX(cfg->cutoffTimeSeconds, 1);
 +    gustActive = false;
 +    lowSince = false;
-+    rngState = (nowMs * 2654435761U) ^ 0x9E3779B9U;
-+    if (rngState == 0) {
-+        rngState = 1;
-+    }
 +    source = newSource;
 +    state = AUTOSTART_STATE_DELAY;
 +    // power-on start counts the delay from the moment the battery appeared ("plug in, 1, 2, 3 ... 10";
@@ -505,17 +528,15 @@ index 0000000..9fbccda
 +}
 +
 +// true while the pack has stayed below the cut-off for the configured time
-+static bool escHadTimeToArm(timeMs_t nowMs);
-+
 +static bool batteryCutoffReached(timeMs_t nowMs)
 +{
 +    const uint16_t vbat = getBatteryVoltage();      // filtered, 0.01 V
 +    // cell count resolved every check: with auto-detection Betaflight may know it only after a while
 +    const uint32_t cutoff = (uint32_t)program.cellCutoffCv * batteryCells();
-+    // escHadTimeToArm: Betaflight's filtered voltage needs ~1.5 s to rise after the battery appears
++    // escReady: Betaflight's filtered voltage needs ~1.5 s to rise after the battery appears
 +    // (measured 20.10: 14.8 V -> 22.0 V on a 22.3 V pack); counting before that tripped a high cut-off
 +    // with a short cut-off time on every power-up. The motor cannot run in those 3 s anyway.
-+    if (cutoff == 0 || vbat < AUTOSTART_NO_BATTERY_CV || !isBatteryVoltageConfigured() || !escHadTimeToArm(nowMs)) {
++    if (cutoff == 0 || vbat < AUTOSTART_NO_BATTERY_CV || !isBatteryVoltageConfigured() || !escReady) {
 +        lowSince = false;
 +        return false;
 +    }
@@ -545,12 +566,16 @@ index 0000000..9fbccda
 +    }
 +    if (lowReads != 0 && lowReads != AUTOSTART_BUTTON_READS) {
 +        buttonChangeMs = nowMs;     // mixed reads: treat as unstable
++        buttonRawValid = false;
 +        return false;
 +    }
 +    const bool rawPressed = (lowReads == AUTOSTART_BUTTON_READS);
 +
-+    if (rawPressed != buttonRawPressed) {
++    // after noise the level counts from its first consistent tick, even if it equals the last known one:
++    // otherwise a 40 ms touch after noisy ticks could pass the 60 ms debounce
++    if (rawPressed != buttonRawPressed || !buttonRawValid) {
 +        buttonRawPressed = rawPressed;
++        buttonRawValid = true;
 +        buttonChangeMs = nowMs;
 +        return false;
 +    }
@@ -583,32 +608,50 @@ index 0000000..9fbccda
 +    if (cfg->vbatMinDeciVolts == 0 || !isBatteryVoltageConfigured()) {
 +        return true;    // gating disabled: behave as if the battery is always there
 +    }
-+    return getBatteryVoltageLatest() >= cfg->vbatMinDeciVolts * 10U;   // 0.01 V units
++    uint32_t thresholdCv = cfg->vbatMinDeciVolts * 10U;    // 0.01 V units: plugged in at autostart_vbat_min
++    if (powerRaw) {
++        // once seen, load sag is not an unplug: a connected LiPo never reads below 2.50 V per cell, so a
++        // vbat_min above that ("start only with a charged pack") does not stop and restart the program
++        const uint32_t floorCv = (uint32_t)batteryCells() * AUTOSTART_CELL_PLAUSIBLE_MIN;
++        if (floorCv && floorCv < thresholdCv) {
++            thresholdCv = floorCv;
++        }
++    }
++    return getBatteryVoltageLatest() >= thresholdCv;
 +}
 +
-+// the ESC has had at least AUTOSTART_MIN_UPTIME_MS of stop frames since it got power
-+static bool escHadTimeToArm(timeMs_t nowMs)
++// the ESC has had at least AUTOSTART_MIN_UPTIME_MS of stop frames since it got power; updated every tick and
++// latched, so it cannot turn false again when cmpTimeMs() of an old timestamp goes negative after 2^31 ms
++static void escReadyUpdate(timeMs_t nowMs)
 +{
-+    return uptimeReached && powerPresent && cmpTimeMs(nowMs, powerDetectMs) >= AUTOSTART_MIN_UPTIME_MS;
++    if (!uptimeReached || !powerPresent) {
++        escReady = false;
++    } else if (!escReady && cmpTimeMs(nowMs, powerDetectMs) >= AUTOSTART_MIN_UPTIME_MS) {
++        escReady = true;
++    }
 +}
 +
-+// debug_mode = AUTOSTART: [0] state, [1] commanded percent x10, [2] ms in current state / 10,
-+// [3] uptime in 0.1 s, [4] flags (bit0 USB host, bit1 RX link, bit2 button pressed, bit3 battery present, bit4 gust,
-+//     bit5 battery voltage implausible for the cell count = calibrate vbat_scale,
++// debug_mode = AUTOSTART: [0] state, [1] commanded percent x10,
++// [2] ms in current state / 10, sent as uint16 (the configurator reads it unsigned): stops at 655.35 s,
++// [3] uptime in 0.1 s, stops at 3276.7 s, [4] flags (bit0 USB host, bit1 RX link, bit2 button pressed,
++//     bit3 battery present, bit4 gust, bit5 battery voltage implausible for the cell count = calibrate vbat_scale,
 +//     bit6 held by the computer: a CLI session, a motor write or STOP happened, no start until a reboot),
-+// [5] battery voltage in 0.1 V, [6] time since the battery appeared in 0.1 s (-1 = no battery), [7] source
++// [5] battery voltage in 0.1 V, [6] time since the battery appeared in 0.1 s (-1 = no battery), stops at 3276.7 s,
++// [7] source. Elapsed times are unsigned differences, so they never read negative (valid for 49.7 days).
 +
 +static void autostartDebug(timeMs_t nowMs, bool rxValid)
 +{
 +    const int16_t flags = (usbHostPresent() ? 1 : 0) | (rxValid ? 2 : 0) | (buttonStablePressed ? 4 : 0) | (powerPresent ? 8 : 0)
 +        | (gustActive ? 16 : 0) | (batteryVoltageSuspect() ? 32 : 0) | (heldByComputer ? 64 : 0);
++    const timeMs_t inStateMs = nowMs - stateStartMs;
++    const timeMs_t sinceBatteryMs = nowMs - powerSinceMs;
 +    DEBUG_SET(DEBUG_AUTOSTART, 0, state);
 +    DEBUG_SET(DEBUG_AUTOSTART, 1, commandedPermille);
-+    DEBUG_SET(DEBUG_AUTOSTART, 2, (int16_t)MIN(cmpTimeMs(nowMs, stateStartMs) / 10, INT16_MAX));
++    DEBUG_SET(DEBUG_AUTOSTART, 2, (int16_t)(uint16_t)MIN(inStateMs / 10, (timeMs_t)UINT16_MAX));
 +    DEBUG_SET(DEBUG_AUTOSTART, 3, (int16_t)MIN(nowMs / 100, (timeMs_t)INT16_MAX));
 +    DEBUG_SET(DEBUG_AUTOSTART, 4, flags);
 +    DEBUG_SET(DEBUG_AUTOSTART, 5, (int16_t)((getBatteryVoltageLatest() + 5) / 10));
-+    DEBUG_SET(DEBUG_AUTOSTART, 6, powerPresent ? (int16_t)MIN(cmpTimeMs(nowMs, powerSinceMs) / 100, INT16_MAX) : -1);
++    DEBUG_SET(DEBUG_AUTOSTART, 6, powerPresent ? (int16_t)MIN(sinceBatteryMs / 100, (timeMs_t)INT16_MAX) : -1);
 +    DEBUG_SET(DEBUG_AUTOSTART, 7, source);
 +}
 +
@@ -622,9 +665,15 @@ index 0000000..9fbccda
 +    return outputsWritten;
 +}
 +
++// called before the computer's own command (MSP_SET_MOTOR, ESC passthrough, MSP2_SEND_DSHOT_COMMAND): our motors
++// go to stop at once, because a passthrough runs outside the 50 Hz task, and the command's values are never stomped on
 +void autostartComputerTookOver(void)
 +{
 +    heldByComputer = true;
++    powerTriggerPending = false;
++    if (programActive() || outputsWritten) {
++        programStop(millis());
++    }
 +}
 +
 +// While this build runs receiverless (no RX link confirmed since boot) the stock RX_LOST
@@ -644,6 +693,7 @@ index 0000000..9fbccda
 +    uptimeReached = false;
 +    rxSeen = false;
 +    rxWasValid = false;
++    rxConfirmedLatched = false;
 +    powerTriggerPending = false;       // armed when battery power is confirmed
 +    heldByComputer = false;
 +    powerRaw = false;
@@ -653,7 +703,12 @@ index 0000000..9fbccda
 +    powerDetectMs = 0;
 +    powerFirstCheckDone = false;
 +    powerAtFirstCheck = false;
++    bootWindowOver = false;
++    powerRawChangeAtBoot = false;
++    noBatteryTicks = 0;
++    escReady = false;
 +    edtRequested = false;
++    commandedPermille = 0;
 +
 +    rcBoxId = BOXID_NONE;
 +    if (cfg->rcBoxPermanentId != PERMANENT_ID_NONE) {
@@ -674,6 +729,7 @@ index 0000000..9fbccda
 +            buttonIo = io;
 +            // a button held during boot is not a click: start from the current level
 +            buttonRawPressed = !IORead(io);
++            buttonRawValid = true;
 +            buttonStablePressed = buttonRawPressed;
 +            buttonChangeMs = millis();
 +        }
@@ -695,6 +751,9 @@ index 0000000..9fbccda
 +    const bool clicked = buttonClicked(nowMs);
 +
 +    // battery power detection (see powerRaw)
++    if (!bootWindowOver && nowMs > AUTOSTART_BOOT_POWER_WINDOW_MS) {
++        bootWindowOver = true;
++    }
 +    const bool rawPower = batteryPowerRaw(cfg);
 +    if (!powerFirstCheckDone) {
 +        powerFirstCheckDone = true;
@@ -703,17 +762,25 @@ index 0000000..9fbccda
 +    if (rawPower != powerRaw) {
 +        powerRaw = rawPower;
 +        powerRawChangeMs = nowMs;
++        powerRawChangeAtBoot = !bootWindowOver;
++        if (!rawPower) {
++            powerAtFirstCheck = false;  // gone before it was confirmed: it did not power the board
++        }
 +    }
++    noBatteryTicks = (getBatteryVoltageLatest() < AUTOSTART_NO_BATTERY_CV) ? (uint8_t)MIN(noBatteryTicks + 1, UINT8_MAX) : 0;
 +    const timeDelta_t powerStableMs = cmpTimeMs(nowMs, powerRawChangeMs);
 +    if (!powerPresent && powerRaw && powerStableMs >= AUTOSTART_POWER_CONFIRM_MS) {
 +        powerPresent = true;
 +        powerDetectMs = powerAtFirstCheck ? 0 : powerRawChangeMs;
 +        powerAtFirstCheck = false;      // a later re-plug counts from its own moment
-+        powerSinceMs = (powerRawChangeMs <= AUTOSTART_BOOT_POWER_WINDOW_MS) ? 0 : powerRawChangeMs;
++        powerSinceMs = powerRawChangeAtBoot ? 0 : powerRawChangeMs;
 +        if (cfg->mode == AUTOSTART_MODE_POWER && !rxSeen) {
 +            powerTriggerPending = true;     // battery plugged in: (re)start the power-on program
 +        }
-+    } else if (powerPresent && !powerRaw && powerStableMs >= AUTOSTART_POWER_LOSS_MS) {
++    } else if (powerPresent && !powerRaw && (powerStableMs >= AUTOSTART_POWER_LOSS_MS
++        // on battery-only power a reading of 0 V with the board still running is an ADC glitch; with a USB host
++        // it is a real outage (connector bounce): the ESC browns out and must see stop frames when it is back
++        || (usbHostPresent() && noBatteryTicks >= AUTOSTART_POWER_GONE_TICKS))) {
 +        powerPresent = false;               // battery unplugged: the ESC is off, stop and wait for it again
 +        powerTriggerPending = false;
 +        edtRequested = false;
@@ -721,6 +788,7 @@ index 0000000..9fbccda
 +            programStop(nowMs);             // also clears DONE / LOW_BATTERY: a new battery starts again
 +        }
 +    }
++    escReadyUpdate(nowMs);
 +
 +    // a CLI session or another writer of motor_disarmed[] (Configurator Motors tab, CLI "motor",
 +    // cliExit reset) stops the program for good: the person at the computer is in charge now.
@@ -732,8 +800,7 @@ index 0000000..9fbccda
 +        powerTriggerPending = false;
 +    }
 +    if (programActive() && (cliMode || outputsOverwritten() || heldByComputer)) {   // also a STOP during the countdown
-+        outputsWritten = outputsWritten && !outputsOverwritten();   // don't stomp on the other writer
-+        programStop(nowMs);
++        programStop(nowMs);     // releaseOutputs() leaves a motor the other writer changed alone, stops the rest
 +        powerTriggerPending = false;
 +    }
 +
@@ -756,21 +823,25 @@ index 0000000..9fbccda
 +        rxValidSinceMs = nowMs;
 +    }
 +    rxWasValid = rxValidNow;
-+    const bool rxConfirmed = rxValidNow && cmpTimeMs(nowMs, rxValidSinceMs) >= AUTOSTART_RX_CONFIRM_MS;
++    if (!rxValidNow) {
++        rxConfirmedLatched = false;
++    } else if (!rxConfirmedLatched && cmpTimeMs(nowMs, rxValidSinceMs) >= AUTOSTART_RX_CONFIRM_MS) {
++        rxConfirmedLatched = true;
++    }
++    const bool rxConfirmed = rxConfirmedLatched;
 +
 +    if (rxConfirmed) {
 +        rxSeen = true;
 +        powerTriggerPending = false;
 +        if (rcBoxActive()) {
-+            if (!programActive()) {
-+                if (powerPresent && !heldByComputer) {
-+                    programStart(AUTOSTART_SOURCE_RCBOX, nowMs);
-+                }
-+            } else {
++            if (programActive()) {
 +                source = AUTOSTART_SOURCE_RCBOX; // the switch now owns the running program
++            } else if (state == AUTOSTART_STATE_IDLE && powerPresent && !heldByComputer) {
++                // not from LOW_BATTERY (only a new battery clears it) nor from DONE (switch off and on again)
++                programStart(AUTOSTART_SOURCE_RCBOX, nowMs);
 +            }
-+        } else if (programActive()) {
-+            programStop(nowMs);
++        } else if (programActive() || state == AUTOSTART_STATE_DONE) {
++            programStop(nowMs);     // DONE: the switch is off, the next switch-on starts a new run
 +        }
 +    } else if (!rxValidNow) {
 +        // 3. no RX link
@@ -794,16 +865,24 @@ index 0000000..9fbccda
 +    // else: an RX link is appearing but not yet confirmed - start nothing new, keep the current program
 +
 +    // extended DShot telemetry: ESC voltage and temperature for the configurator, without arming
-+    if (!edtRequested && escHadTimeToArm(nowMs) && !outputsWritten) {
-+        edtRequested = true;
++    if (!edtRequested && escReady && !outputsWritten) {
 +#if defined(USE_DSHOT) && defined(USE_DSHOT_TELEMETRY)
 +        if (isMotorProtocolDshot() && useDshotTelemetry && motorConfig()->dev.useDshotEdt
 +#ifdef USE_ESC_SENSOR
 +            && !featureIsEnabled(FEATURE_ESC_SENSOR)
 +#endif
 +            ) {
-+            dshotCommandWrite(ALL_MOTORS, getMotorCount(), DSHOT_CMD_EXTENDED_TELEMETRY_ENABLE, DSHOT_CMD_TYPE_INLINE);
++            // stock Betaflight silently drops the first inline command until 3 s after motorEnable() (end of
++            // init): with the battery at boot the ESC is ready earlier, so ask only once the command is accepted
++            if (dshotStreamingCommandsAreEnabled() && dshotCommandQueueEmpty()) {
++                dshotCommandWrite(ALL_MOTORS, getMotorCount(), DSHOT_CMD_EXTENDED_TELEMETRY_ENABLE, DSHOT_CMD_TYPE_INLINE);
++                edtRequested = true;
++            }
++        } else {
++            edtRequested = true;    // nothing to ask for
 +        }
++#else
++        edtRequested = true;
 +#endif
 +    }
 +
@@ -824,7 +903,9 @@ index 0000000..9fbccda
 +        if (cmpTimeMs(nowMs, lastLowBatBeepMs) >= AUTOSTART_LOWBAT_BEEP_MS) {
 +            lastLowBatBeepMs = nowMs;
 +#ifdef USE_DSHOT
-+            if (isMotorProtocolDshot()) {
++            // not once a receiver was seen: a pilot may arm, and stock Betaflight delays arming only after its
++            // own beacons (an ESC still playing the tone ignores the first throttle); the buzzer still beeps
++            if (isMotorProtocolDshot() && !rxSeen) {
 +                dshotCommandWrite(ALL_MOTORS, getMotorCount(), DSHOT_CMD_BEACON3, DSHOT_CMD_TYPE_INLINE);
 +            }
 +#endif
@@ -833,7 +914,7 @@ index 0000000..9fbccda
 +        break;
 +
 +    case AUTOSTART_STATE_DELAY:
-+        if (escHadTimeToArm(nowMs) && cmpTimeMs(nowMs, stateStartMs) >= (timeDelta_t)(program.delaySeconds * 1000U)) {
++        if (escReady && cmpTimeMs(nowMs, stateStartMs) >= (timeDelta_t)(program.delaySeconds * 1000U)) {
 +            state = AUTOSTART_STATE_RAMP;
 +            stateStartMs = nowMs;
 +            beeperConfirmationBeeps(3);
@@ -850,6 +931,7 @@ index 0000000..9fbccda
 +            state = AUTOSTART_STATE_RUN;
 +            stateStartMs = nowMs;
 +            gustActive = false;
++            rngSeed();
 +            gustEdgeMs = nowMs + rngRange(program.gustPauseMin, program.gustPauseMax);
 +            writeOutputs(program.throttlePercent);
 +        } else {
@@ -887,10 +969,10 @@ index 0000000..9fbccda
 +#endif // USE_AUTOSTART
 diff --git a/src/main/fc/autostart.h b/src/main/fc/autostart.h
 new file mode 100644
-index 0000000..85d2119
+index 0000000..1a8f616
 --- /dev/null
 +++ b/src/main/fc/autostart.h
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,45 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -933,7 +1015,8 @@ index 0000000..85d2119
 +bool autostartIsEnabled(void);
 +bool autostartIsDrivingMotors(void);
 +bool autostartSuppressRxLostBeeper(void);
-+// MSP_SET_MOTOR (Configurator Motors tab, the web configurator's STOP): nothing starts by itself until a reboot
++// MSP_SET_MOTOR (Configurator Motors tab, the web configurator's STOP), ESC passthrough, MSP2_SEND_DSHOT_COMMAND:
++// call it BEFORE the command. Our motors go to stop at once; nothing starts by itself until a reboot.
 +void autostartComputerTookOver(void);
 diff --git a/src/main/fc/init.c b/src/main/fc/init.c
 index 69c7357..35dd615 100644
@@ -1018,7 +1101,7 @@ index 58d3fde..bad5313 100644
      }
  
 diff --git a/src/main/msp/msp.c b/src/main/msp/msp.c
-index c890a0a..ad0d67c 100644
+index c890a0a..38acd3d 100644
 --- a/src/main/msp/msp.c
 +++ b/src/main/msp/msp.c
 @@ -73,6 +73,7 @@
@@ -1029,16 +1112,47 @@ index c890a0a..ad0d67c 100644
  #include "fc/board_info.h"
  #include "fc/controlrate_profile.h"
  #include "fc/core.h"
-@@ -2928,6 +2929,9 @@ static mspResult_e mspProcessInCommand(mspDescriptor_t srcDesc, int16_t cmdMSP,
+@@ -317,6 +318,9 @@ static void mspFcSetPassthroughCommand(sbuf_t *dst, sbuf_t *src, mspPostProcessF
+ #endif
+ #ifdef USE_SERIAL_4WAY_BLHELI_INTERFACE
+     case MSP_PASSTHROUGH_ESC_4WAY:
++#ifdef USE_AUTOSTART
++        autostartComputerTookOver();    // an ESC tool owns the ESCs now: our motors to stop, no restart on exit
++#endif
+         // get channel number
+         // switch all motor lines HI
+         // reply with the count of ESC found
+@@ -334,6 +338,9 @@ static void mspFcSetPassthroughCommand(sbuf_t *dst, sbuf_t *src, mspPostProcessF
+     case MSP_PASSTHROUGH_ESC_KISSALL:
+     case MSP_PASSTHROUGH_ESC_CASTLE:
+         if (mspPassthroughArgument < getMotorCount() || (mspPassthroughMode == MSP_PASSTHROUGH_ESC_KISS && mspPassthroughArgument == ALL_MOTORS)) {
++#ifdef USE_AUTOSTART
++            autostartComputerTookOver();
++#endif
+             sbufWriteU8(dst, 1);
+ 
+             if (mspPostProcessFn) {
+@@ -2925,6 +2932,9 @@ static mspResult_e mspProcessInCommand(mspDescriptor_t srcDesc, int16_t cmdMSP,
+ #endif
+ 
+     case MSP_SET_MOTOR:
++#ifdef USE_AUTOSTART
++        autostartComputerTookOver();    // the person at the computer drives the motors now (stops ours first)
++#endif
          for (int i = 0; i < getMotorCount(); i++) {
              motor_disarmed[i] = motorConvertFromExternal(sbufReadU16(src));
          }
-+#ifdef USE_AUTOSTART
-+        autostartComputerTookOver();    // the person at the computer drives the motors now
-+#endif
-         break;
+@@ -3578,6 +3588,10 @@ static mspResult_e mspProcessInCommand(mspDescriptor_t srcDesc, int16_t cmdMSP,
+                 const uint8_t motorIndex = sbufReadU8(src);
+                 const uint8_t commandCount = sbufReadU8(src);
  
-     case MSP_SET_SERVO_CONFIGURATION:
++#ifdef USE_AUTOSTART
++                autostartComputerTookOver();    // e.g. the motor direction tool: our motors to stop first
++#endif
++
+                 if (DSHOT_CMD_TYPE_BLOCKING == commandType) {
+                     motorDisable();
+                 }
 diff --git a/src/main/msp/msp_box.c b/src/main/msp/msp_box.c
 index e816db0..b166d96 100644
 --- a/src/main/msp/msp_box.c
@@ -1288,10 +1402,10 @@ index e9e55c9..75f92fd 100644
      /* Count of real tasks */
      TASK_COUNT,
 diff --git a/src/test/Makefile b/src/test/Makefile
-index 0de224c..5dc863d 100644
+index 0de224c..7a9fa8e 100644
 --- a/src/test/Makefile
 +++ b/src/test/Makefile
-@@ -47,6 +47,13 @@ althold_unittest_SRC := \
+@@ -47,6 +47,16 @@ althold_unittest_SRC := \
  althold_unittest_DEFINES := \
  		USE_ALTITUDE_HOLD= \
  
@@ -1299,18 +1413,21 @@ index 0de224c..5dc863d 100644
 +		$(USER_DIR)/fc/autostart.c \
 +		$(USER_DIR)/pg/autostart.c
 +
++# with the DShot paths (ESC beacon, extended telemetry) of the real board build
 +autostart_unittest_DEFINES := \
-+		USE_AUTOSTART=
++		USE_AUTOSTART= \
++		USE_DSHOT= \
++		USE_DSHOT_TELEMETRY=
 +
  arming_prevention_unittest_SRC := \
  		$(USER_DIR)/common/bitarray.c \
  		$(USER_DIR)/common/filter.c \
 diff --git a/src/test/unit/autostart_unittest.cc b/src/test/unit/autostart_unittest.cc
 new file mode 100644
-index 0000000..d66a4f2
+index 0000000..25b69d6
 --- /dev/null
 +++ b/src/test/unit/autostart_unittest.cc
-@@ -0,0 +1,937 @@
+@@ -0,0 +1,3321 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -1366,7 +1483,9 @@ index 0000000..d66a4f2
 +
 +    #include "fc/autostart.h"
 +#ifdef USE_DSHOT
++    #include "drivers/dshot.h"
 +    #include "drivers/dshot_command.h"
++    #include "pg/motor.h"
 +#endif
 +
 +    #include "sensors/battery.h"
@@ -1394,6 +1513,8 @@ index 0000000..d66a4f2
 +    mixerRuntime_t mixerRuntime;
 +
 +    timeMs_t millis(void) { return fakeMs; }
++    static timeUs_t fakeMicrosJitter;   // scheduler jitter of the 50 Hz task
++    timeUs_t micros(void) { return (timeUs_t)fakeMs * 1000 + fakeMicrosJitter; }
 +    bool IORead(IO_t io) { UNUSED(io); const bool spike = spikeFirstRead && tickReadIndex == 0; tickReadIndex++; return spike ? false : fakePinHigh; }
 +    IO_t IOGetByTag(ioTag_t tag) { return tag ? (IO_t)&fakeIoRec : IO_NONE; }
 +    void IOInit(IO_t io, resourceOwner_e owner, uint8_t index) { UNUSED(io); UNUSED(owner); UNUSED(index); pinInitCount++; }
@@ -1416,13 +1537,35 @@ index 0000000..d66a4f2
 +    static int dshotBeacons;
 +    bool isMotorProtocolDshot(void) { return true; }
 +#ifdef USE_DSHOT
++    // model of the stock gate (drivers/dshot_command.c dshotStreamingCommandsAreEnabled()): inline commands are
++    // dropped silently until > 3000 ms after motorEnable() (end of init); once one passed, the gate stays open
++    static timeMs_t fakeMotorEnableMs;
++    static bool dshotFirstPassed;
++    static int edtRequests, edtAccepted;
++    bool dshotStreamingCommandsAreEnabled(void)
++    {
++        if (!dshotFirstPassed && (int32_t)(fakeMs - fakeMotorEnableMs) > 3000) {
++            dshotFirstPassed = true;
++        }
++        return dshotFirstPassed;
++    }
++    bool dshotCommandQueueEmpty(void) { return true; }
 +    void dshotCommandWrite(uint8_t index, uint8_t motorCount, uint8_t command, dshotCommandType_e commandType)
 +    {
-+        UNUSED(index); UNUSED(motorCount); UNUSED(commandType);
++        UNUSED(index); UNUSED(motorCount);
++        const bool accepted = commandType != DSHOT_CMD_TYPE_INLINE || dshotStreamingCommandsAreEnabled();
 +        if (command == DSHOT_CMD_BEACON3) {
 +            dshotBeacons++;
 +        }
++        if (command == DSHOT_CMD_EXTENDED_TELEMETRY_ENABLE) {
++            edtRequests++;
++            edtAccepted += accepted ? 1 : 0;
++        }
 +    }
++#ifdef USE_DSHOT_TELEMETRY
++    bool useDshotTelemetry = true;
++    PG_REGISTER(motorConfig_t, motorConfig, PG_MOTOR_CONFIG, 3);
++#endif
 +#endif
 +
 +    static const box_t testBoxes[] = {
@@ -1472,6 +1615,15 @@ index 0000000..d66a4f2
 +    cfg->cutoffTimeSeconds = 5;
 +    fakeCells = 0;
 +    dshotBeacons = 0;
++    fakeMicrosJitter = 0;
++#ifdef USE_DSHOT
++    fakeMotorEnableMs = 1500;   // motorEnable() at the end of init, just before autostartInit()
++    dshotFirstPassed = false;
++    edtRequests = edtAccepted = 0;
++#ifdef USE_DSHOT_TELEMETRY
++    motorConfigMutable()->dev.useDshotEdt = 0;
++#endif
++#endif
 +
 +    fakeMs = 1500;          // init finishes ~1.5 s after power-on
 +    fakePinHigh = true;
@@ -2248,3 +2400,2352 @@ index 0000000..d66a4f2
 +    EXPECT_EQ(32, debug[4] & 32);
 +}
 +
++
++// ---------------------------------------------------------------- property tests (randomized, deterministic)
++//
++// A simulated world (battery with glitches/sags/cut-off, USB, receiver link + RC switch, button with
++// bounces and EMI spikes, CLI sessions, MSP_SET_MOTOR, foreign motor writes, arming, feature 3D,
++// reboots and power cycles, millis() close to 2^31 / 2^32) drives the real module every 20 ms for
++// thousands of random sequences with random settings inside their CLI ranges. An oracle, written from
++// docs/settings.md and the module's documented constants, checks invariants on every tick in "true"
++// 64-bit time, so 32-bit wrap problems of the module show up as differences.
++// Fixed seeds: a failure prints the seed, the sequence number, the settings and the event log.
++// Validation (2026-10-20): with the eight AutostartFindingTest findings below fixed in a scratch copy of
++// fc/autostart.c this test passes (no false alarms); 23 of 24 hand-made mutants of that fixed copy are caught
++// (RX confirm 100 ms, power confirm 100 ms, ramp/run time one tick long, mask ignored, limit ignored, ESC 2 s,
++// no USB/arming/3D inhibit, ...); the one survivor (output reading the live throttle) cannot happen on the board
++// because the live config only changes inside a CLI session, which stops the program first.
++// Fixes of 2026-10-20 (P1-P8, F1-F13): the module passes; the oracle now also mirrors the battery hysteresis
++// (F6), the fast unplug with a USB host (F7), gusts never below the steady level (F9), the 1..249 cut-off raised
++// to 250 (F13), the strict 60 ms debounce (P8), and checks (compiled with USE_DSHOT) the ESC beacon only without
++// a receiver (F11), extended telemetry once per battery and never into the stock gate (F4), and the computer
++// hook stopping only the program's own motors (F8). On the module before those fixes it reports 23 invariants.
++// Run alone: test_autostart_unittest with --gtest_filter=AutostartPropertyTest.* (about 7 s).
++
++#include <string>
++#include <vector>
++#include <cstdio>
++#include <cstdarg>
++#include <math.h>
++
++namespace autostartprop {
++
++enum { ST_IDLE = 0, ST_DELAY, ST_RAMP, ST_RUN, ST_DONE, ST_LOWBAT };
++enum { SRC_NONE = 0, SRC_POWER, SRC_BUTTON, SRC_RCBOX };
++static const int kMotorCount = 4;           // getMotorCount() of the fakes
++static const uint64_t kTick = 20;
++
++static bool isActive(int s) { return s == ST_DELAY || s == ST_RAMP || s == ST_RUN; }
++static uint64_t up20(uint64_t x) { return (x + 19) / 20 * 20; }
++
++#define PROP_VIOLATIONS(X) \
++    X(WRITE_OUTSIDE_MASK)       /* the module changed a motor that is not in its program's mask (or with no program) */ \
++    X(WRITE_OUT_OF_RANGE)       /* a written value is neither DISARM nor within DISARM .. DISARM + limit % */ \
++    X(STOMPED_OTHER_WRITER)     /* the module wrote over a value another writer put there while it was driving */ \
++    X(LEFT_MOTOR_RUNNING)       /* program stopped but a motor still holds a value the module wrote (> DISARM) */ \
++    X(DRIVE_IN_CLI)             \
++    X(DRIVE_WHILE_ARMED)        \
++    X(DRIVE_WITH_3D)            \
++    X(DRIVE_WITH_USB_INHIBIT)   \
++    X(DRIVE_WHILE_HELD)         /* after CLI / MSP_SET_MOTOR / foreign write, until a reboot */ \
++    X(DRIVE_WITHOUT_BATTERY)    /* battery not confirmed (300 ms) or lost (500 ms) */ \
++    X(DRIVE_AFTER_UNPLUG)       /* battery physically removed > 520 ms ago */ \
++    X(DRIVE_BEFORE_ESC_3S)      /* less than 3 s after the battery physically appeared / after boot */ \
++    X(DRIVE_IN_WRONG_STATE)     /* outputs written outside RAMP / RUN */ \
++    X(RUN_WITHOUT_OUTPUT)       \
++    X(RX_LINK_DID_NOT_STOP)     /* receiver link valid > 520 ms, RC switch off, program still active */ \
++    X(RCBOX_PROGRAM_NO_LINK)    /* program owned by the RC switch while the link is invalid */ \
++    X(RCBOX_DID_NOT_START)      /* link + switch for 600 ms, battery, nothing in the way, program not running */ \
++    X(START_WHILE_FORBIDDEN)    /* start without battery, while held or inhibited */ \
++    X(POWER_START_UNEXPECTED)   \
++    X(POWER_START_MISSING)      /* POWER mode, battery confirmed, nothing in the way, no start */ \
++    X(BUTTON_START_NO_CLICK)    \
++    X(RCBOX_START_NO_SWITCH)    \
++    X(START_UNKNOWN_SOURCE)     \
++    X(CLICK_IGNORED)            /* clean debounced click without RX link / inhibit did not toggle */ \
++    X(SOURCE_CHANGE)            /* source changed mid-program other than to the RC switch */ \
++    X(STOP_WITHOUT_REASON)      \
++    X(RESTART_AFTER_LOWBAT)     /* LOW_BATTERY left without a battery re-plug */ \
++    X(RESTART_AFTER_RUN_TIME)   /* DONE left without a user action (click, re-plug, switch toggled, reboot) */ \
++    X(DELAY_OVERRUN)            /* still in DELAY after max(start + delay, ESC 3 s, uptime 3 s) */ \
++    X(RAMP_EARLY)               \
++    X(RAMP_OVERRUN)             \
++    X(RUN_EARLY)                \
++    X(RAMP_VALUE)               \
++    X(RAMP_DECREASING)          \
++    X(RUN_VALUE)                /* steady RUN != min(throttle, limit) */ \
++    X(GUST_VALUE)               \
++    X(GUST_LENGTH)              \
++    X(GUST_PAUSE)               \
++    X(RUN_TIME_OVERRUN)         \
++    X(DONE_EARLY)               \
++    X(CUTOFF_MISSED)            \
++    X(CUTOFF_EARLY)             \
++    X(HELD_FLAG)                /* debug[4] bit 64 != held */ \
++    X(BATTERY_FLAG)             /* debug[4] bit 8 != battery confirmed */ \
++    X(DEBUG_PERCENT_STOPPED)    /* debug[1] != 0 while nothing is driven */ \
++    X(LOWBAT_BEACON)            /* LOW_BATTERY: ESC beacon not every 3 s, or one although a receiver was seen */ \
++    X(RX_LOST_BEEPER)           /* autostartSuppressRxLostBeeper() wrong */ \
++    X(EDT_REQUEST)              /* EDT asked without a ready ESC, with EDT off, or twice for one battery */ \
++    X(EDT_DROPPED)              /* EDT asked while the stock gate still drops inline commands */ \
++    X(HOOK_WRITE)               /* autostartComputerTookOver() changed a motor it does not own, or not to stop */
++
++enum {
++#define PROP_ENUM(name) V_##name,
++    PROP_VIOLATIONS(PROP_ENUM)
++#undef PROP_ENUM
++    V_COUNT
++};
++
++static const char * const violationNames[V_COUNT] = {
++#define PROP_NAME(name) #name,
++    PROP_VIOLATIONS(PROP_NAME)
++#undef PROP_NAME
++};
++
++#define PROP_COVERAGE(X) \
++    X(SEQUENCES) X(TICKS) X(BOOTS) X(POWER_CYCLES) X(SW_REBOOTS) \
++    X(START_POWER) X(START_BUTTON) X(START_RCBOX) X(RAMP_REACHED) X(RUN_REACHED) X(DONE_REACHED) X(LOWBAT_REACHED) \
++    X(GUSTS) X(CLEAN_CLICKS) X(CLI_SESSIONS) X(MSP_WRITES) X(FOREIGN_DETECTED) X(UNPLUGS) X(GLITCHES) X(SAGS) \
++    X(WARP_2_31) X(WARP_2_32) X(WARP_LONG) X(TICKS_PAST_2_31) X(TICKS_AFTER_WRAP) X(RX_LINKS) X(ARMS) X(F3D)     X(SCENARIO_RANDOM) X(SCENARIO_QUIET) X(SCENARIO_RC) X(SCENARIO_BUTTON) X(SCENARIO_BENCH) X(SCENARIO_COMPUTER) \
++    X(EDT_ASKED) X(BEACONS) X(BEACON_RX_SKIPS) X(USB_FAST_LOSS) X(SAG_HYSTERESIS) X(HOOK_STOPS)
++
++enum {
++#define PROP_ENUM(name) C_##name,
++    PROP_COVERAGE(PROP_ENUM)
++#undef PROP_ENUM
++    C_COUNT
++};
++
++static const char * const coverageNames[C_COUNT] = {
++#define PROP_NAME(name) #name,
++    PROP_COVERAGE(PROP_NAME)
++#undef PROP_NAME
++};
++
++struct Results {
++    long violations[V_COUNT];
++    std::string first[V_COUNT];
++    long cover[C_COUNT];
++    Results() { memset(violations, 0, sizeof(violations)); memset(cover, 0, sizeof(cover)); }
++    long total(void) const { long t = 0; for (int i = 0; i < V_COUNT; i++) t += violations[i]; return t; }
++};
++
++struct Prng {
++    uint32_t s;
++    explicit Prng(uint32_t seed) : s(seed ? seed : 0x2545F491u) {}
++    uint32_t next(void) { s ^= s << 13; s ^= s >> 17; s ^= s << 5; return s; }
++    uint32_t below(uint32_t n) { return n ? next() % n : 0; }
++    uint32_t range(uint32_t lo, uint32_t hi) { return hi <= lo ? lo : lo + below(hi - lo + 1); }
++    bool chance(uint32_t per100k) { return per100k && below(100000) < per100k; }
++    // an edge value of [lo, hi] (1 in 4), anywhere in [lo, hi] (1 in 8), else a typical value
++    uint32_t edge(uint32_t lo, uint32_t hi, uint32_t typLo, uint32_t typHi)
++    {
++        switch (below(8)) {
++        case 0: return lo;
++        case 1: return hi;
++        case 2: return range(lo, hi);
++        default: return range(typLo, typHi);
++        }
++    }
++};
++
++// autostart_cell_cutoff as the module uses it: 1..249 is raised to 250 (docs: 0 or 250..420)
++static uint32_t cutoffCvPerCell(uint16_t cellCutoffCv)
++{
++    return cellCutoffCv ? MAX(cellCutoffCv, (uint16_t)250) : 0;
++}
++
++// writeOutputs() with the fakes' PWM-like motorConvertFromExternal()
++static float outputFor(float percent, int limit)
++{
++    const float pct = constrainf(percent, 0.0f, (float)limit);
++    const uint16_t external = 1000 + (uint16_t)lrintf(pct * (2000 - 1000) / 100.0f);
++    return external <= 1000 ? DISARM : (float)external;
++}
++
++enum {
++    EV_UNPLUG = 0, EV_PLUG, EV_GLITCH_DOWN, EV_GLITCH_UP, EV_SAG, EV_DEPLETE, EV_RECOVER, EV_USB,
++    EV_RX, EV_RX_GLITCH, EV_BOX, EV_PRESS, EV_BOUNCE, EV_SPIKES, EV_CLI_ENTER, EV_CLI_EXIT, EV_CLI_MOTOR,
++    EV_MSP, EV_FOREIGN, EV_ARM, EV_3D, EV_REBOOT, EV_WARP, EV_COUNT
++};
++// per 100000 ticks, before the sequence's profile factor
++static const uint32_t baseRate[EV_COUNT] = {
++    60, 400, 60, 60, 100, 15, 40, 40,
++    30, 40, 60, 100, 40, 20, 12, 250, 250,
++    12, 15, 12, 8, 8, 40,
++};
++
++struct TraceRow { uint64_t t; uint32_t ms; int s, src, flags; bool d; float m[kMotorCount]; uint16_t vbat, vf; bool batt, usb, rx, pressed, cli, held; };
++
++struct Sim {
++    Prng r;
++    uint32_t seed;
++    int seqNo = 0;
++    Results &res;
++    std::string log;
++    TraceRow trace[12];
++    int traceN = 0;
++    bool reported[V_COUNT];
++
++    uint32_t rate[EV_COUNT];
++    autostartConfig_t stored;           // what a reboot / power cycle loads
++    autostartConfig_t bootCfg;          // live config at the last autostartInit()
++
++    // ---- world, true time in ms
++    uint64_t now = 0, endAt = 0;
++    bool boardOn = false, booting = false, taskOn = false;
++    uint64_t bootTrue = 0, initAt = 0;
++    bool batt = false;
++    uint64_t battPlug = 0, battUnplug = 0, replugAt = 0, unplugAt = 0;
++    uint8_t physCells = 6, autoCells = 0;
++    uint16_t packCv = 2500, sagCv = 0, glitchCv = 0, backfeed = 0, riseMs = 0, lastFiltered = 0;
++    uint64_t sagUntil = 0, glitchUntil = 0, depleteAt = 0, lastUpGlitch = 0;
++    int warps = 0;
++    bool usb = false;
++    bool rx = false;
++    uint64_t rxChange = 0, rxGlitchUntil = 0;
++    int box = BOXID_NONE;
++    bool pressed = false;
++    uint64_t pressUntil = 0, pressAt = 0, buttonChange = 0;
++    uint32_t spikeRate = 0;             // per 1000 ticks
++    bool spikeNow = false;
++    bool cli = false, armed = false, f3d = false;
++    uint64_t armedUntil = 0, f3dUntil = 0;
++    bool pinFree = true;
++
++    // ---- oracle
++    // The ESC reference ("battery seen at the first check = it powered the board at boot") has two legitimate
++    // readings after a reading drop before the confirmation: keep counting from boot (only if the battery
++    // physically stayed), or count from the new rising edge. Timing checks accept the window between them.
++    bool oFirst = true, oRaw = false, oConfirmed = false, oAtFirstA = false, oAtFirstB = false, justConfirmed = false, justLost = false;
++    uint64_t oRawChange = 0, oDetect = 0, oDetectEarly = 0, oSince = 0, firstCheck = 0;
++    bool battAtFirstCheck = false, unplugSinceFirstCheck = false;
++    bool held = false, lowLatched = false, doneLatched = false, rxEver = false, pendingPossible = false;
++    uint64_t lastInhibit = 0, boxOnSince = 0;
++    bool boxOnRun = false;
++    int prevS = ST_IDLE, prevSrc = SRC_NONE;
++    bool progEver = false;
++    autostartConfig_t prog;
++    uint8_t progMask = 0, progLimit = 100, progThr = 0;
++    uint64_t progStart = 0, expectedRamp = 0, expectedRampEarly = 0, rampStart = 0, runStart = 0;
++    float lastRampOut = 0;
++    bool oLow = false, oLowE = false;
++    uint64_t oLowStart = 0, oLowStartE = 0;
++    bool gustFlag = false;
++    uint64_t gustEdge = 0;
++    float gustValue = 0;
++    float before[MAX_SUPPORTED_MOTORS];
++    bool autoOwned[MAX_SUPPORTED_MOTORS];
++    bool envWroteWhileDriving[MAX_SUPPORTED_MOTORS];
++    uint32_t pressHist = 0, spikeHist = 0;
++    bool wroteThisBoot = false, cutMismatch = false;
++    uint64_t lowbatEnter = 0;
++    int beaconsSeen = 0;
++    bool rxSeenSure = false;
++    // mirror of the RX confirmation (500 ms), updated like the module only in ticks that reach the RX block
++    bool mRxWasValid = false;
++    uint64_t mRxSince = 0;
++    int ticksSinceInit = 0;
++    bool buttonUsable = false;
++    int oNoBatteryTicks = 0;            // consecutive ticks with the latest reading below 1 V
++    uint64_t oLastLowBatBeep = 0;       // the module's lastLowBatBeepMs
++    int edtThisBattery = 0;             // EDT requests since the battery was confirmed
++    bool edtOn = false;                 // dshot_edt of this boot
++    int edtRequestsBefore = 0, edtAcceptedBefore = 0;
++
++    Sim(uint32_t seedValue, Results &results) : r(seedValue), seed(seedValue), res(results) {}
++
++    uint32_t millisNow(void) const { return (uint32_t)(now - bootTrue); }
++
++    void note(const char *fmt, ...) __attribute__((format(printf, 2, 3)))
++    {
++        char line[200];
++        va_list ap;
++        va_start(ap, fmt);
++        vsnprintf(line, sizeof(line), fmt, ap);
++        va_end(ap);
++        char head[48];
++        snprintf(head, sizeof(head), "  t=%llu ms=%u ", (unsigned long long)now, (unsigned)millisNow());
++        log += head;
++        log += line;
++        log += "\n";
++    }
++
++    std::string configText(const autostartConfig_t &c) const
++    {
++        char b[600];
++        snprintf(b, sizeof(b),
++            "mode=%u delay=%u ramp=%u throttle=%u limit=%u motors=0x%02X usb_inhibit=%u box=%u button=%u vbat_min=%u "
++            "run_time=%u pattern=%u gust=%u..%u len=%u..%u pause=%u..%u cells=%u cell_cutoff=%u cutoff_time=%u",
++            c.mode, c.delaySeconds, c.rampDeciseconds, c.throttlePercent, c.throttleLimit, c.motorMask, c.usbInhibit,
++            c.rcBoxPermanentId, (unsigned)c.buttonTag, c.vbatMinDeciVolts, c.runTimeSeconds, c.pattern, c.gustMinPercent,
++            c.gustMaxPercent, c.gustLenMinMs, c.gustLenMaxMs, c.gustPauseMinDs, c.gustPauseMaxDs, c.cells, c.cellCutoffCv,
++            c.cutoffTimeSeconds);
++        return b;
++    }
++
++    void fail(int v, const char *fmt, ...) __attribute__((format(printf, 3, 4)))
++    {
++        res.violations[v]++;
++        if (reported[v] || !res.first[v].empty()) {
++            reported[v] = true;
++            return;
++        }
++        reported[v] = true;
++        char what[300];
++        va_list ap;
++        va_start(ap, fmt);
++        vsnprintf(what, sizeof(what), fmt, ap);
++        va_end(ap);
++        std::string s;
++        char head[200];
++        snprintf(head, sizeof(head), "%s: seed=0x%08X sequence=%d t=%llu millis=%u: ", violationNames[v], (unsigned)seed, seqNo,
++            (unsigned long long)now, (unsigned)millisNow());
++        s += head;
++        s += what;
++        s += "\n  boot config: " + configText(bootCfg);
++        s += "\n  live config: " + configText(*autostartConfig());
++        char w[300];
++        snprintf(w, sizeof(w), "\n  world: physCells=%u pack=%u autoCells=%u pinFree=%d boot=%llu battPlug=%llu oDetect=%llu oSince=%llu",
++            physCells, packCv, autoCells, pinFree, (unsigned long long)bootTrue, (unsigned long long)battPlug,
++            (unsigned long long)oDetect, (unsigned long long)oSince);
++        s += w;
++        s += "\n  events (last 40):\n";
++        size_t pos = log.size();
++        for (int lines = 0; pos > 0 && lines < 41; ) {
++            pos--;
++            if (log[pos] == '\n') {
++                lines++;
++            }
++        }
++        s += log.substr(pos ? pos + 1 : 0);
++        s += "  ticks (oldest first): t ms state src flags drv m1..m4 vbat vfilt batt usb rx btn cli held\n";
++        for (int i = 0; i < 12; i++) {
++            const TraceRow &tr = trace[(traceN + i) % 12];
++            if (tr.t == 0 && i < 11) {
++                continue;
++            }
++            char row[200];
++            snprintf(row, sizeof(row), "  %llu %u %d %d %d %d %.0f %.0f %.0f %.0f %u %u %d %d %d %d %d %d\n", (unsigned long long)tr.t,
++                (unsigned)tr.ms, tr.s, tr.src, tr.flags, tr.d, tr.m[0], tr.m[1], tr.m[2], tr.m[3], tr.vbat, tr.vf, tr.batt, tr.usb,
++                tr.rx, tr.pressed, tr.cli, tr.held);
++            s += row;
++        }
++        res.first[v] = s;
++    }
++
++    // ---------------------------------------------------------------- settings and world
++    void randomConfig(autostartConfig_t *c, bool withWorld)
++    {
++        memset(c, 0, sizeof(*c));
++        const uint32_t m = r.below(20);
++        c->mode = m == 0 ? AUTOSTART_MODE_OFF : (m <= 11 ? AUTOSTART_MODE_POWER : AUTOSTART_MODE_BUTTON);
++        c->delaySeconds = r.edge(0, 600, 0, 12);
++        c->rampDeciseconds = r.edge(0, 6000, 0, 150);
++        c->throttlePercent = r.edge(0, 100, 1, 100);
++        c->throttleLimit = r.edge(1, 100, 1, 100);
++        static const uint8_t masks[] = { 0x01, 0x01, 0x03, 0x05, 0x0F, 0xF0, 0x10, 0x81, 0xFF, 0x0D };
++        c->motorMask = r.below(4) == 0 ? (uint8_t)r.edge(1, 255, 1, 255) : masks[r.below(sizeof(masks))];
++        c->usbInhibit = r.below(2);
++        static const uint8_t boxes[] = { 255, 255, 42, 42, 42, 0, 40, 43 };
++        c->rcBoxPermanentId = r.below(8) == 0 ? (uint8_t)r.range(0, 255) : boxes[r.below(sizeof(boxes))];
++        c->buttonTag = (c->mode == AUTOSTART_MODE_BUTTON) ? (r.below(100) < 85) : (r.below(100) < 30);
++        c->runTimeSeconds = r.below(10) < 4 ? 0 : r.edge(0, 65535, 1, 90);
++        c->pattern = r.below(2);
++        c->gustMinPercent = r.edge(0, 100, 0, 100);
++        c->gustMaxPercent = r.edge(0, 100, 0, 100);
++        c->gustLenMinMs = r.edge(50, 10000, 50, 1500);
++        c->gustLenMaxMs = r.edge(50, 10000, 50, 1500);
++        c->gustPauseMinDs = r.edge(0, 6000, 0, 80);
++        c->gustPauseMaxDs = r.edge(0, 6000, 0, 80);
++        c->cells = r.edge(0, 12, 0, 12);
++        c->cellCutoffCv = r.below(5) == 0 ? 0 : r.edge(0, 420, 250, 420);
++        c->cutoffTimeSeconds = r.edge(1, 60, 1, 10);
++        if (!withWorld) {
++            c->vbatMinDeciVolts = r.edge(0, 600, 30, 200);
++            return;
++        }
++        // battery and vbat_min together, so that most sequences can see the battery
++        physCells = (c->cells && r.below(10) < 8) ? c->cells : (uint8_t)r.range(1, 12);
++        packCv = physCells * r.range(300, 435);
++        const uint32_t v = r.below(20);
++        if (v < 2) {
++            c->vbatMinDeciVolts = 0;
++        } else if (v < 9) {
++            c->vbatMinDeciVolts = 60;
++        } else if (v < 15) {
++            c->vbatMinDeciVolts = r.range(1, MAX(packCv / 10, 1));
++        } else {
++            c->vbatMinDeciVolts = r.edge(0, 600, 30, 200);
++        }
++        autoCells = (c->cells == 0) ? (r.below(5) == 0 ? 0 : physCells) : (uint8_t)r.range(0, 12);
++    }
++
++    uint16_t gateCv(void) const { return autostartConfig()->vbatMinDeciVolts * 10; }
++
++    void startBoot(void)
++    {
++        booting = true;
++        taskOn = false;
++        bootTrue = now;
++        initAt = now + 20 * r.range(50, 100);       // init 1.0 .. 2.0 s after power-on
++        cli = false;
++        armed = false;
++        res.cover[C_BOOTS]++;
++    }
++
++    void finishBoot(void)
++    {
++        booting = false;
++        fakeMs = millisNow();
++        for (int i = 0; i < MAX_SUPPORTED_MOTORS; i++) {
++            motor_disarmed[i] = DISARM;                 // MCU reset, mixer init
++            autoOwned[i] = false;
++            envWroteWhileDriving[i] = false;
++        }
++        cliMode = false;
++        armingFlags = 0;
++        pinFree = r.below(10) != 0;
++        fakePinFree = pinFree;
++        fakeCells = autoCells;
++        fakePinHigh = !pressed;
++        spikeFirstRead = false;
++        tickReadIndex = 1;
++#ifdef USE_DSHOT
++        fakeMotorEnableMs = fakeMs;     // motorEnable() at the end of init, right before autostartInit()
++        dshotFirstPassed = false;
++#ifdef USE_DSHOT_TELEMETRY
++        // derived from the time, not from r: keeps the random stream (and the coverage) of the sequences as it was
++        edtOn = ((now / 20) % 2) != 0;
++        motorConfigMutable()->dev.useDshotEdt = edtOn;
++#endif
++#endif
++        oNoBatteryTicks = 0;
++        edtThisBattery = 0;
++        fakeMicrosJitter = (timeUs_t)((now * 7919u) % 20000u);
++        autostartInit();
++        bootCfg = *autostartConfig();
++        taskOn = bootCfg.mode != AUTOSTART_MODE_OFF;      // tasksInit(): setTaskEnabled(TASK_AUTOSTART, autostartIsEnabled())
++        buttonUsable = taskOn && bootCfg.buttonTag && pinFree;
++        oFirst = true; oRaw = false; oConfirmed = false; oAtFirstA = oAtFirstB = false; oRawChange = now;
++        oDetect = oDetectEarly = 0; oSince = 0; firstCheck = now; battAtFirstCheck = batt; unplugSinceFirstCheck = false;
++        held = false; lowLatched = false; doneLatched = false; rxEver = false; pendingPossible = false;
++        lastInhibit = now; boxOnRun = false;
++        prevS = ST_IDLE; prevSrc = SRC_NONE; progEver = false; oLow = oLowE = false;
++        pressHist = 0; spikeHist = 0; ticksSinceInit = 0;
++        wroteThisBoot = false; cutMismatch = false; rxSeenSure = false; mRxWasValid = false; mRxSince = 0;
++        note("boot: autostartInit, task %s, pin %s", taskOn ? "on" : "off", pinFree ? "free" : "taken");
++        // boot-time biases: the battery connector bouncing around the first check, an ADC spike at the first check
++        if (usb && batt && bootCfg.vbatMinDeciVolts && r.below(8) == 0) {
++            unplugAt = now + 20 * r.range(1, 14);
++            replugAt = unplugAt + 20 * r.range(30, 1000);
++        }
++        if (usb && !batt && bootCfg.vbatMinDeciVolts && r.below(12) == 0) {
++            glitchUntil = now + 20 * r.range(1, 13);
++            glitchCv = gateCv() + r.range(0, 800);
++            lastUpGlitch = now;
++            note("ADC spike at the first check: %u cV", glitchCv);
++        }
++    }
++
++    void plugBattery(void)
++    {
++        batt = true;
++        battPlug = now;
++        riseMs = r.range(0, 1500);
++        replugAt = 0;
++        glitchUntil = 0;
++        note("battery plugged (%u cV)", packCv);
++    }
++
++    void unplugBattery(uint64_t forMs)
++    {
++        batt = false;
++        battUnplug = now;
++        unplugSinceFirstCheck = true;
++        glitchUntil = 0;
++        sagUntil = 0;
++        replugAt = forMs ? now + forMs : 0;
++        res.cover[C_UNPLUGS]++;
++        note("battery unplugged (back in %llu ms)", (unsigned long long)forMs);
++    }
++
++    void envWrite(int i, float v, const char *who)
++    {
++        if (motor_disarmed[i] != v) {
++            if (autostartIsDrivingMotors() && i < kMotorCount && progEver && (progMask & (1U << i))) {
++                envWroteWhileDriving[i] = true;
++                if (strcmp(who, "msp") != 0) {
++                    held = true;                        // outputsOverwritten() sees it on the next tick
++                    res.cover[C_FOREIGN_DETECTED]++;
++                }
++            }
++        }
++        motor_disarmed[i] = v;
++        autoOwned[i] = false;
++    }
++
++    float randomMotorValue(void) { return r.below(3) == 0 ? DISARM : (float)r.range(1000, 2000); }
++
++    // autostartComputerTookOver() runs outside the 50 Hz task: it may only put the program's own motors to stop
++    void computerHook(void)
++    {
++        float m[MAX_SUPPORTED_MOTORS];
++        for (int i = 0; i < MAX_SUPPORTED_MOTORS; i++) {
++            m[i] = motor_disarmed[i];
++        }
++        autostartComputerTookOver();
++        bool released = false;
++        for (int i = 0; i < MAX_SUPPORTED_MOTORS; i++) {
++            if (motor_disarmed[i] != m[i]) {
++                released = true;
++                const bool ours = progEver && i < kMotorCount && (progMask & (1U << i));
++                if (!ours || motor_disarmed[i] != DISARM || envWroteWhileDriving[i]) {
++                    fail(V_HOOK_WRITE, "hook: motor %d %.0f -> %.0f (program mask 0x%02X, other writer %d)", i, m[i],
++                        motor_disarmed[i], progMask, envWroteWhileDriving[i]);
++                }
++            }
++        }
++        if (autostartIsDrivingMotors()) {
++            fail(V_HOOK_WRITE, "still driving right after the hook");
++        }
++        res.cover[C_HOOK_STOPS] += released;
++    }
++
++    bool quiescent(void) const
++    {
++        if (!boardOn || booting || !taskOn || cli || armed || pressed || spikeRate || pendingPossible || lowLatched) {
++            return false;
++        }
++        if (now < sagUntil || now < glitchUntil || now < rxGlitchUntil || now < pressUntil || replugAt || unplugAt || pressAt || depleteAt) {
++            return false;
++        }
++        if (now - rxChange < 600 || now - oRawChange < 600 || now - buttonChange < 200) {     // every debounce settled
++            return false;
++        }
++        if (now - bootTrue < 3100 || (oConfirmed && now - oDetect < 3100) || now - lastInhibit < 600) {   // uptime, ESC 3 s, RX confirmation reached
++            return false;
++        }
++        if (prevS == ST_IDLE || prevS == ST_DONE) {
++            return true;
++        }
++        if (prevS == ST_RUN && prog.pattern == AUTOSTART_PATTERN_STEADY && prog.runTimeSeconds == 0 && !oLow) {
++            const uint8_t cells = autostartConfig()->cells ? autostartConfig()->cells : autoCells;
++            const uint32_t cutoff = cutoffCvPerCell(prog.cellCutoffCv) * cells;
++            return cutoff == 0 || packCv >= cutoff + 50;
++        }
++        return false;
++    }
++
++    void warp(void)
++    {
++        const uint32_t ms = millisNow();
++        const uint32_t kind = r.below(3);
++        uint32_t target;
++        if (kind == 0) {
++            target = 0x80000000u - 20 * r.range(0, 3000);
++        } else if (kind == 1) {
++            target = (uint32_t)(0x100000000ull - 20ull * r.range(1, 3000));
++        } else {
++            target = ms + 20 * r.range(180000, 43200000);   // 1 h .. 10 days
++        }
++        uint32_t delta = target - ms;
++        delta -= delta % 20;
++        if (delta < 1000) {
++            return;
++        }
++        now += delta;
++        endAt += delta;
++        res.cover[kind == 0 ? C_WARP_2_31 : (kind == 1 ? C_WARP_2_32 : C_WARP_LONG)]++;
++        note("time warp +%u ms (inputs stable, module quiescent)", (unsigned)delta);
++        // then provoke what depends on time: a click, a depleted battery, a re-plug around the wrap
++        if (kind == 0) {
++            const uint64_t past = now + (0x80000000u - millisNow()) + 20 * r.range(0, 1000);
++            if (buttonUsable) {
++                pressAt = past;
++            }
++            if (r.below(2)) {
++                depleteAt = past + 20 * r.range(0, 1000);
++            }
++        } else if (kind == 1 && usb && bootCfg.vbatMinDeciVolts && batt) {
++            const uint64_t wrapAt = now + (uint64_t)(0x100000000ull - millisNow());
++            if (wrapAt > now + 2000) {
++                unplugAt = wrapAt - 20 * r.range(50, 90);
++                replugAt = wrapAt + 20 * r.range(0, 120);
++            }
++        }
++    }
++
++    void randomEvents(void)
++    {
++        // scheduled
++        if (pressUntil && now >= pressUntil) {
++            pressed = false;
++            pressUntil = 0;
++            buttonChange = now;
++            note("button released");
++        }
++        if (pressAt && now >= pressAt) {
++            pressAt = 0;
++            pressed = true;
++            buttonChange = now;
++            pressUntil = now + 20 * r.range(4, 50);
++            note("button pressed (scheduled)");
++        }
++        if (rxGlitchUntil && now >= rxGlitchUntil) {
++            rxGlitchUntil = 0;
++            rx = false;
++            rxChange = now;
++            note("rx glitch end");
++        }
++        if (armedUntil && now >= armedUntil) {
++            armedUntil = 0;
++            armed = false;
++            note("disarmed");
++        }
++        if (f3dUntil && now >= f3dUntil) {
++            f3dUntil = 0;
++            f3d = false;
++            note("feature 3D off");
++        }
++        if (unplugAt && now >= unplugAt) {
++            unplugAt = 0;
++            if (batt) {
++                const uint64_t back = replugAt > now ? replugAt - now : 600;
++                unplugBattery(MAX(back, (uint64_t)600));
++            }
++        }
++        if (replugAt && now >= replugAt && !batt) {
++            plugBattery();
++        }
++        if (depleteAt && now >= depleteAt) {
++            depleteAt = 0;
++            const uint8_t cells = autostartConfig()->cells ? autostartConfig()->cells : autoCells;
++            const uint32_t cutoff = cutoffCvPerCell(autostartConfig()->cellCutoffCv) * cells;
++            if (cutoff > 300) {
++                packCv = (uint16_t)MAX(cutoff - r.range(1, 200), (uint32_t)gateCv() + 1);
++                note("battery depleted to %u cV (scheduled)", packCv);
++            }
++        }
++
++        const bool gate = autostartConfig()->vbatMinDeciVolts != 0;
++        // battery
++        if (gate && batt && r.chance(rate[EV_UNPLUG])) {
++            unplugBattery(r.below(3) ? 20 * r.range(30, 1500) : 0);
++        }
++        // a hand needs > 0.5 s to unplug and re-plug: shorter interruptions look like ADC glitches to any detector
++        if (gate && !batt && !replugAt && now - lastUpGlitch > 1000 && now - battUnplug >= 600 && r.chance(rate[EV_PLUG])) {
++            plugBattery();
++        }
++        if (batt && now >= glitchUntil && r.chance(rate[EV_GLITCH_DOWN])) {
++            glitchUntil = now + 20 * r.range(1, 24);
++            glitchCv = gate ? (uint16_t)r.range(0, gateCv() - 1) : 0;
++            res.cover[C_GLITCHES]++;
++            note("ADC glitch low %u cV for %llu ms", glitchCv, (unsigned long long)(glitchUntil - now));
++        }
++        if (gate && !batt && now >= glitchUntil && now - battUnplug > 1000 && (!replugAt || replugAt > now + 1500)
++            && r.chance(rate[EV_GLITCH_UP])) {
++            glitchUntil = now + 20 * r.range(1, 14);
++            glitchCv = gateCv() + r.range(0, 800);
++            lastUpGlitch = now;
++            res.cover[C_GLITCHES]++;
++            note("ADC glitch high %u cV for %llu ms", glitchCv, (unsigned long long)(glitchUntil - now));
++        }
++        if (batt && now >= sagUntil && r.chance(rate[EV_SAG])) {
++            const uint8_t cells = autostartConfig()->cells ? autostartConfig()->cells : autoCells;
++            const uint32_t cutoff = cutoffCvPerCell(autostartConfig()->cellCutoffCv) * cells;
++            const uint32_t lo = cutoff > 300 ? cutoff - 300 : 0;
++            sagCv = (uint16_t)MIN(r.range(lo, cutoff + 100), (uint32_t)packCv);
++            sagUntil = now + 20 * r.range(5, (MAX(autostartConfig()->cutoffTimeSeconds, 1) * 1000 + 3000) / 20);
++            res.cover[C_SAGS]++;
++            note("sag to %u cV for %llu ms", sagCv, (unsigned long long)(sagUntil - now));
++        }
++        if (batt && r.chance(rate[EV_DEPLETE])) {
++            const uint8_t cells = autostartConfig()->cells ? autostartConfig()->cells : autoCells;
++            const uint32_t cutoff = cutoffCvPerCell(autostartConfig()->cellCutoffCv) * cells;
++            if (cutoff > 200) {
++                packCv = (uint16_t)MAX(cutoff - r.range(1, 200), (uint32_t)gateCv());
++                note("battery depleted to %u cV", packCv);
++            }
++        }
++        if (batt && r.chance(rate[EV_RECOVER])) {
++            packCv = (uint16_t)MIN(packCv + r.range(20, 150), 5300u);
++            note("battery recovers to %u cV", packCv);
++        }
++        if (r.chance(rate[EV_USB])) {
++            usb = !usb;
++            note("USB %s", usb ? "connected" : "disconnected");
++        }
++        // receiver
++        if (!rxGlitchUntil && r.chance(rate[EV_RX])) {
++            rx = !rx;
++            rxChange = now;
++            res.cover[C_RX_LINKS] += rx;
++            note("rx link %s", rx ? "valid" : "lost");
++        }
++        if (!rx && r.chance(rate[EV_RX_GLITCH])) {
++            rx = true;
++            rxChange = now;
++            rxGlitchUntil = now + 20 * r.range(1, 24);
++            note("rx glitch valid for %llu ms", (unsigned long long)(rxGlitchUntil - now));
++        }
++        if (r.chance(rate[EV_BOX])) {
++            static const int boxes[] = { BOXID_NONE, BOXUSER3, BOXUSER3, BOXARM, BOXUSER1 };
++            box = boxes[r.below(5)];
++            note("RC switch -> box %d", box);
++        }
++        // button
++        if (!pressed && r.chance(rate[EV_PRESS])) {
++            pressed = true;
++            buttonChange = now;
++            pressUntil = now + 20 * r.range(4, 100);
++            note("button pressed for %llu ms", (unsigned long long)(pressUntil - now));
++        }
++        if (!pressed && r.chance(rate[EV_BOUNCE])) {
++            pressed = true;
++            buttonChange = now;
++            pressUntil = now + 20 * r.range(1, 2);
++            note("button bounce %llu ms", (unsigned long long)(pressUntil - now));
++        }
++        if (r.chance(rate[EV_SPIKES])) {
++            static const uint32_t rates[] = { 0, 0, 300, 1000 };
++            spikeRate = rates[r.below(4)];
++            note("EMI spikes on the button pin: %u / 1000 ticks", (unsigned)spikeRate);
++        }
++        // computer
++        if (boardOn && !booting && !cli && r.chance(rate[EV_CLI_ENTER])) {
++            cli = true;
++            res.cover[C_CLI_SESSIONS]++;
++            note("CLI entered");
++            if (r.below(3) == 0) {          // pasted together with the entry: processed before the next autostart tick
++                cliMotorCommand();
++            }
++            if (r.below(3) == 0) {
++                cliSetCommand();
++            }
++        }
++        if (cli && r.chance(rate[EV_CLI_MOTOR])) {
++            cliMotorCommand();
++        }
++        if (cli && r.chance(rate[EV_CLI_MOTOR])) {
++            cliSetCommand();
++        }
++        if (cli && r.chance(rate[EV_CLI_EXIT])) {
++            cli = false;
++            for (int i = 0; i < MAX_SUPPORTED_MOTORS; i++) {
++                envWrite(i, DISARM, "cliexit");     // mixerResetDisarmedMotors()
++            }
++            const uint32_t how = r.below(3);
++            if (how == 0) {
++                note("CLI exit noreboot");
++            } else {
++                if (how == 1) {
++                    stored = *autostartConfig();
++                    note("CLI save (reboot)");
++                } else {
++                    *autostartConfigMutable() = stored;
++                    note("CLI exit (reboot, unsaved changes lost)");
++                }
++                res.cover[C_SW_REBOOTS]++;
++                startBoot();
++            }
++        }
++        if (boardOn && !booting && r.chance(rate[EV_MSP])) {
++            const bool stop = r.below(2);
++            computerHook();                         // msp.c calls the hook first, then writes the motors
++            for (int i = 0; i < kMotorCount; i++) {
++                envWrite(i, stop ? DISARM : randomMotorValue(), "msp");
++            }
++            held = true;
++            res.cover[C_MSP_WRITES]++;
++            note("MSP_SET_MOTOR %s", stop ? "STOP" : "values");
++        }
++        if (boardOn && !booting && r.chance(rate[EV_FOREIGN])) {
++            const int i = r.below(MAX_SUPPORTED_MOTORS);
++            const float v = randomMotorValue();
++            note("foreign write motor %d = %.0f", i, v);
++            envWrite(i, v, "foreign");
++        }
++        if (!armed && r.chance(rate[EV_ARM])) {
++            armed = true;
++            armedUntil = now + 20 * r.range(1, 500);
++            res.cover[C_ARMS]++;
++            note("armed");
++        }
++        if (!f3d && r.chance(rate[EV_3D])) {
++            f3d = true;
++            f3dUntil = now + 20 * r.range(1, 1000);
++            res.cover[C_F3D]++;
++            note("feature 3D on");
++        }
++        if (boardOn && !booting && r.chance(rate[EV_REBOOT])) {
++            *autostartConfigMutable() = stored;
++            res.cover[C_SW_REBOOTS]++;
++            note("reboot (MSP_SET_REBOOT / Restart program)");
++            startBoot();
++        }
++        if (warps < 2 && quiescent() && r.chance(rate[EV_WARP])) {
++            warps++;
++            warp();
++        }
++    }
++
++    void cliMotorCommand(void)
++    {
++        const float v = (float)r.range(1000, 2000);
++        if (r.below(3) == 0) {
++            for (int i = 0; i < kMotorCount; i++) {
++                envWrite(i, v, "cli");
++            }
++            note("CLI motor 255 %.0f", v);
++        } else {
++            const int i = r.below(kMotorCount);
++            envWrite(i, v, "cli");
++            note("CLI motor %d %.0f", i, v);
++        }
++    }
++
++    void cliSetCommand(void)
++    {
++        autostartConfig_t c;
++        randomConfig(&c, false);
++        autostartConfig_t *live = autostartConfigMutable();
++        switch (r.below(6)) {
++        case 0: live->mode = c.mode; break;
++        case 1: live->throttlePercent = c.throttlePercent; live->throttleLimit = c.throttleLimit; break;
++        case 2: live->motorMask = c.motorMask; break;
++        case 3: live->usbInhibit = c.usbInhibit; break;
++        case 4: live->delaySeconds = c.delaySeconds; live->rampDeciseconds = c.rampDeciseconds; break;
++        default: live->cellCutoffCv = c.cellCutoffCv; live->cells = c.cells; break;
++        }
++        note("CLI set: %s", configText(*live).c_str());
++    }
++
++    void powerTransitions(void)
++    {
++        const bool on = usb || batt;
++        if (boardOn && !on) {
++            boardOn = false;
++            booting = false;
++            taskOn = false;
++            cli = false;
++            res.cover[C_POWER_CYCLES]++;
++            note("board off");
++        } else if (!boardOn && on) {
++            boardOn = true;
++            *autostartConfigMutable() = stored;
++            note("board on");
++            startBoot();
++        }
++    }
++
++    // ---------------------------------------------------------------- module inputs
++    void setInputs(void)
++    {
++        uint16_t reading;
++        if (batt) {
++            reading = packCv;
++            if (now < sagUntil) {
++                reading = MIN(reading, sagCv);
++            }
++        } else {
++            reading = backfeed;
++        }
++        const bool glitch = now < glitchUntil;
++        if (glitch) {
++            reading = glitchCv;
++        }
++        // getBatteryVoltage(): filtered; rises for riseMs after the battery appears, ignores short glitches
++        uint16_t filtered;
++        if (batt) {
++            const uint64_t ref = MAX(battPlug, bootTrue);
++            const uint16_t base = (now < sagUntil) ? MIN(packCv, sagCv) : packCv;
++            if (riseMs && now - ref < riseMs) {
++                filtered = (uint16_t)((uint32_t)base * (uint32_t)(now - ref) / riseMs);
++            } else {
++                filtered = base;
++            }
++            if (glitch) {
++                filtered = lastFiltered;
++            }
++        } else {
++            filtered = reading;
++        }
++        lastFiltered = filtered;
++        fakeVbat = reading;
++        fakeVbatFiltered = filtered ? filtered : (reading ? 1 : 0);
++        fakeUsb = usb;
++        fakeRxValid = rx;
++        fakeActiveBox = (boxId_e)box;
++        fakeFeatures = f3d ? FEATURE_3D : 0;
++        if (armed) {
++            ENABLE_ARMING_FLAG(ARMED);
++        } else {
++            DISABLE_ARMING_FLAG(ARMED);
++        }
++        cliMode = cli;
++        fakePinHigh = !pressed;
++        spikeNow = spikeRate && r.below(1000) < spikeRate;
++        spikeFirstRead = spikeNow;
++        tickReadIndex = 0;
++        fakeMs = millisNow();
++        debugMode = DEBUG_AUTOSTART;
++    }
++
++    bool boxActive(void) const { return bootCfg.rcBoxPermanentId == 42 && box == BOXUSER3; }
++
++    // ---------------------------------------------------------------- one tick of the module + the oracle
++    void tick(void)
++    {
++        for (int i = 0; i < MAX_SUPPORTED_MOTORS; i++) {
++            before[i] = motor_disarmed[i];
++        }
++#ifdef USE_DSHOT
++        edtRequestsBefore = edtRequests;
++        edtAcceptedBefore = edtAccepted;
++#endif
++        autostartUpdate((timeUs_t)fakeMs * 1000);
++        res.cover[C_TICKS]++;
++        if (millisNow() >= 0x80000000u) {
++            res.cover[C_TICKS_PAST_2_31]++;
++        }
++        if (now - bootTrue >= 0x100000000ull) {
++            res.cover[C_TICKS_AFTER_WRAP]++;
++        }
++        check();
++    }
++
++    void check(void)
++    {
++        const int S = debug[0], src = debug[7], flags = debug[4];
++        const bool D = autostartIsDrivingMotors();
++        const autostartConfig_t *live = autostartConfig();
++        const uint64_t uptime = now - bootTrue;
++
++        TraceRow &tr = trace[traceN];
++        traceN = (traceN + 1) % 12;
++        tr.t = now; tr.ms = millisNow(); tr.s = S; tr.src = src; tr.flags = flags; tr.d = D;
++        for (int i = 0; i < kMotorCount; i++) {
++            tr.m[i] = motor_disarmed[i];
++        }
++        tr.vbat = fakeVbat; tr.vf = fakeVbatFiltered; tr.batt = batt; tr.usb = usb; tr.rx = rx; tr.pressed = pressed; tr.cli = cli;
++
++        // ---- mirror of the battery detection (300 ms to confirm, 500 ms to lose; with a USB host 2 ticks below 1 V)
++        // docs: plugged in at >= vbat_min; once seen, it stays "there" down to min(vbat_min, cells x 2.50 V)
++        uint32_t rawThreshold = live->vbatMinDeciVolts * 10u;
++        if (oRaw) {
++            const uint32_t floorCv = (uint32_t)(live->cells ? live->cells : autoCells) * 250u;
++            if (floorCv && floorCv < rawThreshold) {
++                rawThreshold = floorCv;
++            }
++        }
++        const bool rawOk = live->vbatMinDeciVolts == 0 || fakeVbat >= rawThreshold;
++        oNoBatteryTicks = fakeVbat < 100 ? oNoBatteryTicks + 1 : 0;
++        if (oFirst) {
++            oFirst = false;
++            oAtFirstA = oAtFirstB = rawOk;
++        }
++        if (rawOk != oRaw) {
++            oRaw = rawOk;
++            oRawChange = now;
++            if (!rawOk) {
++                oAtFirstB = false;
++            }
++        }
++        justConfirmed = justLost = false;
++        if (!oConfirmed && oRaw && now - oRawChange >= 300) {
++            oConfirmed = true;
++            justConfirmed = true;
++            oDetect = oAtFirstB ? bootTrue : oRawChange;                    // latest legitimate reference
++            const bool bootLegit = oAtFirstA && battAtFirstCheck && !unplugSinceFirstCheck;
++            oDetectEarly = bootLegit ? bootTrue : oDetect;                  // earliest legitimate reference
++            oAtFirstA = oAtFirstB = false;
++            oSince = (oRawChange - bootTrue <= 2500) ? bootTrue : oRawChange;
++        } else if (oConfirmed && !oRaw && (now - oRawChange >= 500 || (usb && oNoBatteryTicks >= 2))) {
++            oConfirmed = false;
++            justLost = true;
++            edtThisBattery = 0;
++            res.cover[C_USB_FAST_LOSS] += now - oRawChange < 500;
++        }
++        if (oConfirmed && live->vbatMinDeciVolts && fakeVbat < live->vbatMinDeciVolts * 10u) {
++            res.cover[C_SAG_HYSTERESIS]++;      // below vbat_min, still "there" (load sag)
++        }
++#ifdef USE_DSHOT
++        // ---- extended DShot telemetry: once per battery, 3 s after it appeared, never into the stock gate
++        if (edtRequests != edtRequestsBefore) {
++            if (!edtOn || !oConfirmed || uptime < 3000 || now - oDetectEarly < 3000 || edtThisBattery > 0) {
++                fail(V_EDT_REQUEST, "EDT asked: dshot_edt %d, battery %d, %llu ms after it appeared, uptime %llu ms, %d earlier",
++                    edtOn, oConfirmed, (unsigned long long)(now - oDetectEarly), (unsigned long long)uptime, edtThisBattery);
++            }
++            if (edtAccepted == edtAcceptedBefore) {
++                fail(V_EDT_DROPPED, "EDT asked %llu ms after motorEnable(): the stock gate dropped it",
++                    (unsigned long long)(millisNow() - fakeMotorEnableMs));
++            }
++            edtThisBattery++;
++            res.cover[C_EDT_ASKED]++;
++        }
++#endif
++
++        const bool inhibit = cli || armed || f3d || (live->usbInhibit && usb);
++        if (!inhibit) {
++            if (rx && !mRxWasValid) {
++                mRxSince = now;
++            }
++            mRxWasValid = rx;
++        }
++        const bool rxConfirmed = !inhibit && rx && now - mRxSince >= 500;
++        if (inhibit) {
++            lastInhibit = now;
++        }
++        if (cli) {
++            held = true;
++        }
++        tr.held = held;
++        if (rx) {
++            rxEver = true;
++        }
++        const bool boxOn = rx && boxActive();
++        if (boxOn && !boxOnRun) {
++            boxOnSince = now;
++        }
++        boxOnRun = boxOn;
++
++        // button mirror: bit 0 = this tick
++        ticksSinceInit++;
++        pressHist = (pressHist << 1) | (pressed ? 1 : 0);
++        spikeHist = (spikeHist << 1) | ((spikeNow && !pressed) ? 1 : 0);
++        // a click needs 4 pressed samples (60 ms debounce from the first one), also right after noise
++        // (finding P8, focused test ButtonDebounceAfterNoiseIsShort)
++        const bool longPress = buttonUsable && (pressHist & 0xF) == 0xF;
++        const bool cleanClick = buttonUsable && (pressHist & 0xFF) == 0x0F && (spikeHist & 0xF0) == 0 && ticksSinceInit >= 10;
++
++        // ---- latches
++        if (justLost) {
++            lowLatched = false;
++            doneLatched = false;
++        }
++        if (pressed || !boxOn) {
++            doneLatched = false;            // a user action (click) or the switch was released
++        }
++
++        const bool started = isActive(S) && !isActive(prevS);
++        const bool stopped = isActive(prevS) && !isActive(S);
++
++        // ---- outputs: who wrote what
++        for (int i = 0; i < MAX_SUPPORTED_MOTORS; i++) {
++            if (motor_disarmed[i] != before[i]) {
++                const float v = motor_disarmed[i];
++                if (!progEver || i >= kMotorCount || !(progMask & (1U << i))) {
++                    fail(V_WRITE_OUTSIDE_MASK, "motor %d changed %.0f -> %.0f, program mask 0x%02X", i, before[i], v, progMask);
++                }
++                if (!(v == DISARM || (v >= 1001.0f && v <= 1000.0f + 10.0f * progLimit))) {
++                    fail(V_WRITE_OUT_OF_RANGE, "motor %d = %.0f, limit %u %%", i, v, progLimit);
++                }
++                if (envWroteWhileDriving[i]) {
++                    fail(V_STOMPED_OTHER_WRITER, "motor %d: %.0f (written by another writer) -> %.0f", i, before[i], v);
++                }
++                autoOwned[i] = true;
++            }
++        }
++        if (!D) {
++            for (int i = 0; i < kMotorCount; i++) {
++                if (progEver && (progMask & (1U << i)) && autoOwned[i] && motor_disarmed[i] > DISARM) {
++                    fail(V_LEFT_MOTOR_RUNNING, "not driving (state %d) but motor %d still at %.0f written by the program", S, i, motor_disarmed[i]);
++                    autoOwned[i] = false;       // report once per motor
++                }
++            }
++            if (debug[1] != 0 && wroteThisBoot) {    // module statics survive autostartInit() here, a real boot zeroes them
++                fail(V_DEBUG_PERCENT_STOPPED, "debug[1] = %d while not driving (state %d)", debug[1], S);
++            }
++        }
++
++        // ---- never drive while ...
++        if (D) {
++            wroteThisBoot = true;
++            if (cli) fail(V_DRIVE_IN_CLI, "driving in CLI mode");
++            if (armed) fail(V_DRIVE_WHILE_ARMED, "driving while armed");
++            if (f3d) fail(V_DRIVE_WITH_3D, "driving with feature 3D");
++            if (live->usbInhibit && usb) fail(V_DRIVE_WITH_USB_INHIBIT, "driving with USB and usb_inhibit");
++            if (held) fail(V_DRIVE_WHILE_HELD, "driving while held by the computer");
++            if (!oConfirmed) fail(V_DRIVE_WITHOUT_BATTERY, "driving, battery not confirmed");
++            if (!batt && now - battUnplug >= 520) fail(V_DRIVE_AFTER_UNPLUG, "driving %llu ms after the battery was removed", (unsigned long long)(now - battUnplug));
++            // a battery plugged in before the first check counts from boot (the module cannot see earlier)
++            const uint64_t appeared = (battPlug <= firstCheck) ? bootTrue : battPlug;
++            if (batt && (now - appeared < 3000 || uptime < 3000)) {
++                fail(V_DRIVE_BEFORE_ESC_3S, "driving %llu ms after the battery appeared (uptime %llu ms): the ESC had < 3 s of stop frames",
++                    (unsigned long long)(now - appeared), (unsigned long long)uptime);
++            }
++            if (S != ST_RAMP && S != ST_RUN) fail(V_DRIVE_IN_WRONG_STATE, "driving in state %d", S);
++        }
++        if (S == ST_RUN && !D) {
++            fail(V_RUN_WITHOUT_OUTPUT, "state RUN but nothing written");
++        }
++        if (((flags & 64) != 0) != held) {
++            fail(V_HELD_FLAG, "debug held bit %d, oracle held %d", (flags & 64) != 0, held);
++        }
++        if (((flags & 8) != 0) != oConfirmed) {
++            fail(V_BATTERY_FLAG, "debug battery bit %d, oracle %d", (flags & 8) != 0, oConfirmed);
++        }
++
++        // ---- receiver link
++        if (rxConfirmed && !boxActive() && (D || isActive(S))) {
++            fail(V_RX_LINK_DID_NOT_STOP, "link valid for %llu ms, switch off, state %d", (unsigned long long)(now - mRxSince), S);
++        }
++        if (!rx && isActive(S) && src == SRC_RCBOX) {
++            fail(V_RCBOX_PROGRAM_NO_LINK, "state %d owned by the RC switch without a link", S);
++        }
++        if (boxOn && now - boxOnSince >= 600 && now - lastInhibit >= 600 && !held && oConfirmed && now - oRawChange >= 600
++            && !isActive(S) && S != ST_DONE && S != ST_LOWBAT) {
++            fail(V_RCBOX_DID_NOT_START, "link + switch for %llu ms, state %d", (unsigned long long)(now - boxOnSince), S);
++        }
++
++        // ---- starts
++        if (started) {
++            if (!oConfirmed || held || inhibit) {
++                fail(V_START_WHILE_FORBIDDEN, "start (source %d) with battery=%d held=%d inhibit=%d", src, oConfirmed, held, inhibit);
++            }
++            switch (src) {
++            case SRC_POWER:
++                res.cover[C_START_POWER]++;
++                if (!(pendingPossible || (justConfirmed && live->mode == AUTOSTART_MODE_POWER))) {
++                    fail(V_POWER_START_UNEXPECTED, "power start without a battery plug-in");
++                }
++                break;
++            case SRC_BUTTON:
++                res.cover[C_START_BUTTON]++;
++                if (!longPress || rx) {
++                    fail(V_BUTTON_START_NO_CLICK, "button start, press history 0x%X, rx %d", (unsigned)(pressHist & 0xFF), rx);
++                }
++                break;
++            case SRC_RCBOX:
++                res.cover[C_START_RCBOX]++;
++                if (!boxOn || !rxConfirmed) {
++                    fail(V_RCBOX_START_NO_SWITCH, "RC start: switch %d, link valid for %llu ms", boxOn, rx ? (unsigned long long)(now - mRxSince) : 0ull);
++                }
++                break;
++            default:
++                fail(V_START_UNKNOWN_SOURCE, "start with source %d", src);
++                break;
++            }
++            if (prevS == ST_LOWBAT && lowLatched) {
++                fail(V_RESTART_AFTER_LOWBAT, "LOW_BATTERY -> state %d (source %d) without a battery re-plug", S, src);
++            }
++            if (prevS == ST_DONE && doneLatched) {
++                fail(V_RESTART_AFTER_RUN_TIME, "DONE -> state %d (source %d) without a user action", S, src);
++            }
++            prog = *live;
++            progEver = true;
++            progMask = prog.motorMask;
++            progLimit = (uint8_t)constrain(prog.throttleLimit, 1, 100);
++            progThr = MIN(prog.throttlePercent, progLimit);
++            progStart = now;
++            const uint64_t ref = (src == SRC_POWER) ? oSince : now;
++            expectedRamp = MAX(MAX(ref + prog.delaySeconds * 1000ull, oDetect + 3000), MAX(bootTrue + 3000, now));
++            expectedRampEarly = MAX(MAX(ref + prog.delaySeconds * 1000ull, oDetectEarly + 3000), MAX(bootTrue + 3000, now));
++            oLow = oLowE = false;
++            cutMismatch = false;
++            for (int i = 0; i < MAX_SUPPORTED_MOTORS; i++) {
++                envWroteWhileDriving[i] = false;
++            }
++        }
++        if (justConfirmed && live->mode == AUTOSTART_MODE_POWER && !rxEver && !inhibit && !held && !rx && !(pressHist & 0xF)) {
++            if (!(started && src == SRC_POWER)) {
++                fail(V_POWER_START_MISSING, "battery confirmed in POWER mode, state %d source %d", S, src);
++            }
++        }
++        if (cleanClick && !rx && !inhibit && prevSrc != SRC_RCBOX) {
++            res.cover[C_CLEAN_CLICKS]++;
++            if (isActive(prevS)) {
++                if (isActive(S)) {
++                    fail(V_CLICK_IGNORED, "click while running did not stop (state %d)", S);
++                }
++            } else if (prevS != ST_LOWBAT && oConfirmed && !held && !justLost) {
++                if (!(started && src == SRC_BUTTON)) {
++                    fail(V_CLICK_IGNORED, "click did not start (state %d -> %d)", prevS, S);
++                }
++            }
++        }
++        if (isActive(prevS) && isActive(S) && src != prevSrc && !(src == SRC_RCBOX && boxOn && rxConfirmed)) {
++            fail(V_SOURCE_CHANGE, "source %d -> %d mid-program", prevSrc, src);
++        }
++        if (stopped && S == ST_IDLE) {
++            const bool reason = inhibit || held || justLost || rxConfirmed || (prevSrc == SRC_RCBOX && !rx) || longPress;
++            if (!reason) {
++                fail(V_STOP_WITHOUT_REASON, "state %d -> IDLE without a reason", prevS);
++            }
++        }
++        pendingPossible = (pendingPossible || (justConfirmed && live->mode == AUTOSTART_MODE_POWER)) && !started && rx && !rxConfirmed
++            && !inhibit && !held && oConfirmed;
++
++        // ---- latch checks (state left without the event that may clear it)
++        if (lowLatched && S != ST_LOWBAT && !justLost) {
++            if (!started) {
++                fail(V_RESTART_AFTER_LOWBAT, "LOW_BATTERY -> state %d without a battery re-plug", S);
++            }
++            lowLatched = false;
++        }
++        if (doneLatched && S != ST_DONE && !started) {
++            doneLatched = false;
++        }
++
++        // ---- program timing and values
++        if (isActive(S)) {
++            if (S == ST_DELAY && now >= expectedRamp) {
++                fail(V_DELAY_OVERRUN, "still DELAY %llu ms after the expected ramp start (source %d)", (unsigned long long)(now - expectedRamp), src);
++            }
++            if (S == ST_RAMP && (prevS == ST_DELAY || started)) {
++                res.cover[C_RAMP_REACHED]++;
++                if (now < expectedRampEarly) {
++                    fail(V_RAMP_EARLY, "RAMP %llu ms before max(start + delay, ESC 3 s, uptime 3 s)", (unsigned long long)(expectedRampEarly - now));
++                }
++                rampStart = now;
++                lastRampOut = DISARM;
++            }
++            const uint64_t rampMs = prog.rampDeciseconds * 100ull;
++            const uint64_t expectedRun = rampStart + MAX(rampMs, (uint64_t)20);
++            int m0 = -1;
++            for (int i = 0; i < kMotorCount; i++) {
++                if (progMask & (1U << i)) {
++                    m0 = i;
++                    break;
++                }
++            }
++            if (S == ST_RAMP && !(prevS == ST_DELAY || started)) {
++                if (now >= expectedRun) {
++                    fail(V_RAMP_OVERRUN, "still RAMP %llu ms after its end", (unsigned long long)(now - expectedRun));
++                }
++                if (m0 >= 0 && rampMs > 0) {
++                    const timeDelta_t elapsed = (timeDelta_t)(now - rampStart);
++                    const float expect = outputFor((float)progThr * (float)elapsed / (float)rampMs, progLimit);
++                    for (int i = 0; i < kMotorCount; i++) {
++                        if ((progMask & (1U << i)) && fabsf(motor_disarmed[i] - expect) > 0.5f) {
++                            fail(V_RAMP_VALUE, "ramp at %d ms: motor %d = %.0f, expected %.0f", (int)elapsed, i, motor_disarmed[i], expect);
++                        }
++                    }
++                    if (motor_disarmed[m0] < lastRampOut) {
++                        fail(V_RAMP_DECREASING, "ramp %.0f -> %.0f", lastRampOut, motor_disarmed[m0]);
++                    }
++                    lastRampOut = motor_disarmed[m0];
++                }
++            }
++            if (S == ST_RUN && prevS == ST_RAMP) {
++                res.cover[C_RUN_REACHED]++;
++                if (now < expectedRun) {
++                    fail(V_RUN_EARLY, "RUN %llu ms before the end of the ramp", (unsigned long long)(expectedRun - now));
++                }
++                runStart = now;
++                gustFlag = false;
++                gustEdge = now;
++                if (m0 >= 0 && lastRampOut > outputFor(progThr, progLimit)) {
++                    fail(V_RAMP_DECREASING, "ramp ended above the steady level");
++                }
++            }
++            if (S == ST_RUN) {
++                if (prog.runTimeSeconds && now >= runStart + prog.runTimeSeconds * 1000ull) {
++                    fail(V_RUN_TIME_OVERRUN, "still RUN %llu ms after run_time", (unsigned long long)(now - runStart - prog.runTimeSeconds * 1000ull));
++                }
++                const float steady = outputFor(progThr, progLimit);
++                const bool g = (flags & 16) != 0;
++                if (g) {
++                    res.cover[C_GUSTS] += !gustFlag;
++                }
++                if (m0 >= 0) {
++                    const float v = motor_disarmed[m0];
++                    for (int i = 0; i < kMotorCount; i++) {
++                        if ((progMask & (1U << i)) && motor_disarmed[i] != v) {
++                            fail(V_RUN_VALUE, "masked motors differ: motor %d = %.0f, motor %d = %.0f", m0, v, i, motor_disarmed[i]);
++                        }
++                    }
++                    if (prog.pattern != AUTOSTART_PATTERN_GUSTS || !g) {
++                        if (v != steady) {
++                            fail(V_RUN_VALUE, "RUN %.0f, expected min(throttle %u, limit %u) = %.0f (gust flag %d)", v,
++                                prog.throttlePercent, progLimit, steady, g);
++                        }
++                    } else {
++                        // docs: bursts on top of the steady level, a peak below it is raised to it
++                        const int gLo = MAX((int)MIN(prog.gustMinPercent, prog.gustMaxPercent), (int)progThr);
++                        const int gHi = MAX((int)MAX(prog.gustMinPercent, prog.gustMaxPercent), gLo);
++                        const int q = (int)lrintf((v - 1000.0f) / 10.0f);
++                        if (fabsf(v - (1000.0f + 10.0f * q)) > 0.01f || q < MIN(gLo, (int)progLimit) || q > MIN(gHi, (int)progLimit)) {
++                            fail(V_GUST_VALUE, "gust peak %.0f outside %d..%d %% (limit %u)", v, gLo, gHi, progLimit);
++                        }
++                        if (gustFlag && v != gustValue) {
++                            fail(V_GUST_VALUE, "gust value changed %.0f -> %.0f within one gust", gustValue, v);
++                        }
++                        gustValue = v;
++                    }
++                }
++                if (prog.pattern == AUTOSTART_PATTERN_GUSTS && g != gustFlag && prevS == ST_RUN) {
++                    const uint64_t dur = now - gustEdge;
++                    if (g) {
++                        const uint64_t pLo = MAX((uint64_t)20, up20(MIN(prog.gustPauseMinDs, prog.gustPauseMaxDs) * 100ull));
++                        const uint64_t pHi = MAX((uint64_t)20, up20(MAX(prog.gustPauseMinDs, prog.gustPauseMaxDs) * 100ull));
++                        if (dur < pLo || dur > pHi) {
++                            fail(V_GUST_PAUSE, "pause %llu ms outside %llu..%llu", (unsigned long long)dur, (unsigned long long)pLo, (unsigned long long)pHi);
++                        }
++                    } else {
++                        const uint64_t lLo = up20(MIN(prog.gustLenMinMs, prog.gustLenMaxMs));
++                        const uint64_t lHi = up20(MAX(prog.gustLenMinMs, prog.gustLenMaxMs));
++                        if (dur < lLo || dur > lHi) {
++                            fail(V_GUST_LENGTH, "gust %llu ms outside %llu..%llu", (unsigned long long)dur, (unsigned long long)lLo, (unsigned long long)lHi);
++                        }
++                    }
++                    gustFlag = g;
++                    gustEdge = now;
++                } else if (prog.pattern == AUTOSTART_PATTERN_GUSTS && g != gustFlag) {
++                    fail(V_GUST_PAUSE, "gust flag set on the first RUN tick");
++                    gustFlag = g;
++                    gustEdge = now;
++                }
++            }
++        }
++        if (S == ST_DONE && prevS != ST_DONE) {
++            res.cover[C_DONE_REACHED]++;
++            if (prevS != ST_RUN || !prog.runTimeSeconds || now < runStart + prog.runTimeSeconds * 1000ull) {
++                fail(V_DONE_EARLY, "DONE from state %d after %llu ms of RUN (run_time %u s)", prevS, (unsigned long long)(now - runStart), prog.runTimeSeconds);
++            }
++            doneLatched = true;             // until a click, a re-plug, a reboot or the RC switch released
++        }
++
++        // ---- battery cut-off mirror
++        const bool cutNow = (S == ST_LOWBAT && prevS != ST_LOWBAT);
++        const bool activeAtCheck = isActive(S) || ((S == ST_LOWBAT || S == ST_DONE) && S != prevS && isActive(prevS));
++        if (activeAtCheck) {
++            const uint8_t cells = live->cells ? live->cells : autoCells;
++            const uint32_t cutoff = cutoffCvPerCell(prog.cellCutoffCv) * cells;
++            const uint16_t vf = fakeVbatFiltered ? fakeVbatFiltered : fakeVbat;
++            const uint64_t cutMs = MAX(prog.cutoffTimeSeconds, 1) * 1000ull;
++            const bool lowV = cutoff > 0 && vf >= 100 && vf < cutoff && oConfirmed && uptime >= 3000;
++            const bool lowCond = lowV && now - oDetect >= 3000;         // latest legitimate ESC reference
++            const bool lowCondE = lowV && now - oDetectEarly >= 3000;   // earliest
++            if (!lowCond) {
++                oLow = false;
++            } else if (!oLow) {
++                oLow = true;
++                oLowStart = now;
++            }
++            if (!lowCondE) {
++                oLowE = false;
++            } else if (!oLowE) {
++                oLowE = true;
++                oLowStartE = now;
++            }
++            const bool expectCut = oLow && now - oLowStart >= cutMs;            // must have cut by now
++            const bool mayCut = oLowE && now - oLowStartE >= cutMs;             // may cut from now on
++            if (expectCut && !cutNow && !cutMismatch) {
++                fail(V_CUTOFF_MISSED, "filtered %u cV < cut-off %u cV for %llu ms (cutoff_time %u s), state %d",
++                    vf, (unsigned)cutoff, (unsigned long long)(now - oLowStart), prog.cutoffTimeSeconds, S);
++                cutMismatch = true;         // no follow-up reports for this program
++            }
++            if (cutNow && !mayCut && !cutMismatch) {
++                fail(V_CUTOFF_EARLY, "LOW_BATTERY with filtered %u cV, cut-off %u cV, low for %llu ms", vf, (unsigned)cutoff,
++                    oLow ? (unsigned long long)(now - oLowStart) : 0ull);
++            }
++        }
++        if (cutNow) {
++            res.cover[C_LOWBAT_REACHED]++;
++            lowLatched = true;
++            lowbatEnter = now;
++            oLastLowBatBeep = now;
++            beaconsSeen = dshotBeacons;
++        }
++#ifdef USE_DSHOT
++        if (S == ST_LOWBAT && !cutNow) {
++            // every 3 s in the ticks that reach the program (not inhibited); the ESC beacon only while no receiver
++            // was seen since boot (a pilot could arm right after it), the buzzer always
++            const bool beacon = dshotBeacons != beaconsSeen;
++            beaconsSeen = dshotBeacons;
++            bool due = false;
++            if (!inhibit && now - oLastLowBatBeep >= 3000) {
++                oLastLowBatBeep = now;
++                due = !(rxSeenSure || rxConfirmed);
++            }
++            res.cover[C_BEACONS] += beacon && due;
++            res.cover[C_BEACON_RX_SKIPS] += !due && !inhibit && oLastLowBatBeep == now;
++            if (beacon != due) {
++                fail(V_LOWBAT_BEACON, "LOW_BATTERY for %llu ms: beacon %d, expected %d (receiver seen %d)",
++                    (unsigned long long)(now - lowbatEnter), beacon, due, rxSeenSure || rxConfirmed);
++            }
++        }
++#endif
++        // RX_LOST beeper: suppressed while enabled and no link was ever confirmed since boot
++        if (rxConfirmed) {
++            rxSeenSure = true;          // the module's rxSeen latches at the first confirmation
++        }
++        {
++            const bool suppress = autostartSuppressRxLostBeeper();
++            const bool enabled = live->mode != AUTOSTART_MODE_OFF;
++            if (suppress != (enabled && !rxSeenSure)) {
++                fail(V_RX_LOST_BEEPER, "suppress %d with mode %u, rx ever %d, rx confirmed %d", suppress, live->mode, rxEver, rxSeenSure);
++            }
++        }
++
++        prevS = S;
++        prevSrc = src;
++    }
++
++    // ---------------------------------------------------------------- one sequence
++    void onlyEvents(std::initializer_list<int> events, uint32_t profile)
++    {
++        for (int e = 0; e < EV_COUNT; e++) {
++            rate[e] = 0;
++        }
++        for (int e : events) {
++            rate[e] = baseRate[e] * profile / 4;
++        }
++    }
++
++    void runSequence(int n)
++    {
++        seqNo = n;
++        log.clear();
++        memset(trace, 0, sizeof(trace));
++        traceN = 0;
++        memset(reported, 0, sizeof(reported));
++        res.cover[C_SEQUENCES]++;
++
++        // world and settings
++        randomConfig(&stored, true);
++        *autostartConfigMutable() = stored;
++        static const uint32_t profiles[] = { 0, 1, 4, 4, 16 };
++        const uint32_t profile = profiles[r.below(5)];
++        for (int e = 0; e < EV_COUNT; e++) {
++            rate[e] = (r.below(100) < 65) ? baseRate[e] * profile / 4 : 0;
++        }
++        rate[EV_WARP] = 1;
++        now = 0;
++        endAt = 20 * r.range(1500, 12000);                 // 30 s .. 4 min
++        const bool gate = stored.vbatMinDeciVolts != 0;
++        usb = r.below(2);
++        batt = gate ? (r.below(4) != 0) : true;
++        if (!usb && !batt) {
++            usb = true;
++        }
++        warps = 0;
++        lastUpGlitch = 0;
++        battPlug = 0;
++        battUnplug = 0;
++        replugAt = unplugAt = pressAt = depleteAt = 0;
++        backfeed = gate ? (uint16_t)r.below(MIN(51u, (uint32_t)stored.vbatMinDeciVolts * 10u)) : (uint16_t)r.below(51);
++        riseMs = r.range(0, 1500);
++        sagUntil = glitchUntil = 0;
++        rx = r.below(7) == 0;
++        rxChange = 0;
++        rxGlitchUntil = 0;
++        box = stored.rcBoxPermanentId == 42 && r.below(2) ? BOXUSER3 : BOXID_NONE;
++        pressed = false;
++        pressUntil = 0;
++        buttonChange = 0;
++        spikeRate = r.below(10) < 7 ? 0 : (r.below(2) ? 300 : 1000);
++        cli = false;
++        armed = false;
++        armedUntil = 0;
++        f3d = r.below(20) == 0;
++        f3dUntil = f3d ? 20 * r.range(1, 3000) : 0;
++        // scenario families, so that every corner gets enough coverage
++        const uint32_t scenario = r.below(6);
++        res.cover[C_SCENARIO_RANDOM + scenario]++;
++        switch (scenario) {
++        case 1:     // quiet: battery-only or USB power-on runs with few disturbances
++            stored.mode = r.below(10) < 7 ? AUTOSTART_MODE_POWER : stored.mode;
++            stored.delaySeconds = MIN(stored.delaySeconds, (uint16_t)r.range(0, 20));
++            stored.rampDeciseconds = MIN(stored.rampDeciseconds, (uint16_t)r.range(0, 200));
++            batt = true;
++            rx = false;
++            onlyEvents({ EV_SAG, EV_DEPLETE, EV_RECOVER, EV_GLITCH_DOWN, EV_PRESS, EV_BOUNCE, EV_USB, EV_WARP }, r.below(3));
++            break;
++        case 2:     // RC switch with a receiver link
++            stored.rcBoxPermanentId = 42;
++            stored.delaySeconds = MIN(stored.delaySeconds, (uint16_t)r.range(0, 8));
++            stored.rampDeciseconds = MIN(stored.rampDeciseconds, (uint16_t)r.range(0, 80));
++            stored.runTimeSeconds = r.below(3) ? (uint16_t)r.range(1, 30) : stored.runTimeSeconds;
++            batt = true;
++            rx = true;
++            box = BOXUSER3;
++            onlyEvents({ EV_BOX, EV_RX_GLITCH, EV_RX, EV_SAG, EV_DEPLETE, EV_RECOVER, EV_PRESS, EV_UNPLUG, EV_PLUG, EV_WARP }, 1 + r.below(4));
++            break;
++        case 3:     // button
++            stored.mode = AUTOSTART_MODE_BUTTON;
++            stored.buttonTag = 1;
++            stored.delaySeconds = MIN(stored.delaySeconds, (uint16_t)r.range(0, 10));
++            stored.rampDeciseconds = MIN(stored.rampDeciseconds, (uint16_t)r.range(0, 100));
++            onlyEvents({ EV_PRESS, EV_BOUNCE, EV_SPIKES, EV_SAG, EV_DEPLETE, EV_RECOVER, EV_UNPLUG, EV_PLUG, EV_USB, EV_RX_GLITCH, EV_WARP }, 2 + r.below(8));
++            break;
++        case 4:     // USB bench: board on USB, battery plugged in later
++            usb = true;
++            batt = !gate;
++            stored.usbInhibit = r.below(10) < 7 ? 0 : stored.usbInhibit;
++            onlyEvents({ EV_PLUG, EV_UNPLUG, EV_GLITCH_UP, EV_GLITCH_DOWN, EV_CLI_ENTER, EV_CLI_EXIT, EV_CLI_MOTOR, EV_MSP, EV_REBOOT, EV_PRESS, EV_WARP }, 1 + r.below(4));
++            break;
++        case 5:     // the person at the computer
++            usb = true;
++            stored.usbInhibit = r.below(10) < 8 ? 0 : stored.usbInhibit;
++            stored.motorMask = r.below(2) ? 0x0F : stored.motorMask;
++            stored.delaySeconds = MIN(stored.delaySeconds, (uint16_t)r.range(0, 6));
++            onlyEvents({ EV_CLI_ENTER, EV_CLI_EXIT, EV_CLI_MOTOR, EV_MSP, EV_FOREIGN, EV_REBOOT, EV_ARM, EV_3D, EV_USB, EV_WARP }, 4 + r.below(12));
++            break;
++        default:
++            break;
++        }
++        if (rate[EV_WARP]) {
++            rate[EV_WARP] = r.below(100) < 30 ? 4000 : 0;
++        }
++        *autostartConfigMutable() = stored;
++        note("sequence %u: %s", (unsigned)scenario, configText(stored).c_str());
++        note("world: battery %d (%u cells, %u cV), usb %d, rx %d, box %d, spikes %u, 3D %d, profile %u", batt, physCells, packCv,
++            usb, rx, box, (unsigned)spikeRate, f3d, (unsigned)profile);
++
++        for (int i = 0; i < MAX_SUPPORTED_MOTORS; i++) {
++            motor_disarmed[i] = DISARM;
++        }
++        motor_disarmed[1] = OTHER;
++        mixerRuntime.disarmMotorOutput = DISARM;
++        boardOn = false;
++        booting = false;
++        taskOn = false;
++        powerTransitions();
++
++        while (now < endAt) {
++            randomEvents();
++            powerTransitions();
++            if (boardOn && booting && now >= initAt) {
++                finishBoot();
++            }
++            if (boardOn && !booting && taskOn) {
++                setInputs();
++                tick();
++            }
++            now += kTick;
++        }
++    }
++};
++
++static void runProperty(const uint32_t *seeds, int seedCount, int sequencesPerSeed, Results &res)
++{
++    for (int s = 0; s < seedCount; s++) {
++        Sim sim(seeds[s], res);
++        for (int n = 0; n < sequencesPerSeed; n++) {
++            sim.runSequence(n);
++        }
++    }
++}
++
++static void printResults(const Results &res)
++{
++    printf("[ PROPERTY ] coverage:");
++    for (int i = 0; i < C_COUNT; i++) {
++        printf(" %s=%ld", coverageNames[i], res.cover[i]);
++    }
++    printf("\n");
++    for (int v = 0; v < V_COUNT; v++) {
++        if (res.violations[v]) {
++            printf("[ PROPERTY ] VIOLATION %s x%ld, first:\n%s\n", violationNames[v], res.violations[v], res.first[v].c_str());
++        }
++    }
++}
++
++} // namespace autostartprop
++
++// Thousands of random sequences of a few minutes each, every setting inside its CLI range (edges included),
++// every input of the module randomized; invariants checked on every 20 ms tick. On a failure the
++// [ PROPERTY ] lines name the invariant, the seed, the sequence, the settings and the event log.
++TEST(AutostartPropertyTest, RandomSequencesKeepAllInvariants)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    static const uint32_t seeds[] = { 0x5EED0001u, 0x5EED0002u, 0x0BADC0DEu, 0x12345678u, 0xA5A5A5A5u, 0x31415926u, 0x27182818u, 0xDEADBEEFu };
++    autostartprop::Results res;
++    autostartprop::runProperty(seeds, sizeof(seeds) / sizeof(seeds[0]), 220, res);
++    autostartprop::printResults(res);
++    // the generator must actually reach every corner, otherwise a pass means nothing
++    // (about 60 % of what a correct module reaches with these seeds)
++    EXPECT_GT(res.cover[autostartprop::C_RUN_REACHED], 600);
++    EXPECT_GT(res.cover[autostartprop::C_LOWBAT_REACHED], 200);
++    EXPECT_GT(res.cover[autostartprop::C_DONE_REACHED], 80);
++    EXPECT_GT(res.cover[autostartprop::C_GUSTS], 700);
++    EXPECT_GT(res.cover[autostartprop::C_START_POWER], 500);
++    EXPECT_GT(res.cover[autostartprop::C_START_BUTTON], 400);
++    EXPECT_GT(res.cover[autostartprop::C_START_RCBOX], 250);
++    EXPECT_GT(res.cover[autostartprop::C_CLEAN_CLICKS], 800);
++    EXPECT_GT(res.cover[autostartprop::C_CLI_SESSIONS], 400);
++    EXPECT_GT(res.cover[autostartprop::C_MSP_WRITES], 400);
++    EXPECT_GT(res.cover[autostartprop::C_FOREIGN_DETECTED], 20);
++    EXPECT_GT(res.cover[autostartprop::C_UNPLUGS], 1500);
++    EXPECT_GT(res.cover[autostartprop::C_WARP_2_31] + res.cover[autostartprop::C_WARP_2_32], 150);
++    EXPECT_GT(res.cover[autostartprop::C_TICKS_PAST_2_31], 100000);
++    EXPECT_GT(res.cover[autostartprop::C_TICKS_AFTER_WRAP], 100000);
++    // the checks added with the fixes of 2026-10-20 (counts with these seeds: 1808, 54072, 35, 4166, 1656, 1455)
++    EXPECT_GT(res.cover[autostartprop::C_USB_FAST_LOSS], 1000);
++    EXPECT_GT(res.cover[autostartprop::C_SAG_HYSTERESIS], 30000);
++    EXPECT_GT(res.cover[autostartprop::C_HOOK_STOPS], 20);
++#ifdef USE_DSHOT
++    EXPECT_GT(res.cover[autostartprop::C_BEACONS], 2500);
++    EXPECT_GT(res.cover[autostartprop::C_BEACON_RX_SKIPS], 1000);
++#ifdef USE_DSHOT_TELEMETRY
++    EXPECT_GT(res.cover[autostartprop::C_EDT_ASKED], 800);
++#endif
++#endif
++    EXPECT_EQ(0, res.total()) << "see the [ PROPERTY ] VIOLATION lines above";
++}
++
++// The plain use: battery only (it powers the board), mode POWER, nothing else happens. Random settings:
++// RAMP starts at max(delay, 3 s) after power-on (+- one 20 ms tick), RUN after the ramp, DONE after the run time,
++// RUN holds min(throttle, limit), motors outside the mask keep their values.
++TEST(AutostartPropertyTest, CleanBatteryOnlyPowerRunIsOnTime)
++{
++    autostartprop::Prng r(0xC1EA4u);
++    int runs = 0, done = 0;
++    for (int n = 0; n < 250; n++) {
++        setDefaults(AUTOSTART_MODE_POWER);
++        autostartConfig_t *c = autostartConfigMutable();
++        c->delaySeconds = r.edge(0, 600, 0, 15);
++        c->rampDeciseconds = r.edge(0, 6000, 0, 150);
++        c->throttlePercent = r.edge(0, 100, 0, 100);
++        c->throttleLimit = r.edge(1, 100, 1, 100);
++        c->motorMask = r.edge(1, 255, 1, 15);
++        c->usbInhibit = r.below(2);
++        c->runTimeSeconds = r.below(2) ? 0 : r.edge(1, 65535, 1, 40);
++        c->pattern = AUTOSTART_PATTERN_STEADY;
++        c->cells = r.edge(0, 12, 1, 12);
++        fakeCells = r.range(0, 12);
++        const int cells = c->cells ? c->cells : (fakeCells ? fakeCells : 6);
++        fakeVbat = cells * 420;                     // full pack
++        c->cellCutoffCv = r.below(4) ? r.edge(0, 400, 250, 400) : 0;
++        c->cutoffTimeSeconds = r.edge(1, 60, 1, 10);
++        c->vbatMinDeciVolts = r.range(0, MIN(600, fakeVbat / 10));
++        debugMode = DEBUG_AUTOSTART;
++        fakeMs = 20 * r.range(50, 100);             // first tick 1.0 .. 2.0 s after power-on
++        const timeMs_t firstTick = fakeMs;
++        autostartInit();
++        autostartUpdate(fakeMs * 1000);
++        const timeMs_t expectRamp = MAX(MAX((timeMs_t)c->delaySeconds * 1000, (timeMs_t)3000), firstTick + 300);
++        const timeMs_t rampMs = c->rampDeciseconds * 100;
++        const uint8_t limit = c->throttleLimit;
++        const float steady = 1000.0f + (MIN(c->throttlePercent, limit) ? 10.0f * MIN(c->throttlePercent, limit) : 0.0f);
++        const uint8_t mask = c->motorMask;
++        timeMs_t rampAt = 0, runAt = 0, doneAt = 0;
++        const timeMs_t endMs = expectRamp + MAX(rampMs, (timeMs_t)20) + MIN((timeMs_t)c->runTimeSeconds * 1000 + 1000, (timeMs_t)60000) + 40;
++        while (fakeMs < endMs) {
++            fakeMs += 20;
++            tickReadIndex = 0;
++            autostartUpdate(fakeMs * 1000);
++            const int st = debug[0];
++            if (st == 2 && !rampAt) {
++                rampAt = fakeMs;
++            }
++            if (st == 3 && !runAt) {
++                runAt = fakeMs;
++            }
++            if (st == 4 && !doneAt) {
++                doneAt = fakeMs;
++            }
++            if (st == 3) {
++                for (int i = 0; i < 4; i++) {
++                    if (mask & (1 << i)) {
++                        ASSERT_EQ(steady, motor_disarmed[i]) << "run " << n << " motor " << i;
++                    }
++                }
++            }
++            for (int i = 0; i < MAX_SUPPORTED_MOTORS; i++) {
++                if (i >= 4 || !(mask & (1 << i))) {
++                    ASSERT_EQ(i == 1 ? OTHER : DISARM, motor_disarmed[i]) << "run " << n << " motor " << i << " is not in the mask";
++                }
++            }
++            ASSERT_NE(5, st) << "run " << n << ": cut-off with a full pack";
++        }
++        runs++;
++        ASSERT_NE(0u, rampAt) << "run " << n << ": the ramp never started";
++        EXPECT_NEAR((double)expectRamp, (double)rampAt, 20.0) << "run " << n << " delay " << c->delaySeconds << " first tick " << firstTick;
++        ASSERT_NE(0u, runAt) << "run " << n;
++        EXPECT_NEAR((double)(rampAt + MAX(rampMs, (timeMs_t)20)), (double)runAt, 20.0) << "run " << n << " ramp " << rampMs;
++        if (c->runTimeSeconds && (timeMs_t)c->runTimeSeconds * 1000 + 1000 <= 60000) {
++            done++;
++            EXPECT_NEAR((double)(runAt + c->runTimeSeconds * 1000), (double)doneAt, 20.0) << "run " << n;
++        } else {
++            EXPECT_EQ(0u, doneAt) << "run " << n << ": stopped although run_time is " << c->runTimeSeconds;
++        }
++    }
++    EXPECT_EQ(250, runs);
++    EXPECT_GT(done, 40);
++}
++
++// ---------------------------------------------------------------- findings of the property test, minimized
++// Each test below is the smallest scenario that breaks an invariant of RandomSequencesKeepAllInvariants.
++// They failed on the module before the fixes of 2026-10-20 and pass since; see the comment of each test.
++
++// n ticks of 20 ms from the current millis(), also across the 32-bit wrap (runUntil() cannot cross it)
++static void ticks(int n)
++{
++    for (int i = 0; i < n; i++) {
++        fakeMs += 20;
++        tickReadIndex = 0;
++        autostartUpdate((timeUs_t)fakeMs * 1000);
++    }
++}
++
++// Finding P1: with autostart_box and the RC switch left on, a battery cut-off does not latch: the very next
++// tick starts the program again (source RC), so a depleted pack is cycled: run ~cutoff_time, stop, run...
++// Docs: "After a cut-off the program stays stopped until the battery is unplugged and a battery is plugged in again".
++TEST(AutostartFindingTest, RcSwitchDoesNotRestartAfterCutoff)
++{
++    setDefaults(AUTOSTART_MODE_BUTTON);
++    autostartConfigMutable()->rcBoxPermanentId = 42;    // BOXUSER3
++    autostartConfigMutable()->delaySeconds = 0;
++    autostartConfigMutable()->rampDeciseconds = 0;
++    autostartConfigMutable()->cutoffTimeSeconds = 1;
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    fakeRxValid = true;
++    fakeActiveBox = BOXUSER3;                   // switch on, and it stays on
++    runUntil(5000);
++    ASSERT_EQ(1150.0f, motor_disarmed[0]);      // runs from the switch
++    fakeVbat = 1900;                            // 19.00 V < 19.80 V (6S x 3.30 V): depleted
++    int cutoffs = 0, drivenAfterCut = 0, prev = debug[0];
++    for (timeMs_t t = 5020; t <= 30000; t += 20) {
++        runUntil(t);
++        cutoffs += (debug[0] == 5 && prev != 5);
++        drivenAfterCut += (cutoffs > 0 && motor_disarmed[0] > DISARM);
++        prev = debug[0];
++    }
++    EXPECT_EQ(1, cutoffs) << "the program was restarted after each cut-off";
++    EXPECT_EQ(0, drivenAfterCut) << "ticks with the motor driven on the depleted pack after the first cut-off";
++    EXPECT_EQ(5, debug[0]);
++}
++
++// Finding P2: with the RC switch left on, "run time over" (DONE) restarts the program on the next tick, so
++// autostart_run_time becomes a cycle (delay, ramp, run_time, again). Docs list "run time over" under
++// "What stops the program (no automatic restart)". Switching the switch off and on again is a user action.
++TEST(AutostartFindingTest, RcSwitchDoesNotRestartAfterRunTime)
++{
++    setDefaults(AUTOSTART_MODE_BUTTON);
++    autostartConfigMutable()->rcBoxPermanentId = 42;
++    autostartConfigMutable()->delaySeconds = 1;
++    autostartConfigMutable()->rampDeciseconds = 0;
++    autostartConfigMutable()->runTimeSeconds = 5;
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    fakeRxValid = true;
++    fakeActiveBox = BOXUSER3;
++    runUntil(4000);                             // link confirmed, delay 1 s, ESC 3 s
++    ASSERT_EQ(1150.0f, motor_disarmed[0]);
++    timeMs_t doneAt = 0;
++    int drivenAfterDone = 0;
++    for (timeMs_t t = 4020; t <= 30000; t += 20) {
++        runUntil(t);
++        if (!doneAt && debug[0] == 4) {
++            doneAt = t;
++        } else if (doneAt) {
++            drivenAfterDone += motor_disarmed[0] > DISARM;
++        }
++    }
++    EXPECT_NE(0u, doneAt);
++    EXPECT_EQ(0, drivenAfterDone) << "DONE at " << doneAt << ", then the switch (still on) restarted it";
++    EXPECT_EQ(4, debug[0]);
++    fakeActiveBox = (boxId_e)BOXID_NONE;        // the pilot flips the switch off ...
++    runUntil(30500);
++    fakeActiveBox = BOXUSER3;                   // ... and on again: a new run is fine
++    runUntil(33000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++}
++
++// Finding P3: when another writer changes only SOME of the program's motors, the module yields on all of them
++// (outputsWritten = false without releaseOutputs()), so the motors nobody else touched keep spinning at the
++// program's level, and debug[1] keeps showing the old percentage. Real path: the CLI "motor 0 1300" pasted
++// together with the CLI entry (both handled before the next autostart tick), mask with more than one motor.
++TEST(AutostartFindingTest, PartialForeignWriteStopsTheOtherMotors)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartConfigMutable()->motorMask = 0x05;     // motors 1 and 3
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    runUntil(25000);
++    ASSERT_EQ(1150.0f, motor_disarmed[0]);
++    ASSERT_EQ(1150.0f, motor_disarmed[2]);
++    cliMode = true;                             // "#" ...
++    motor_disarmed[0] = 1300.0f;                // ... "motor 0 1300" in the same serial burst
++    runUntil(25100);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++    EXPECT_EQ(1300.0f, motor_disarmed[0]);      // the CLI's value is kept (correct)
++    EXPECT_EQ(DISARM, motor_disarmed[2]);       // actual: 1150, motor 3 keeps blowing during the CLI session
++    EXPECT_EQ(0, debug[1]);                     // actual: 150 (15.0 %) while nothing is driven
++}
++
++// Finding P3, the common path: the web configurator's STOP (MSP_SET_MOTOR 1000 on all motors) during the ramp or
++// the run stops the motors correctly, but debug[1] (commanded percent, shown by the configurator) keeps the last value.
++TEST(AutostartFindingTest, StopViaMspClearsCommandedPercent)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    runUntil(25000);
++    ASSERT_EQ(150, debug[1]);                   // 15.0 %
++    for (int i = 0; i < 4; i++) {
++        motor_disarmed[i] = DISARM;             // MSP_SET_MOTOR 1000 x4 ...
++    }
++    autostartComputerTookOver();                // ... and its hook
++    runUntil(25100);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++    EXPECT_EQ(0, debug[1]);                     // actual: 150
++}
++
++// Finding P4: the "battery was there at the first check, so it powered the board: count the ESC's 3 s from boot"
++// flag (powerAtFirstCheck) is not cleared when the reading goes away before it is confirmed (300 ms). A battery
++// plugged in later is then treated as if it had been there since boot: no 3 s of stop frames for the ESC
++// (and the cut-off counts at once while the voltage filter is still rising). USB bench, connector bouncing at boot.
++TEST(AutostartFindingTest, BatteryGoneBeforeConfirmationStillGetsEsc3s)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartConfigMutable()->delaySeconds = 0;
++    autostartConfigMutable()->rampDeciseconds = 0;
++    fakeUsb = true;
++    fakeVbat = 2500;                            // connector touching while the board boots on USB
++    autostartInit();
++    autostartUpdate(fakeMs * 1000);             // first check at 1.5 s sees the battery
++    runUntil(1700);
++    fakeVbat = 10;                              // ... gone again after 0.2 s (before the 300 ms confirmation)
++    runUntil(20000);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++    fakeVbat = 2500;                            // the battery is really plugged in at t = 20 s: the ESC wakes up now
++    timeMs_t firstDrive = 0;
++    for (timeMs_t t = 20020; t <= 26000 && !firstDrive; t += 20) {
++        runUntil(t);
++        if (autostartIsDrivingMotors()) {
++            firstDrive = t;
++        }
++    }
++    EXPECT_GE(firstDrive, 23000u) << "the ESC got only " << (firstDrive - 20000) << " ms of stop frames";
++}
++
++// Finding P5: escHadTimeToArm() compares millis() with powerDetectMs, which is 0 when the battery powered the
++// board. After 2^31 ms (24.8 days) of uptime cmpTimeMs() turns negative: a click starts a countdown that never
++// ends (until millis() wraps at 49.7 days), and - worse - the battery cut-off is never checked, so a running
++// blower drains the pack. A re-plugged battery hits the same 24.8 days after its own plug-in.
++// The jump of millis() stands for 24.8 days of identical idle ticks: the module only keeps timestamps.
++TEST(AutostartFindingTest, ClickAfter2pow31msUptimeStillRamps)
++{
++    setDefaults(AUTOSTART_MODE_BUTTON);
++    autostartConfigMutable()->buttonTag = 1;
++    autostartConfigMutable()->delaySeconds = 2;
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    runUntil(10000);                            // battery confirmed at boot, idle, button released
++    fakeMs = 0x80000000u + 1000;                // 24.8 days later
++    ticks(5);
++    fakePinHigh = false;                        // click
++    ticks(5);
++    fakePinHigh = true;
++    ticks(5);
++    ASSERT_EQ(1, debug[0]);                     // the countdown started
++    ticks(150);                                 // 3 s: delay 2 s is over, the ESC has been powered for weeks
++    EXPECT_TRUE(debug[0] == 2 || debug[0] == 3) << "still in state " << debug[0] << " (1 = countdown)";
++}
++
++TEST(AutostartFindingTest, CutoffAfter2pow31msUptimeStillStops)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    runUntil(25000);
++    ASSERT_EQ(1150.0f, motor_disarmed[0]);      // steady run, run_time 0
++    fakeMs = 0x80000000u - 2000;                // the blower has been running for 24.8 days (mains PSU / big pack)
++    ticks(200);                                 // passes 2^31
++    fakeVbat = 1900;                            // the pack is now below the 19.8 V cut-off
++    ticks(400);                                 // 8 s > autostart_cutoff_time 5 s
++    EXPECT_EQ(DISARM, motor_disarmed[0]);       // actual: still 1150
++    EXPECT_EQ(5, debug[0]);
++}
++
++// Finding P6 (minor): the RX confirmation compares millis() with the start of the link. After 2^31 ms of an
++// uninterrupted link the comparison turns negative, the link counts as "appearing", and the RC switch is
++// ignored both ways (on: no start; off: the running program goes on) until the link drops once.
++TEST(AutostartFindingTest, RcSwitchWorksAfter2pow31msOfLink)
++{
++    setDefaults(AUTOSTART_MODE_BUTTON);
++    autostartConfigMutable()->rcBoxPermanentId = 42;
++    autostartConfigMutable()->delaySeconds = 0;
++    autostartConfigMutable()->rampDeciseconds = 0;
++    debugMode = DEBUG_AUTOSTART;
++    fakeRxValid = true;                         // receiver bound from power-on
++    autostartInit();
++    runUntil(10000);
++    EXPECT_FALSE(autostartIsDrivingMotors());   // switch off
++    fakeMs = 0x80000000u + 5000;                // 24.8 days of uninterrupted link (it started at 1.5 s)
++    ticks(5);
++    fakeActiveBox = BOXUSER3;                   // switch on
++    ticks(50);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);      // actual: DISARM, the switch is ignored
++}
++
++// Finding P7 (minor): the boot window test (powerRawChangeMs <= 2.5 s: "the battery powered the board, count the
++// delay from boot") compares raw millis(). After millis() wraps (49.7 days) a battery plugged in within 2.5 s of
++// the wrap is taken for a boot battery and the countdown is counted from millis() == 0: the ramp comes up to
++// 2.5 s before autostart_delay has passed since the plug-in.
++TEST(AutostartFindingTest, PlugRightAfterMillisWrapCountsFromThePlug)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    debugMode = DEBUG_AUTOSTART;                // delay 10 s, ramp 10 s
++    fakeUsb = true;
++    fakeVbat = 10;                              // USB bench, no battery
++    autostartInit();
++    runUntil(10000);
++    fakeMs = 0xFFFFFFFFu - 1999 - 20;           // 49.7 days later, 2 s before the wrap
++    ticks(200);                                 // millis() wrapped, now about 2000
++    fakeVbat = 2500;                            // battery plugged in
++    const timeMs_t plugMs = fakeMs + 20;        // first tick that sees it
++    timeMs_t rampAt = 0;
++    for (int i = 0; i < 1000 && !rampAt; i++) {
++        ticks(1);
++        if (debug[0] == 2) {
++            rampAt = fakeMs;
++        }
++    }
++    ASSERT_NE(0u, rampAt);
++    EXPECT_GE(rampAt - plugMs, 10000u) << "ramp " << (rampAt - plugMs) << " ms after the plug-in, autostart_delay is 10 s";
++}
++
++// Finding P8 (minor): a tick with mixed button reads (EMI) restarts the debounce time but leaves the raw level as
++// it was; after a short bounce the raw level stays "pressed" while the pin is released and noisy, and the next
++// real press is accepted after 40 ms (3 reads) instead of the 60 ms the debounce promises.
++TEST(AutostartFindingTest, ButtonDebounceAfterNoiseIsShort)
++{
++    setDefaults(AUTOSTART_MODE_BUTTON);
++    autostartConfigMutable()->buttonTag = 1;
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    runUntil(5000);
++    fakePinHigh = false;                        // 20 ms bounce: one low tick
++    runUntil(5020);
++    fakePinHigh = true;
++    spikeFirstRead = true;                      // EMI on the released pin: one low read in every tick
++    runUntil(6000);
++    fakePinHigh = false;                        // a 40 ms touch: low at 6020, 6040, 6060
++    runUntil(6060);
++    fakePinHigh = true;
++    runUntil(6200);
++    EXPECT_EQ(0, debug[0]) << "a 40 ms touch was taken for a click";
++}
++
++// ---------------------------------------------------------------- findings of the code review (2026-10-20)
++// From the adversarial review; each FAILED on the module before the fixes of 2026-10-20 (see the comments).
++
++// F1: the RC switch restarted the program after a battery cut-off (LOW_BATTERY is not programActive())
++TEST(AutostartReview, RcBoxDoesNotRestartAfterCutoff)
++{
++    setDefaults(AUTOSTART_MODE_BUTTON);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartConfigMutable()->rcBoxPermanentId = 42;   // BOXUSER3
++    autostartConfigMutable()->delaySeconds = 2;
++    autostartConfigMutable()->rampDeciseconds = 10;
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    fakeRxValid = true;
++    fakeActiveBox = BOXUSER3;                   // switch ON and left ON
++    runUntil(10000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++    fakeVbat = 1900;                            // pack below 19.80 V under load
++    bool sawLowBat = false;
++    float topAfterCutoff = 0;
++    for (timeMs_t t = fakeMs + 20; t < 60000; t += 20) {
++        runUntil(t);
++        if (debug[0] == 5) {
++            sawLowBat = true;
++        }
++        if (sawLowBat) {
++            fakeVbat = 2050;                    // at rest the LiPo recovers above the cut-off
++            topAfterCutoff = MAX(topAfterCutoff, motor_disarmed[0]);
++        }
++    }
++    EXPECT_TRUE(sawLowBat);
++    EXPECT_EQ(DISARM, topAfterCutoff);          // docs: stays stopped until the battery is replaced
++}
++
++// F1: same root cause for DONE: run time over, RC switch still ON -> the program started again by itself
++TEST(AutostartReview, RcBoxDoesNotRestartAfterRunTime)
++{
++    setDefaults(AUTOSTART_MODE_BUTTON);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartConfigMutable()->rcBoxPermanentId = 42;
++    autostartConfigMutable()->delaySeconds = 2;
++    autostartConfigMutable()->rampDeciseconds = 10;
++    autostartConfigMutable()->runTimeSeconds = 5;
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    fakeRxValid = true;
++    fakeActiveBox = BOXUSER3;
++    bool sawDone = false;
++    float topAfterDone = 0;
++    for (timeMs_t t = fakeMs + 20; t < 60000; t += 20) {
++        runUntil(t);
++        if (debug[0] == 4) {
++            sawDone = true;
++        }
++        if (sawDone) {
++            topAfterDone = MAX(topAfterDone, motor_disarmed[0]);
++        }
++    }
++    EXPECT_TRUE(sawDone);
++    EXPECT_EQ(DISARM, topAfterDone);            // docs: "run time over" = no automatic restart
++}
++
++// F2: escHadTimeToArm() compared against powerDetectMs = 0 (battery at boot). After 2^31 ms (24.86 days)
++// cmpTimeMs(now, 0) is negative -> the battery cut-off was silently disabled for the next 24.86 days.
++TEST(AutostartReview, CutoffStillWorksAfter25DaysUptime)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartInit();
++    runUntil(25000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++    fakeMs = 0x80000000u + 25000u;              // 24.86 days of RUN later (nothing changes in between)
++    runUntil(fakeMs + 1000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++    fakeVbat = 1900;                            // pack now below the cut-off
++    runUntil(fakeMs + 10000);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);       // must cut off after 5 s
++}
++
++// F2: same root cause: a click after 24.86 days of idle uptime -> DELAY never ended (beeps for 24.86 days)
++TEST(AutostartReview, ButtonClickAfter25DaysStillStarts)
++{
++    setDefaults(AUTOSTART_MODE_BUTTON);
++    autostartConfigMutable()->buttonTag = 1;
++    autostartConfigMutable()->usbInhibit = 0;
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    runUntil(30000);
++    fakeMs = 0x80000000u + 30000u;
++    runUntil(fakeMs + 1000);
++    fakePinHigh = false;
++    runUntil(fakeMs + 100);
++    fakePinHigh = true;
++    runUntil(fakeMs + 100);
++    runUntil(fakeMs + 21000);                   // 10 s delay + 10 s ramp
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++    EXPECT_EQ(3, debug[0]);
++}
++
++// F3: "#" and "motor 1 1300" arrive in one burst and are processed before the next 50 Hz tick:
++// one overwritten motor made the module skip releaseOutputs() for ALL its motors -> 0, 2, 3 kept spinning
++TEST(AutostartReview, CliWithPartialMotorCommandStopsTheOtherMotors)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartConfigMutable()->motorMask = 0x0F;        // this build's default
++    autostartInit();
++    runUntil(25000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++    EXPECT_EQ(1150.0f, motor_disarmed[3]);
++    cliMode = true;
++    motor_disarmed[1] = 1300.0f;                        // cliMotor() for motor index 1 only
++    runUntil(25020);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++    EXPECT_EQ(1300.0f, motor_disarmed[1]);              // the CLI's own value is kept
++    EXPECT_EQ(DISARM, motor_disarmed[0]);               // ours must be released
++    EXPECT_EQ(DISARM, motor_disarmed[2]);
++    EXPECT_EQ(DISARM, motor_disarmed[3]);
++}
++
++// F5: debug[2] saturated at INT16_MAX (327.67 s); the web configurator reads it as uint16 x 10 ms
++TEST(AutostartReview, DebugTimeInStateBeyond327s)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->delaySeconds = 600;
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    runUntil(400000);
++    EXPECT_EQ(1, debug[0]);
++    EXPECT_EQ(40000, (uint16_t)debug[2]);              // site/web/src/fc/device.ts: (d[2] & 0xffff) * 10
++    runUntil(605000);                                   // the 600 s delay is over: RAMP for 5 s
++    EXPECT_EQ(2, debug[0]);
++    EXPECT_EQ(500, debug[2]);
++}
++
++// F6: a vbat_min between the loaded and the resting voltage turned load sag into "battery unplugged"
++TEST(AutostartReview, SagBelowVbatMinIsNotAnUnplug)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartConfigMutable()->vbatMinDeciVolts = 230;  // "start only with a charged pack": 23.0 V
++    autostartInit();
++    runUntil(25000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++    fakeVbat = 2250;                                    // 22.5 V under load, far above the 19.8 V cut-off
++    runUntil(26000);
++    fakeVbat = 2450;                                    // recovers
++    float low = 5000;
++    for (timeMs_t t = fakeMs + 20; t < 60000; t += 20) {
++        runUntil(t);
++        low = MIN(low, motor_disarmed[0]);
++    }
++    EXPECT_EQ(1150.0f, low);                            // before: stop + new countdown + ramp, every sag
++}
++
++// F6 control: with the same high vbat_min a real unplug is still seen, and a weak pack still does not count
++TEST(AutostartReview, HighVbatMinStillSeesTheUnplug)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartConfigMutable()->vbatMinDeciVolts = 230;
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    runUntil(25000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++    fakeVbat = 10;                                      // unplugged, board on USB
++    runUntil(26000);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++    EXPECT_EQ(0, debug[4] & 8);                         // battery gone
++    fakeVbat = 2200;                                    // a half-empty pack: below vbat_min, not "plugged in"
++    runUntil(40000);
++    EXPECT_EQ(0, debug[4] & 8);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++}
++
++// F9: docs: GUSTS = "random sharp bursts on top of the steady level"; a gust range below the steady level dipped
++TEST(AutostartReview, GustsNeverGoBelowTheSteadyLevel)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->pattern = AUTOSTART_PATTERN_GUSTS;
++    autostartConfigMutable()->throttlePercent = 50;
++    autostartConfigMutable()->gustMinPercent = 0;
++    autostartConfigMutable()->gustMaxPercent = 30;
++    autostartInit();
++    runUntil(20100);
++    float low = 5000;
++    for (timeMs_t t = fakeMs + 20; t < 120000; t += 20) {
++        runUntil(t);
++        low = MIN(low, motor_disarmed[0]);
++    }
++    EXPECT_GE(low, 1500.0f);                            // before: down to DISARM (DShot stop) mid-run
++}
++
++// F10: right after a plug-in Betaflight's filtered voltage is still rising (~1.5 s, 14.8 -> 22.0 V measured);
++// debug bit 32 ("calibrate vbat_scale") must not flash on every plug-in (the web tool auto-opens Calibrate on it)
++TEST(AutostartReview, ImplausibleFlagIgnoresTheFilterRisingAfterPlugIn)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    debugMode = DEBUG_AUTOSTART;
++    fakeVbat = 10;                              // USB bench, no battery
++    autostartInit();
++    runUntil(10000);
++    fakeVbat = 2500;                            // battery plugged in, latest reading is right away 25.0 V
++    fakeVbatFiltered = 1480;                    // filtered value still 14.8 V (2.47 V/cell)
++    bool flagged = false;
++    for (timeMs_t t = fakeMs + 20; t < 11500; t += 20) {
++        runUntil(t);
++        flagged = flagged || (debug[4] & 32);
++    }
++    fakeVbatFiltered = 0;                       // settled
++    runUntil(13000);
++    EXPECT_FALSE(flagged);
++    EXPECT_EQ(0, debug[4] & 32);
++    fakeVbat = 3480;                            // control: a really wrong reading is still flagged
++    runUntil(14000);
++    EXPECT_EQ(32, debug[4] & 32);
++}
++
++// control (passed before and after): gust 50 ms + pause 0 -> no busy loop, the steady level still shows for one tick
++TEST(AutostartReview, ShortestGustZeroPauseAlternates)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->pattern = AUTOSTART_PATTERN_GUSTS;
++    autostartConfigMutable()->gustLenMinMs = 50;
++    autostartConfigMutable()->gustLenMaxMs = 50;
++    autostartConfigMutable()->gustPauseMinDs = 0;
++    autostartConfigMutable()->gustPauseMaxDs = 0;
++    autostartInit();
++    runUntil(20100);
++    int steadyTicks = 0, gustTicks = 0;
++    for (timeMs_t t = fakeMs + 20; t < 30000; t += 20) {
++        runUntil(t);
++        if (motor_disarmed[0] == 1150.0f) {
++            steadyTicks++;
++        } else {
++            gustTicks++;
++        }
++    }
++    EXPECT_GT(steadyTicks, 100);        // ~1 steady tick per 4-tick cycle
++    EXPECT_GT(gustTicks, 300);
++}
++
++#ifdef USE_DSHOT_TELEMETRY
++// F4: battery powers the board: EDT was requested at uptime 3.0 s, but stock dshotCommandWrite() drops every
++// inline command until > 3000 ms after motorEnable() (end of init, ~1.5 s) -> edtRequested = true, never retried
++TEST(AutostartReview, EdtAcceptedWhenBatteryPowersTheBoard)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    motorConfigMutable()->dev.useDshotEdt = 1;
++    autostartInit();
++    runUntil(30000);
++    EXPECT_EQ(1, edtRequests);
++    EXPECT_EQ(1, edtAccepted);
++}
++
++TEST(AutostartReview, EdtAcceptedOnUsbBenchControl)      // negative control: battery plugged later
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    motorConfigMutable()->dev.useDshotEdt = 1;
++    fakeVbat = 10;
++    autostartInit();
++    runUntil(10000);
++    EXPECT_EQ(0, edtRequests);                  // no battery, no ESC to ask
++    fakeVbat = 2500;
++    runUntil(30000);
++    EXPECT_EQ(1, edtRequests);
++    EXPECT_EQ(1, edtAccepted);
++}
++#endif
++
++// ---------------------------------------------------------------- fixes of 2026-10-20 without a test above
++
++// F7: USB bench, the XT60 bounces for 400 ms while the blower runs. The ESC (no BEC) browns out and reboots, the FC
++// stays alive on USB. Before: the 500 ms glitch filter kept 15 % going, so the rebooted ESC never saw stop frames
++// and never armed (silent blower, debug RUN). Now: with a USB host, < 1 V for 2 ticks is an unplug.
++TEST(AutostartFixTest, ShortOutageOnUsbStopsAndReArmsTheEsc)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartConfigMutable()->delaySeconds = 0;
++    autostartConfigMutable()->rampDeciseconds = 0;
++    fakeUsb = true;
++    autostartInit();
++    runUntil(25000);
++    ASSERT_EQ(1150.0f, motor_disarmed[0]);
++    fakeVbat = 10;                              // battery contact lost
++    runUntil(25040);                            // 2 ticks below 1 V
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++    runUntil(25400);
++    fakeVbat = 2500;                            // contact back: the ESC boots now
++    const timeMs_t backAt = fakeMs + 20;
++    timeMs_t firstDrive = 0;
++    for (timeMs_t t = backAt; t <= 40000 && !firstDrive; t += 20) {
++        runUntil(t);
++        if (autostartIsDrivingMotors()) {
++            firstDrive = t;
++        }
++    }
++    ASSERT_NE(0u, firstDrive);                  // POWER: the program starts again from the re-plug
++    EXPECT_GE(firstDrive, backAt + 3000) << "the ESC got only " << (firstDrive - backAt) << " ms of stop frames";
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++}
++
++// F7 controls: a one-tick 0 V reading on USB, and (AutostartTest.ShortVoltageDipIsIgnored) any short dip on
++// battery-only power, where the board could not have survived a real outage, stay ADC glitches
++TEST(AutostartFixTest, SingleTickDropOnUsbIsIgnored)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    fakeUsb = true;
++    autostartInit();
++    runUntil(25000);
++    fakeVbat = 0;
++    runUntil(25020);
++    fakeVbat = 2500;
++    float low = 5000;
++    for (timeMs_t t = fakeMs + 20; t < 30000; t += 20) {
++        runUntil(t);
++        low = MIN(low, motor_disarmed[0]);
++    }
++    EXPECT_EQ(1150.0f, low);
++}
++
++// F8: ESC passthrough (4-way interface) and MSP2_SEND_DSHOT_COMMAND run outside the 50 Hz task. msp.c now calls
++// autostartComputerTookOver() before them (and before MSP_SET_MOTOR writes): our motors must be at stop at once,
++// motors of other writers untouched, and nothing may start again by itself
++TEST(AutostartFixTest, ComputerHookStopsOurMotorsAtOnce)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartConfigMutable()->motorMask = 0x05;
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    runUntil(25000);
++    ASSERT_EQ(1150.0f, motor_disarmed[0]);
++    ASSERT_EQ(1150.0f, motor_disarmed[2]);
++    autostartComputerTookOver();                // no tick in between: the passthrough blocks the scheduler
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++    EXPECT_EQ(DISARM, motor_disarmed[2]);
++    EXPECT_EQ(OTHER, motor_disarmed[1]);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++    runUntil(60000);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++    EXPECT_EQ(64, debug[4] & 64);               // held
++    EXPECT_EQ(0, debug[1]);
++}
++
++#ifdef USE_DSHOT
++// F11: stock tryArm() delays arming 1.2 s after a DShot beacon only for beacons the beeper sent. Once a receiver
++// was seen (a pilot can arm), the LOW_BATTERY reminder must use the buzzer only, not the ESC beacon.
++TEST(AutostartFixTest, LowBatteryBeaconStopsOnceAReceiverIsSeen)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartInit();
++    runUntil(25000);
++    fakeVbat = 1900;
++    runUntil(31000);
++    ASSERT_EQ(5, stateNow());                   // LOW_BATTERY, no receiver yet
++    runUntil(37000);
++    EXPECT_GE(dshotBeacons, 1);                 // control: beacons while no receiver was seen
++    fakeRxValid = true;                         // receiver bound, switch off
++    runUntil(37600);                            // link confirmed
++    const int beacons = dshotBeacons, beeps = beepCalls;
++    runUntil(70000);
++    EXPECT_EQ(beacons, dshotBeacons);
++    EXPECT_GE(beepCalls - beeps, 10);           // the buzzer goes on every 3 s
++    EXPECT_EQ(5, stateNow());
++}
++#endif
++
++// F13: the CLI accepts autostart_cell_cutoff 1..249 (docs: 0 or 250..420); 33 meant "3.3 V" but was 0.33 V/cell,
++// i.e. no protection. It is raised to 2.50 V/cell.
++TEST(AutostartFixTest, CellCutoffBelow250IsRaisedTo250)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->cellCutoffCv = 33;
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    runUntil(25000);
++    ASSERT_EQ(1150.0f, motor_disarmed[0]);
++    fakeVbat = 1450;                            // 14.5 V = 2.42 V per cell on 6S: over-discharged
++    runUntil(31000);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++    EXPECT_EQ(5, debug[0]);
++}
++
++// F13: the gust generator was seeded from millis() at the start, which is nearly the same on every battery
++// power-up, so the "random" gusts repeated on every boot. Now: micros() and the ADC noise at the first RUN tick.
++static std::vector<timeMs_t> gustEdges(uint16_t vbat, timeUs_t jitterUs)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->pattern = AUTOSTART_PATTERN_GUSTS;
++    debugMode = DEBUG_AUTOSTART;
++    fakeVbat = vbat;
++    fakeMicrosJitter = jitterUs;
++    autostartInit();
++    std::vector<timeMs_t> edges;
++    bool gust = false;
++    for (timeMs_t t = 1520; t < 80000; t += 20) {
++        runUntil(t);
++        if (((debug[4] & 16) != 0) != gust) {
++            gust = !gust;
++            edges.push_back(t);
++        }
++    }
++    return edges;
++}
++
++TEST(AutostartFixTest, GustSequenceDiffersBetweenPowerUps)
++{
++    const std::vector<timeMs_t> a = gustEdges(2500, 0);
++    EXPECT_GE(a.size(), 10u);
++    EXPECT_EQ(a, gustEdges(2500, 0));           // same inputs, same gusts (the test itself is deterministic)
++    EXPECT_NE(a, gustEdges(2503, 0));           // 30 mV of ADC noise: different gusts
++    EXPECT_NE(a, gustEdges(2500, 137));         // 137 us of scheduler jitter: different gusts
++}

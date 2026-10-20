@@ -15,7 +15,7 @@ Hardware rule: never open a COM port here, test only against `mockfc.ts`.
 - [x] 4. unit + device e2e tests vs mock (node --test): 52/52 pass (msp 12, cli 8, settings 11, transport 7, device 14)
 - [x] 5. ui/tool.ts + tool.css + i18n tool.{en,es,pl,ru}.json (i18n parity test: 5 pass)
 - [x] 6. Playwright harness test (?mock=1) with negative controls: 8/8 pass in Chrome
-- [ ] 7. tools/fc-node (serialport adapter, check.mjs) — compiled + passes vs mock, NOT run on hardware
+- [x] 7. tools/fc-node (serialport adapter, check.mjs) — compiled + passes vs mock (5 tests), NOT run on hardware
 
 ## Notes for the next agent
 

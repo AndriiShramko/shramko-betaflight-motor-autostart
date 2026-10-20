@@ -8,7 +8,8 @@
     "typecheck:fc": "tsc -p tests/tsconfig.json",
     "test:fc": "node --import tsx --test tests/msp.test.ts tests/cli.test.ts tests/settings.test.ts tests/transport.test.ts tests/device.test.ts tests/fcnode.test.ts tests/i18n-tool.test.ts",
     "test:tool-e2e": "node --import tsx --test tests/tool.e2e.test.ts",
-    "fc:check": "node tools/fc-node/check.mjs"
+    "fc:check": "node tools/fc-node/check.mjs",
+    "fc:check:mock": "node tools/fc-node/check.mjs --mock --write-test"
   },
   "author": "Andrii Shramko <zmei116@gmail.com> (https://github.com/AndriiShramko)",
   "license": "GPL-3.0-or-later",
@@ -16,6 +17,7 @@
     "web-serial-polyfill": "1.0.15"
   },
   "devDependencies": {
+    "@serialport/stream": "13.0.0",
     "@types/node": "20.19.43",
     "playwright": "1.63.0",
     "serialport": "13.0.0",

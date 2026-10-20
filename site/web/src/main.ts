@@ -100,8 +100,13 @@ const initFeedbackButtonPlacement = () => {
 };
 
 const mountConfigurator = async () => {
-    const root = document.getElementById('tool') as HTMLElement | null;
-    if (!root) return;
+    const section = document.getElementById('tool');
+    if (!section) return;
+    // the tool replaces only the no-JS fallback; the section's h2 and lead stay (heading order, title)
+    const root = document.createElement('div');
+    const fallback = section.querySelector('[data-tool-fallback]');
+    if (fallback) fallback.replaceWith(root);
+    else section.append(root);
     try {
         const m = await import('./ui/tool');
         m.mountTool(root, t, lang);

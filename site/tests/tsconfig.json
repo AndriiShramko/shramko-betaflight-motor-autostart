@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vite/client", "node"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "isolatedModules": true,
+    "noUnusedLocals": true,
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "web-serial-polyfill": ["./types/web-serial-polyfill.d.ts"]
+    }
+  },
+  "include": ["../web/src/fc/**/*.ts", "../web/src/ui/tool.ts", "../tools/fc-node/**/*.ts", "./**/*.ts"]
+}

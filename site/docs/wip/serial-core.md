@@ -9,9 +9,9 @@ Hardware rule: never open a COM port here, test only against `mockfc.ts`.
 ## Status
 
 - [x] 0. Worktree, status file
-- [ ] 1. package.json + deps (typescript, tsx, vite, playwright, serialport, web-serial-polyfill)
-- [ ] 2. fc/transport.ts, fc/msp.ts, fc/cli.ts, fc/settings.ts
-- [ ] 3. fc/mockfc.ts, fc/device.ts
+- [x] 1. package.json + deps (typescript, tsx, vite, playwright, serialport, web-serial-polyfill)
+- [x] 2. fc/transport.ts, fc/msp.ts, fc/cli.ts, fc/settings.ts
+- [x] 3. fc/mockfc.ts, fc/device.ts (typecheck clean; tests in step 4)
 - [ ] 4. unit + device e2e tests vs mock (node --test)
 - [ ] 5. ui/tool.ts + tool.css + i18n tool.{en,es,pl,ru}.json
 - [ ] 6. Playwright harness test (?mock=1) with negative controls

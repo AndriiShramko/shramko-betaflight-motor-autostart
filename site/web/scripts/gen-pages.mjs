@@ -26,11 +26,11 @@ const template = readFileSync(join(web, 'template.html'), 'utf8');
 const shown = (re) => new Set(template.match(re) ?? []).size;
 if (shown(/\{\{faq\.q\d+\}\}/g) !== FAQ_COUNT) throw new Error(`template shows ${shown(/\{\{faq\.q\d+\}\}/g)} FAQ items, JSON-LD has ${FAQ_COUNT}`);
 if (shown(/\{\{install\.s\d+t\}\}/g) !== INSTALL_STEPS) throw new Error(`template shows ${shown(/\{\{install\.s\d+t\}\}/g)} install steps, JSON-LD has ${INSTALL_STEPS}`);
-// the VideoObject names the reel the page shows (web/public/video/)
-const VIDEO = { file: '/video/ma-r01-720.mp4', poster: '/video/ma-r01-poster.webp', uploadDate: '2026-10-20', duration: 'PT37S' };
-for (const f of [VIDEO.file, VIDEO.poster]) {
-    if (!template.includes(`"${f}"`)) throw new Error(`template does not show ${f}, the VideoObject names it`);
-    if (!existsSync(join(web, 'public', f))) throw new Error(`web/public${f} is missing`);
+// the reels of #video (web/src/reels.json, files in web/public/video/): one VideoObject per reel a page shows
+const REELS = read(join(web, 'src/reels.json')).reels;
+for (const r of REELS) {
+    for (const f of [r.file, r.poster]) if (!existsSync(join(web, 'public', f))) throw new Error(`web/public${f} is missing`);
+    if (!(r.seconds > 0) || !/^\d{4}-\d\d-\d\d$/.test(r.uploadDate) || !LANGS.includes(r.voice) || !r.transcript) throw new Error(`reels.json: ${r.id} is incomplete`);
 }
 const en = { ...read(join(web, 'src/i18n/en.json')), ...readOpt(join(web, 'src/i18n/tool.en.json')) };
 
@@ -66,6 +66,36 @@ for (const lang of LANGS) {
         return strip(dict[k]);
     };
 
+    // the first reel this language shows stands beside the text (R01, on /pl/ its Polish version), the rest are cards
+    const reels = REELS.filter((r) => !r.pages || r.pages.includes(lang));
+    const [main, ...cards] = reels;
+    if (main?.key !== 'r01') throw new Error(`[${lang}] the first reel is ${main?.id}, the page text is about R01`);
+    const trLabel = (r) => esc(txt(r.voice === lang ? 'video.trOwn' : 'video.transcript'));
+    const trText = (r) => `<p lang="${r.voice}">${esc(r.transcript)}</p>`;
+    const cardsHtml = cards.map((r) => {
+        const id = `reel-${r.key}`;
+        return `<li class="reel"><figure class="reel-fig">`
+            + `<video controls playsinline preload="none" poster="${r.poster}" width="270" height="480" aria-labelledby="${id}-t" aria-describedby="${id}-cap"><source src="${r.file}" type="video/mp4"></video>`
+            + `<figcaption><span class="reel-t" id="${id}-t">${esc(txt(`video.${r.key}t`))}</span> <span class="reel-dur">${Math.round(r.seconds)} ${esc(txt('hero.artSec'))}</span>`
+            + `<span class="reel-cap small muted" id="${id}-cap">${esc(txt(`video.${r.key}cap`))}</span></figcaption></figure>`
+            + `<details class="fold reel-tr" id="${id}-tr"><summary>${trLabel(r)}</summary>${trText(r)}</details></li>`;
+    }).join('');
+    const videoLd = (r, name, description) => ({
+        '@context': 'https://schema.org',
+        '@type': 'VideoObject',
+        name,
+        description,
+        thumbnailUrl: `${SITE}${r.poster}`,
+        contentUrl: `${SITE}${r.file}`,
+        uploadDate: r.uploadDate,
+        duration: `PT${Math.round(r.seconds)}S`,
+        inLanguage: r.voice,
+        transcript: r.transcript
+    });
+    const special = {
+        r01File: main.file, r01Poster: main.poster, r01TrLabel: trLabel(main), r01Tr_html: trText(main), reelCards_html: cardsHtml
+    };
+
     const faq = [];
     for (let i = 1; i <= FAQ_COUNT; i++) {
         faq.push({ '@type': 'Question', name: txt(`faq.q${i}`), acceptedAnswer: { '@type': 'Answer', text: txt(`faq.a${i}_html`) } });
@@ -94,19 +124,8 @@ for (const lang of LANGS) {
                 sameAs: ['https://github.com/AndriiShramko', 'https://www.linkedin.com/in/andrii-shramko/']
             }
         },
-        {
-            '@context': 'https://schema.org',
-            '@type': 'VideoObject',
-            name: txt('video.ldname'),
-            description: txt('video.lddesc'),
-            thumbnailUrl: `${SITE}${VIDEO.poster}`,
-            contentUrl: `${SITE}${VIDEO.file}`,
-            uploadDate: VIDEO.uploadDate,
-            duration: VIDEO.duration,
-            // the voice is English on every page
-            inLanguage: 'en',
-            transcript: txt('video.transcript_html')
-        },
+        videoLd(main, txt('video.ldname'), txt('video.lddesc')),
+        ...cards.map((r) => videoLd(r, `Shramko Motor Autostart: ${txt(`video.${r.key}t`)}`, txt(`video.${r.key}cap`))),
         { '@context': 'https://schema.org', '@type': 'FAQPage', mainEntity: faq },
         {
             '@context': 'https://schema.org',
@@ -122,6 +141,7 @@ for (const lang of LANGS) {
         // loads with other proportions moves everything below it, and a #hash jump lands off target
         if (key === 'wiringW' || key === 'wiringH') return String(wiringSize(lang)[key === 'wiringW' ? 0 : 1]);
         if (key === 'jsonld') return JSON.stringify(jsonld).replace(/</g, '\\u003c');
+        if (key in special) return special[key];
         const v = dict[key];
         if (v === undefined) throw new Error(`template key "${key}" has no English text`);
         // %LANG% inside trusted HTML: the page language (counted links /go/<slug>?l=<lang>)

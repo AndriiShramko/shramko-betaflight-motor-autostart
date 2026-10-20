@@ -1,0 +1,113 @@
+{
+  "_about": "The reels on the page (#video), in page order. The first one a language shows is the big one beside the text, the rest are the cards under it. key: the i18n prefix (video.<key>t title, video.<key>cap caption; r01 uses video.ldname/lddesc); pages: shown only on these languages (default: all); voice: the language spoken, the transcript is the voice-over in it; seconds: the file's length. Files in web/public/video/: 720x1280 H.264 High + AAC 96k, faststart (from the 1080x1920 masters: lanczos, x264 slow, CRF 25, maxrate 2000k); posters: 540x960 WebP of a frame with the reel's title (the big reel quality 80, the cards 60: they all load with the page).",
+  "reels": [
+    {
+      "key": "r01",
+      "id": "ma-r01",
+      "file": "/video/ma-r01-720.mp4",
+      "poster": "/video/ma-r01-poster.webp",
+      "seconds": 37.44,
+      "uploadDate": "2026-10-20",
+      "voice": "en",
+      "transcript": "No radio. No receiver. Plug in the battery, and the motor starts by itself. Stock Betaflight won't arm without a receiver, so one motor usually needs a whole radio. This custom firmware lets the flight controller drive the ESC itself. Real bench test, no prop: about 10,500 rpm at 15% throttle. Defaults: wait 10 seconds, ramp for 10, then hold until the battery cut-off. Prebuilt for one HGLRC board. Other boards: build your own, untested. Free and open source, on GitHub.",
+      "pages": [
+        "en",
+        "es",
+        "ru"
+      ]
+    },
+    {
+      "key": "r01",
+      "id": "ma-r01-pl",
+      "file": "/video/ma-r01-pl-720.mp4",
+      "poster": "/video/ma-r01-pl-poster.webp",
+      "seconds": 39.87,
+      "uploadDate": "2026-10-21",
+      "voice": "pl",
+      "transcript": "Bez aparatury. Bez odbiornika. Podłączasz baterię, a silnik sam rusza. Zwykły Betaflight bez odbiornika się nie uzbroi, więc do jednego silnika zwykle potrzebna jest cała aparatura. Ten firmware pozwala kontrolerowi lotu samodzielnie sterować ESC. Prawdziwy test, bez śmigła: 15% gazu to około 10 500 obrotów na minutę. Domyślnie: 10 sekund czekania, 10 sekund rozruchu, potem praca aż do odcięcia baterii. Gotowy plik jest dla jednej płytki HGLRC. Inne płytki: kompilujesz sam, nieprzetestowane. Za darmo i open source, na GitHubie.",
+      "pages": [
+        "pl"
+      ]
+    },
+    {
+      "key": "r04",
+      "id": "ma-r04",
+      "file": "/video/ma-r04-720.mp4",
+      "poster": "/video/ma-r04-poster.webp",
+      "seconds": 31.1,
+      "uploadDate": "2026-10-21",
+      "voice": "en",
+      "transcript": "A lens blower that starts itself. A blower in a sealed camera case has to start on its own, whenever the box gets power. No propeller on the bench: one gust pushed the motor to 15,814 rpm. Plug in the battery: it waits, ramps up, then runs steady, or in random gusts you pick on the setup page. Honest status: bench-tested, no propeller, not in rain yet. Free and open source, on GitHub."
+    },
+    {
+      "key": "r03",
+      "id": "ma-r03",
+      "file": "/video/ma-r03-720.mp4",
+      "poster": "/video/ma-r03-poster.webp",
+      "seconds": 34.58,
+      "uploadDate": "2026-10-21",
+      "voice": "en",
+      "transcript": "A brushless motor and an ESC, with zero code. A Betaflight flight controller already speaks DShot, arms the ESC and reads its telemetry. No Arduino sketch and no servo tester, if the motor only has to run at power-up. This firmware adds a start program: stop signal, wait, soft ramp, hold. Change it over USB with 3 CLI lines, or in the browser. The catch: you need a Betaflight flight controller. The ready file is for one HGLRC board. Free and open source, on GitHub."
+    },
+    {
+      "key": "r09",
+      "id": "ma-r09",
+      "file": "/video/ma-r09-720.mp4",
+      "poster": "/video/ma-r09-poster.webp",
+      "seconds": 35.73,
+      "uploadDate": "2026-10-21",
+      "voice": "en",
+      "transcript": "Firmware that starts a brushless motor on power-up, with no radio. Here is exactly what it runs on, and what is still untested. It's a module for Betaflight 2025.12.1. The ready file is for one HGLRC board. Tested ESC: just one, on DShot 300. Other ESC firmware is untested. Another Betaflight board? Add one define to its config and build it yourself, untested. You need a computer once, to flash and set it up. After that, it runs on its own. Free and open source, on GitHub."
+    },
+    {
+      "key": "r08",
+      "id": "ma-r08",
+      "file": "/video/ma-r08-720.mp4",
+      "poster": "/video/ma-r08-poster.webp",
+      "seconds": 28.2,
+      "uploadDate": "2026-10-21",
+      "voice": "en",
+      "transcript": "Three solder joints, on the board's stock cable. ESC signal, ground, and battery plus. The ESC's yellow goes to the white wire, black to black, and a new thin red wire to red. First power-up with no propeller: 3 rising tones, then a low and a high one, means it's wired right. Max 8S on the red wire, and this pin map is for this one board only. Free and open source, on GitHub."
+    },
+    {
+      "key": "r05",
+      "id": "ma-r05",
+      "file": "/video/ma-r05-720.mp4",
+      "poster": "/video/ma-r05-poster.webp",
+      "seconds": 36.44,
+      "uploadDate": "2026-10-21",
+      "voice": "en",
+      "transcript": "A self-starting motor needs safeguards. Here are 5. Hit STOP on the page: the motor stops, and stays stopped until you restart it. A restart from the setup page only runs after you tick: propeller is off. By default it waits 10 seconds on a stop signal. Settings freeze at the start. And if the battery drops out for half a second, it stops. On a real bench test, after STOP in the countdown, the motor didn't move for 25 seconds. Still, the cut-off is not a fuse. Test on the bench with the propeller off. Free and open source, on GitHub."
+    },
+    {
+      "key": "r07",
+      "id": "ma-r07",
+      "file": "/video/ma-r07-720.mp4",
+      "poster": "/video/ma-r07-poster.webp",
+      "seconds": 37.61,
+      "uploadDate": "2026-10-21",
+      "voice": "en",
+      "transcript": "Left running, a motor drains a LiPo flat. This one stops at the cutoff you set. By default: 3.3 volts per cell, so 19.8 on 6S. Below that for 5 seconds, it stops. The setup page says why: stopped, battery low. Then the ESC beeps every 3 seconds until you replug. Board reads the pack wrong? Calibrate it from the ESC's own reading. Set the right cell count. It's a voltage cutoff, not a fuse. The board still draws power, so unplug the pack. Free and open source, on GitHub."
+    },
+    {
+      "key": "r10",
+      "id": "ma-r10",
+      "file": "/video/ma-r10-720.mp4",
+      "poster": "/video/ma-r10-poster.webp",
+      "seconds": 32.04,
+      "uploadDate": "2026-10-21",
+      "voice": "en",
+      "transcript": "Set a run time once, unplug the laptop, and the motor runs and stops on its own. This bench run was set to 8 seconds, then it stopped by itself. Usually a laptop sits on the Motors tab the whole time. Here, the timer lives in the firmware. One line sets the run time. Add random gusts if you want, then save. By default, it simply runs until the battery is low. It's a timer, not a test stand: no current or thrust readings. Free and open source, on GitHub."
+    },
+    {
+      "key": "r06",
+      "id": "ma-r06",
+      "file": "/video/ma-r06-720.mp4",
+      "poster": "/video/ma-r06-poster.webp",
+      "seconds": 35.24,
+      "uploadDate": "2026-10-21",
+      "voice": "en",
+      "transcript": "No jump to full throttle at power-up: a 10-second motor soft start. Measured on the board, at most 1 microsecond off a straight line. It starts after 10.01 seconds, ramps for 10.02, then holds dead flat. The tests and their results are on GitHub. With a real ESC and a 6S pack, all 10 bench checks passed, and the code has 40+ unit tests. Fine print: the timing was read over USB, and the ESC ran with no propeller. Free and open source, on GitHub."
+    }
+  ]
+}

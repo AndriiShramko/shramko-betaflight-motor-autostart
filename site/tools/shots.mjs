@@ -13,8 +13,9 @@
 // Exit code 1 when a check fails.
 
 import http from 'node:http';
-import { createReadStream, existsSync, mkdirSync, statSync } from 'node:fs';
-import { extname, join, resolve } from 'node:path';
+import { createReadStream, existsSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { dirname, extname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 const args = process.argv.slice(2);
@@ -55,6 +56,7 @@ const problems = [];
 const notes = [];
 const fail = (s) => problems.push(s);
 const SECTION_ORDER = 'video install tool wiring safety how support faq agent contact privacy';
+const REELS = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '../web/src/reels.json'), 'utf8')).reels;
 const EXPECTED_MISSING = /\/img\/wiring-(en|es|pl|ru)\.svg$/; // the lead adds the diagrams
 
 const browser = await chromium.launch({ channel: 'chrome' });
@@ -81,6 +83,8 @@ for (const lang of ['en', 'ru', 'es', 'pl']) {
         const ctx = await browser.newContext({ viewport: { width: vp.w, height: vp.h }, deviceScaleFactor: 1, isMobile: !!vp.mobile, hasTouch: !!vp.mobile, locale: lang });
         const page = await ctx.newPage();
         watch(page, name);
+        const mp4s = [];
+        page.on('request', (rq) => { if (/\.mp4(\?|$)/.test(rq.url())) mp4s.push(new URL(rq.url()).pathname); });
         await page.goto(`${base}/${lang}/`, { waitUntil: 'networkidle' });
         await page.evaluate(() => document.querySelectorAll('img[loading=lazy]').forEach((i) => { i.loading = 'eager'; }));
         await page.waitForLoadState('networkidle');
@@ -113,48 +117,77 @@ for (const lang of ['en', 'ru', 'es', 'pl']) {
         });
         if (JSON.stringify(ld.faq) !== JSON.stringify(ld.faqShown)) fail(`${name}: FAQPage JSON-LD (${ld.faq.length}) differs from the visible FAQ (${ld.faqShown.length})`);
         if (JSON.stringify(ld.how) !== JSON.stringify(ld.howShown)) fail(`${name}: HowTo JSON-LD ${JSON.stringify(ld.how)} differs from the visible steps ${JSON.stringify(ld.howShown)}`);
-        // the reel (#video): plays only on a click (no autoplay, no muted loop, nothing preloaded), 9:16 and never
-        // wider than 360 px, its caption tied to it; the VideoObject JSON-LD names the same two files
+        // the reels (#video, web/src/reels.json): each plays only on a click (no autoplay, no muted loop, nothing
+        // preloaded or fetched), 9:16 and never wider than 360 px, its caption in its own figure; one VideoObject per
+        // reel naming the same two files; the big one is R01 (on /pl/ its Polish version); the cards scroll sideways
+        // on a phone (the page itself does not) and stand in a grid of 4 × 2 on a computer
+        const want = REELS.filter((r) => !r.pages || r.pages.includes(lang));
         const vid = await page.evaluate(() => {
-            const v = document.querySelector('#video video');
-            if (!v) return null;
-            const r = v.getBoundingClientRect();
-            const vo = JSON.parse(document.querySelector('script[type="application/ld+json"]').textContent).find((x) => x['@type'] === 'VideoObject');
-            const cap = document.getElementById(v.getAttribute('aria-describedby') ?? '');
+            const vos = JSON.parse(document.querySelector('script[type="application/ld+json"]').textContent).filter((x) => x['@type'] === 'VideoObject');
+            const list = document.querySelector('#video .reels');
             return {
-                autoplay: v.autoplay, loop: v.loop, muted: v.muted || v.defaultMuted, preload: v.preload, controls: v.controls, inline: v.playsInline,
-                w: Math.round(r.width), h: Math.round(r.height), src: v.querySelector('source')?.getAttribute('src'), poster: v.getAttribute('poster'),
-                cap: cap?.tagName === 'FIGCAPTION' && !!cap.textContent.trim(),
-                vo: vo ? { name: vo.name, content: vo.contentUrl, thumb: vo.thumbnailUrl, dur: vo.duration, date: vo.uploadDate, lang: vo.inLanguage } : null,
+                all: [...document.querySelectorAll('#video video')].map((v) => {
+                    const r = v.getBoundingClientRect();
+                    const src = v.querySelector('source')?.getAttribute('src');
+                    const cap = document.getElementById(v.getAttribute('aria-describedby') ?? '');
+                    const vo = vos.find((x) => x.contentUrl.endsWith(src));
+                    return {
+                        autoplay: v.autoplay, loop: v.loop, muted: v.muted || v.defaultMuted, preload: v.preload, controls: v.controls, inline: v.playsInline,
+                        readyState: v.readyState, paused: v.paused,
+                        w: Math.round(r.width), h: Math.round(r.height), src, poster: v.getAttribute('poster'),
+                        cap: !!cap?.textContent.trim() && !!cap.closest('figure') && cap.closest('figure') === v.closest('figure'),
+                        vo: vo ? { name: vo.name, content: vo.contentUrl, thumb: vo.thumbnailUrl, dur: vo.duration, date: vo.uploadDate, lang: vo.inLanguage, tr: !!vo.transcript } : null
+                    };
+                }),
+                vos: vos.length,
+                list: list ? {
+                    n: list.children.length, scroll: list.scrollWidth - list.clientWidth, snap: getComputedStyle(list).scrollSnapType,
+                    cols: getComputedStyle(list).gridTemplateColumns.split(' ').length,
+                    rows: new Set([...list.children].map((li) => Math.round(li.getBoundingClientRect().top))).size
+                } : null,
                 beforeInstall: !!document.querySelector('#video + #install')
             };
         });
-        if (!vid) fail(`${name}: no video in #video`);
-        else {
+        {
             const SITE = 'https://autostart.flyreelstudio.eu';
-            if (vid.autoplay || vid.loop || vid.muted || vid.preload !== 'none' || !vid.controls || !vid.inline || !vid.cap) fail(`${name}: the reel's attributes ${JSON.stringify(vid)}`);
-            if (vid.w > 360 || Math.abs(vid.h / vid.w - 16 / 9) > 0.02) fail(`${name}: the reel is ${vid.w}×${vid.h} (want ≤ 360 px wide, 9:16)`);
-            if (!vid.vo || vid.vo.content !== `${SITE}${vid.src}` || vid.vo.thumb !== `${SITE}${vid.poster}` || vid.vo.dur !== 'PT37S' || vid.vo.date !== '2026-10-20' || vid.vo.lang !== 'en' || !vid.vo.name) fail(`${name}: VideoObject ${JSON.stringify(vid.vo)} vs ${vid.src} ${vid.poster}`);
+            const srcs = vid.all.map((v) => v.src);
+            if (JSON.stringify(srcs) !== JSON.stringify(want.map((r) => r.file))) fail(`${name}: reels ${srcs.join(' ')}, want ${want.map((r) => r.file).join(' ')}`);
+            if (vid.vos !== vid.all.length) fail(`${name}: ${vid.vos} VideoObjects for ${vid.all.length} reels`);
+            for (const [i, v] of vid.all.entries()) {
+                const r = want[i] ?? {};
+                if (v.autoplay || v.loop || v.muted || v.preload !== 'none' || !v.controls || !v.inline || !v.cap) fail(`${name}: reel ${v.src} attributes ${JSON.stringify(v)}`);
+                if (!v.paused || v.readyState !== 0) fail(`${name}: reel ${v.src} loaded or started before anyone pressed play`);
+                if (v.w > 360 || Math.abs(v.h / v.w - 16 / 9) > 0.02) fail(`${name}: reel ${v.src} is ${v.w}×${v.h} (want ≤ 360 px wide, 9:16)`);
+                if (!v.vo || v.vo.content !== `${SITE}${v.src}` || v.vo.thumb !== `${SITE}${v.poster}` || v.vo.dur !== `PT${Math.round(r.seconds)}S` || v.vo.date !== r.uploadDate || v.vo.lang !== r.voice || !v.vo.name || !v.vo.tr) fail(`${name}: VideoObject ${JSON.stringify(v.vo)} vs ${v.src} ${v.poster}`);
+            }
+            if (lang === 'pl' && !/ma-r01-pl-720\.mp4$/.test(srcs[0] ?? '')) fail(`${name}: /pl/ shows ${srcs[0]}, not the Polish R01`);
+            if (lang !== 'pl' && srcs.some((s) => /-pl-/.test(s))) fail(`${name}: the Polish R01 on /${lang}/`);
+            const l = vid.list;
+            if (!l || l.n !== want.length - 1) fail(`${name}: reel cards ${JSON.stringify(l)}`);
+            else if (vp.mobile && !(l.scroll > 100 && /x/.test(l.snap) && l.rows === 1)) fail(`${name}: the cards do not form one row that scrolls sideways ${JSON.stringify(l)}`);
+            else if (!vp.mobile && !(l.scroll <= 1 && l.cols === 4 && l.rows === Math.ceil(l.n / 4))) fail(`${name}: the cards are not a grid of 4 across ${JSON.stringify(l)}`);
             if (!vid.beforeInstall) fail(`${name}: #video is not right before #install`);
-            notes.push(`${name}: reel ${vid.w}×${vid.h}, click to play (no autoplay/loop/preload), VideoObject ${vid.vo?.name}`);
+            if (mp4s.length) fail(`${name}: video fetched before a click: ${mp4s.join(' ')}`);
+            notes.push(`${name}: ${vid.all.length} reels (${vid.all.map((v) => `${v.w}×${v.h}`).filter((s, i, a) => a.indexOf(s) === i).join(', ')}), click to play, no video fetched on load, ${vid.vos} VideoObjects; cards ${vp.mobile ? `one row scrolling ${l?.scroll} px sideways` : `${l?.cols} across × ${l?.rows} rows`}`);
         }
-        if (name === 'en-1440') {
-            // the file itself is served and plays (real Chrome decodes H.264); nothing was fetched before the play
-            const res = await page.request.get(`${base}${vid?.src ?? '/video/ma-r01-720.mp4'}`);
+        // the files are served and play (real Chrome decodes H.264): the big reel and the last card on en-1440, the Polish R01 on pl-375
+        const plays = name === 'en-1440' ? [0, want.length - 1] : name === 'pl-375' ? [0] : [];
+        for (const i of plays) {
+            const r = want[i];
+            const res = await page.request.get(`${base}${r.file}`);
             const size = (await res.body()).length;
-            if (res.status() !== 200 || !/video\/mp4/.test(res.headers()['content-type'] ?? '') || size < 1_000_000) fail(`${name}: reel file ${res.status()} ${res.headers()['content-type']} ${size} B`);
-            const before = await page.evaluate(() => { const v = document.querySelector('#video video'); return { t: v.currentTime, paused: v.paused, readyState: v.readyState }; });
-            if (!before.paused || before.readyState !== 0) fail(`${name}: the reel loaded or started before anyone pressed play ${JSON.stringify(before)}`);
-            await page.locator('#video video').scrollIntoViewIfNeeded();
+            if (res.status() !== 200 || !/video\/mp4/.test(res.headers()['content-type'] ?? '') || size < 1_000_000) fail(`${name}: reel file ${r.file} ${res.status()} ${res.headers()['content-type']} ${size} B`);
+            const video = page.locator('#video video').nth(i);
+            await video.scrollIntoViewIfNeeded();
             // the visitor's click on the player, then play() (headless Chrome has no click-to-play on the picture)
-            await page.locator('#video video').click();
-            await page.evaluate(() => { const v = document.querySelector('#video video'); if (v.paused) void v.play().catch(() => undefined); });
-            const played = await page.waitForFunction(() => document.querySelector('#video video').currentTime > 1, null, { timeout: 8000 }).then(() => true, () => false);
-            const vs = await page.evaluate(() => { const v = document.querySelector('#video video'); const s = { t: v.currentTime, w: v.videoWidth, h: v.videoHeight, d: v.duration, err: v.error?.code ?? null }; v.pause(); v.load(); return s; }); // load(): back to the poster for the screenshot
-            if (!played || vs.w !== 720 || vs.h !== 1280 || Math.abs(vs.d - 37.4) > 1) fail(`${name}: the reel does not play (${JSON.stringify(before)} → ${JSON.stringify(vs)})`);
-            else notes.push(`${name}: reel file ${(size / 1e6).toFixed(1)} MB video/mp4, nothing loaded before play; it plays (${vs.w}×${vs.h}, ${vs.d.toFixed(1)} s)`);
-            await page.evaluate(() => scrollTo(0, 0));
+            await video.click();
+            await video.evaluate((v) => { if (v.paused) void v.play().catch(() => undefined); });
+            const played = await video.evaluate((v) => new Promise((ok) => { const t0 = Date.now(); const tick = () => (v.currentTime > 1 ? ok(true) : Date.now() - t0 > 8000 ? ok(false) : setTimeout(tick, 100)); tick(); }));
+            const vs = await video.evaluate((v) => { const s = { t: v.currentTime, w: v.videoWidth, h: v.videoHeight, d: v.duration, err: v.error?.code ?? null }; v.pause(); v.load(); return s; }); // load(): back to the poster for the screenshot
+            if (!played || vs.w !== 720 || vs.h !== 1280 || Math.abs(vs.d - r.seconds) > 0.5) fail(`${name}: reel ${r.file} does not play (${JSON.stringify(vs)})`);
+            else notes.push(`${name}: ${r.file} ${(size / 1e6).toFixed(1)} MB video/mp4 plays (${vs.w}×${vs.h}, ${vs.d.toFixed(1)} s)`);
         }
+        if (plays.length) await page.evaluate(() => scrollTo(0, 0));
         if (vp.mobile) {
             // both hero buttons on the first phone screen (the chart comes after them)
             const ctaBottom = await page.evaluate(() => document.querySelector('.cta-row').getBoundingClientRect().bottom);

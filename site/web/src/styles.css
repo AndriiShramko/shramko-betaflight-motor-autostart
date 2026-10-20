@@ -169,6 +169,20 @@ table { border-collapse: collapse; width: 100%; }
 .video-points li { margin-bottom: .45em; }
 .video-text .fold { margin: 0 0 12px; }
 .video-text .fold p { color: var(--text2); }
+/* the other reels: a grid of cards (4 across at full width); below 760 px one row that scrolls sideways, the next card peeking in */
+.reels-title { margin: 40px 0 .25em; }
+.reels-lead { margin: 0 0 16px; max-width: 720px; }
+.reels { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 28px 20px; align-items: start; }
+.reel { min-width: 0; }
+.reel-fig { margin: 0; }
+.reel-fig video { display: block; width: 100%; height: auto; aspect-ratio: 9 / 16; border-radius: var(--radius); background: #000; border: 1px solid var(--line); }
+.reel-fig figcaption { margin-top: 8px; line-height: 1.4; }
+.reel-t { font-weight: 650; }
+.reel-dur { color: var(--muted); font-size: .85rem; white-space: nowrap; }
+.reel-cap { display: block; margin-top: 3px; }
+.reel .fold { margin: 10px 0 0; padding: 0 12px; }
+.reel .fold > summary { font-size: .92rem; }
+.reel .fold p { color: var(--text2); font-size: .92rem; }
 
 /* ---------- configurator mount */
 .tool { margin: 12px 0 56px; padding: clamp(18px, 3vw, 28px); border: 1px solid var(--line2); border-radius: calc(var(--radius) + 4px); background: linear-gradient(180deg, rgba(61, 220, 151, .05), rgba(61, 220, 151, 0) 220px), var(--bg2); }
@@ -314,6 +328,13 @@ html.sma-connected { scroll-padding-bottom: calc(var(--sma-stop-h, 64px) + 28px)
 @media (max-width: 760px) {
     .video-grid { grid-template-columns: minmax(0, 1fr); }
     .video-fig { justify-self: center; width: 100%; max-width: 360px; }
+    /* the cards run edge to edge of the screen (out through main's side padding) and stop at a card's start */
+    .reels {
+        grid-template-columns: none; grid-auto-flow: column; grid-auto-columns: min(68%, 250px); gap: 16px;
+        overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x mandatory;
+        margin: 0 calc(-1 * clamp(16px, 4vw, 40px)); padding: 0 clamp(16px, 4vw, 40px) 12px; scroll-padding: 0 clamp(16px, 4vw, 40px);
+    }
+    .reel { scroll-snap-align: start; }
     .nav { display: none; }
     .menu { display: block; margin-left: auto; }
     /* one row: brand … Menu EN ES PL RU; two rows: brand … Menu, then the languages on the right */

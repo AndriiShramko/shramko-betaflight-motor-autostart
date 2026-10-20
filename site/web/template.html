@@ -108,22 +108,27 @@
   </ul>
 </section>
 
-<!-- the reel R01 (37 s, 9:16): plays only on a click, never by itself; the VideoObject JSON-LD (gen-pages.mjs) names the same files -->
+<!-- the reels (web/src/reels.json, 9:16): R01 beside the text (on /pl/ its Polish version), the others as cards
+     under it (a row that scrolls sideways on a phone, a grid on a computer). Every one plays only on a click, never by
+     itself, and loads nothing but its poster before that; gen-pages.mjs writes the cards and one VideoObject per reel -->
 <section id="video" class="section video" aria-labelledby="video-title">
   <h2 id="video-title">{{video.title}}</h2>
   <div class="video-grid">
     <figure class="video-fig">
-      <video controls playsinline preload="none" poster="/video/ma-r01-poster.webp" width="360" height="640" aria-describedby="video-r01-cap"><source src="/video/ma-r01-720.mp4" type="video/mp4"></video>
+      <video controls playsinline preload="none" poster="{{r01Poster}}" width="360" height="640" aria-describedby="video-r01-cap"><source src="{{r01File}}" type="video/mp4"></video>
       <figcaption id="video-r01-cap" class="small muted">{{video.r01cap}}</figcaption>
     </figure>
     <div class="video-text">
       <p class="video-lead">{{video.lead}}</p>
       <ul class="video-points">{{video.points_html}}</ul>
-      <details class="fold" id="video-transcript"><summary>{{video.transcript}}</summary>{{video.transcript_html}}</details>
+      <details class="fold" id="video-transcript"><summary>{{r01TrLabel}}</summary>{{r01Tr_html}}</details>
       <p class="small muted">{{video.ai}}</p>
       <a class="btn primary" href="#install">{{video.cta}}</a>
     </div>
   </div>
+  <h3 id="reels-title" class="reels-title">{{video.moreT}}</h3>
+  <p class="small muted reels-lead">{{video.moreLead}}</p>
+  <ul class="reels" aria-labelledby="reels-title">{{reelCards_html}}</ul>
 </section>
 
 <section id="install" class="section install" aria-labelledby="install-title">

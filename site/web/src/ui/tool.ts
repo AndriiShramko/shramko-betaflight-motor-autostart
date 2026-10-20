@@ -94,6 +94,9 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
     const params = new URLSearchParams(location.search);
     const mock = params.get('mock') === '1';
     const support = mock ? 'web-serial' : detectSerialSupport();
+    // Android: load the WebUSB polyfill now, so the port picker opens inside the click's user activation
+    const serialReady: Promise<SerialLike> | null = !mock && support === 'webusb' ? browserSerial() : null;
+    serialReady?.catch(() => undefined);
     let device: AutostartDevice | null = null;
     let identity: Identity | null = null;
     let board: BoardSettings | null = null;
@@ -360,7 +363,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             if (mock) {
                 const m = await import('../fc/mockfc');
                 serial = new m.MockSerial(new m.MockFc(m.mockOptionsFromQuery(params)));
-            } else serial = await browserSerial();
+            } else serial = await (serialReady ?? browserSerial());
         } catch (e) {
             showError(e);
             return;

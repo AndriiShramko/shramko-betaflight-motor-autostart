@@ -60,7 +60,8 @@ for (const lang of ['en', 'ru', 'es', 'pl']) {
     for (const vp of [{ w: 1440, h: 900 }, { w: 375, h: 812, mobile: true }]) {
         if ((lang === 'es' || lang === 'pl') && !vp.mobile) continue; // es/pl: phone only (longest words)
         const name = `${lang}-${vp.w}`;
-        const ctx = await browser.newContext({ viewport: { width: vp.w, height: vp.h }, deviceScaleFactor: vp.mobile ? 2 : 1, isMobile: !!vp.mobile, hasTouch: !!vp.mobile, locale: lang });
+        // DPR 1: Chrome repeats full-page shots taller than 16384 device pixels
+        const ctx = await browser.newContext({ viewport: { width: vp.w, height: vp.h }, deviceScaleFactor: 1, isMobile: !!vp.mobile, hasTouch: !!vp.mobile, locale: lang });
         const page = await ctx.newPage();
         watch(page, name);
         await page.goto(`${base}/${lang}/`, { waitUntil: 'networkidle' });

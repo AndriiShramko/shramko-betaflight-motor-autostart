@@ -179,7 +179,7 @@ table { border-collapse: collapse; width: 100%; }
 .risks p:last-child { margin: 0; }
 
 .faq details { border: 1px solid var(--line); border-radius: 10px; padding: 0 16px; margin-bottom: 10px; background: var(--card); }
-.faq summary { cursor: pointer; font-weight: 600; min-height: 52px; display: flex; align-items: center; }
+.faq summary { cursor: pointer; font-weight: 600; min-height: 52px; display: flex; align-items: center; padding: 10px 0; }
 .faq details p { color: var(--text2); }
 
 .copy-block { position: relative; }
@@ -215,7 +215,10 @@ table { border-collapse: collapse; width: 100%; }
     box-shadow: 0 6px 20px rgba(0, 0, 0, .45);
     margin-bottom: env(safe-area-inset-bottom);
 }
+.fb-btn { display: inline-flex; align-items: center; gap: 8px; }
+.fb-btn svg { color: var(--accent); flex: none; }
 .fb-btn:hover { border-color: var(--accent); }
+.fb-btn { transition: opacity .2s, visibility .2s; }
 .fb { width: min(560px, calc(100vw - 32px)); background: var(--card); color: var(--text); border: 1px solid var(--line); border-radius: var(--radius); padding: 18px; }
 .fb::backdrop { background: rgba(0, 0, 0, .6); }
 .fb-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -256,6 +259,10 @@ table { border-collapse: collapse; width: 100%; }
 @media (max-width: 520px) {
     /* brand and languages need two rows here: the header scrolls away instead of covering the page */
     .top { position: static; }
+    /* phone: Feedback is a round icon button (name stays "Feedback"), out of the way of the hero CTAs */
+    .fb-btn { width: 48px; height: 48px; padding: 0; justify-content: center; border-radius: 50%; left: 12px; bottom: 12px; }
+    .fb-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+    .fb-btn.away { opacity: 0; visibility: hidden; pointer-events: none; }
     html { scroll-padding-top: 8px; }
 }
 @media (max-width: 420px) {

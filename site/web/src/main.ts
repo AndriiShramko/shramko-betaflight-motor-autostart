@@ -90,6 +90,15 @@ const initConsent = () => {
     ask();
 };
 
+// phones: the floating Feedback button steps aside while the hero's call-to-action buttons are on
+// screen (it would cover them), and comes back as soon as they scroll away
+const initFeedbackButtonPlacement = () => {
+    const btn = document.getElementById('fb-open');
+    const cta = document.querySelector('.cta-row');
+    if (!btn || !cta || !('IntersectionObserver' in window)) return;
+    new IntersectionObserver(([e]) => btn.classList.toggle('away', e.isIntersecting)).observe(cta);
+};
+
 const mountConfigurator = async () => {
     const root = document.getElementById('tool') as HTMLElement | null;
     if (!root) return;
@@ -111,6 +120,7 @@ const main = async () => {
     await loadStrings();
     initCopyButtons();
     initFeedback();
+    initFeedbackButtonPlacement();
     initConsent();
     await mountConfigurator();
     const rel = await loadRelease();

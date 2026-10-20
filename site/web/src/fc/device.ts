@@ -57,7 +57,8 @@ export interface LiveSample {
     pct: number | null;
     msInState: number | null;
     uptimeS: number | null;
-    flags: { usb: boolean; rx: boolean; button: boolean; battery: boolean; gust: boolean } | null;
+    /** debug[4]; `implausible` = battery voltage outside 2.50–4.45 V/cell for the cell count (calibrate vbat_scale) */
+    flags: { usb: boolean; rx: boolean; button: boolean; battery: boolean; gust: boolean; implausible: boolean } | null;
     sinceBatteryS: number | null;
     source: number | null;
     motors: number[];
@@ -84,14 +85,20 @@ export interface DeviceOptions {
 }
 
 /** debug[4] flags (docs/settings.md) */
-const decodeFlags = (f: number) => ({ usb: !!(f & 1), rx: !!(f & 2), button: !!(f & 4), battery: !!(f & 8), gust: !!(f & 16) });
+const decodeFlags = (f: number) => ({ usb: !!(f & 1), rx: !!(f & 2), button: !!(f & 4), battery: !!(f & 8), gust: !!(f & 16), implausible: !!(f & 32) });
 
+/**
+ * The output whose ESC really answers (bidirectional DShot: fewest bad frames; ESC sensor wire: any data).
+ * Outputs with nothing on them report 100 % bad frames (DShot) or all zeros (ESC sensor).
+ */
 export const pickBestOutput = (esc: EscTelemetry[], mask = 0xff): number => {
+    const dshot = esc.some(e => e.invalidPct > 0);
+    const answers = (e: EscTelemetry) => e.rpm > 0 || e.volts > 0 || e.tempC > 0 || (dshot && e.invalidPct < 100);
     let best = -1;
     for (let i = 0; i < esc.length; i++) {
         if (!((mask >> i) & 1)) continue;
         const e = esc[i];
-        if (e.invalidPct >= 100 && e.rpm === 0) continue;
+        if (!answers(e)) continue;
         if (best < 0 || e.invalidPct < esc[best].invalidPct || (e.invalidPct === esc[best].invalidPct && e.rpm > esc[best].rpm)) best = i;
     }
     return best;

@@ -22,11 +22,14 @@ Hardware rule: never open a COM port here, test only against `mockfc.ts`.
 - Interface: `mountTool(root: HTMLElement, t: (key, vars?) => string, locale: 'en'|'es'|'pl'|'ru'): ToolHandle`
   (`ToolHandle = { destroy(), diagnostics() }`; also `toolDiagnostics()` for the feedback form). Missing keys
   fall back to the bundled tool.en.json; `{placeholders}` are filled by the tool itself.
-- Tests (from `site/`): `npm run test:fc` (62 pass), `npm run test:tool-e2e` (8 pass, real Chrome),
+- Tests (from `site/`): `npm run test:fc` (63 pass), `npm run test:tool-e2e` (9 pass, real Chrome),
   `npm run typecheck:fc`, `npm run fc:check:mock` (harness vs emulator).
 - Bench (lead only, real board): `node tools/fc-node/check.mjs COM6 [--write-test]`.
 - Demo on the site: `?mock=1` (+ `mockFw=1.0|stock|inav`, `mockInvalid=<name>`, `mockNoReturn=1`,
   `mockReboot=<ms>`, `mockSpeed=<x>`, `mockScale=<vbat_scale>`, `mockReconnectTimeout=<ms>`).
+
+- Follows main's c871417 docs: debug flag 32 (implausible voltage → warning + calibration hint) and
+  ESC telemetry over the ESC sensor wire or extended DShot (ESC temperature / voltage in the live view).
 
 ## Notes for the next agent
 

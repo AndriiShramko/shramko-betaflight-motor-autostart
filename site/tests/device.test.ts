@@ -197,4 +197,23 @@ test('pickBestOutput: fewest bad frames among enabled outputs', () => {
     assert.equal(pickBestOutput([e(0, 100), e(5000, 0.4), e(0, 100), e(0, 100)]), 1);
     assert.equal(pickBestOutput([e(0, 100), e(5000, 0.4)], 1), -1);
     assert.equal(pickBestOutput([]), -1);
+    // ESC sensor wire (no DShot telemetry): bad frames are always 0; the ESC is the one that sends data
+    const v = (volts: number, t = 0) => ({ rpm: 0, invalidPct: 0, tempC: t, volts, amps: 0, mah: 0 });
+    assert.equal(pickBestOutput([v(0), v(0), v(24.3, 31), v(0)]), 2);
+    assert.equal(pickBestOutput([v(0), v(0), v(0), v(0)]), -1, 'all zeros = nothing answers');
+});
+
+test('debug flag 32: a miscalibrated board reports an implausible voltage, a calibrated one does not', async () => {
+    const bad = rig({ flash: { vbat_scale: 120 } });
+    await bad.device.connect();
+    await bad.device.stopLive();
+    const s = await bad.device.pollOnce();
+    assert.equal(s!.flags!.implausible, true);
+    assert.ok(s!.battery!.volts < 15);
+    await bad.device.disconnect();
+    const good = rig();
+    await good.device.connect();
+    await good.device.stopLive();
+    assert.equal((await good.device.pollOnce())!.flags!.implausible, false);
+    await good.device.disconnect();
 });

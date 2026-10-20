@@ -484,7 +484,9 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             if (cells > 0) parts.push(tr('tool.live.perCell', { v: fmtFixed(b.volts / cells, 2), n: cells }));
             const cut = cutoffVolts(savedNum('autostart_cell_cutoff') ?? 0, cells);
             if (cut !== null) parts.push(tr('tool.live.cutoff', { v: fmt(cut, 2) }));
+            if (s.flags?.implausible) parts.push(tr('tool.live.implausible', { n: cells || '?' }));
             batSub.textContent = parts.join(' · ');
+            batSub.classList.toggle('st-warn-text', !!s.flags?.implausible);
             if (cells > 0) {
                 const lo = cells * 3.0;
                 const hi = cells * 4.25;
@@ -497,16 +499,17 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             } else show(batBar, false);
         }
         // ESC
-        if (board?.dshotBidir === 'OFF') {
-            rpmVal.textContent = '—';
-            rpmSub.textContent = tr('tool.live.noTelemetry');
-        } else if (s.bestOutput < 0) {
-            rpmVal.textContent = '—';
-            rpmSub.textContent = s.esc.length ? tr('tool.live.noEsc') : '';
-        } else {
+        if (s.bestOutput >= 0) {
             const e = s.esc[s.bestOutput];
             rpmVal.textContent = `${fmt(e.rpm)} rpm`;
-            rpmSub.textContent = tr('tool.live.rpmValue', { rpm: fmt(e.rpm), n: s.bestOutput + 1, bad: fmt(e.invalidPct, 1) });
+            const parts = [tr('tool.live.rpmValue', { n: s.bestOutput + 1, bad: fmt(e.invalidPct, 1) })];
+            if (e.tempC > 0) parts.push(tr('tool.live.escTemp', { t: fmt(e.tempC) }));
+            if (e.volts > 0) parts.push(tr('tool.live.escVolts', { v: fmtFixed(e.volts, 2) }));
+            rpmSub.textContent = parts.join(' · ');
+        } else {
+            rpmVal.textContent = '—';
+            // no ESC answers: without bidirectional DShot (and no ESC sensor wire) that is expected
+            rpmSub.textContent = board?.dshotBidir === 'OFF' ? tr('tool.live.noTelemetry') : s.esc.length ? tr('tool.live.noEsc') : '';
         }
         // flags
         chips.replaceChildren();

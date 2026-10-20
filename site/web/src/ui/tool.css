@@ -75,6 +75,7 @@
 .st-meter { background: var(--st-bg2); border: 1px solid var(--st-line); border-radius: 10px; padding: 10px 12px; display: grid; gap: 4px; min-width: 0; }
 .st-label { color: var(--st-muted); font-size: .8rem; }
 .st-big-num { font-size: 1.35rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.st-meter .st-warn-text { color: var(--st-warn); }
 .st-bar { position: relative; height: 12px; border-radius: 999px; background: var(--st-bg); border: 1px solid var(--st-line); overflow: hidden; }
 .st-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: linear-gradient(90deg, var(--st-accent), #ffd28a); transition: width .2s linear; }
 .st-fill-bat { background: linear-gradient(90deg, #3fb877, var(--st-ok)); }

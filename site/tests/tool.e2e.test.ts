@@ -140,6 +140,19 @@ test('live view moves, STOP and restart with the propeller confirmation', async 
     await page.close();
 });
 
+test('miscalibrated board: the live view says so, the helper computes vbat_scale and it is saved and verified', async () => {
+    const { page } = await open('mock=1&mockReboot=200&mockScale=120');
+    await connectAndRead(page);
+    await page.getByText('the voltage looks wrong for 6S').waitFor({ timeout: 5000 });
+    await page.getByLabel('Your multimeter shows').fill('24,4');
+    await page.getByRole('button', { name: 'Use this reading' }).click();
+    assert.match(await page.locator('.st-cal').innerText(), /New scale 210 \(was 120\)/);
+    await page.getByRole('button', { name: 'Save to board' }).click();
+    await page.locator('.st-msg[data-result="saved"]').waitFor({ timeout: 20000 });
+    await page.locator('.st-live').getByText('24.40 V', { exact: true }).waitFor({ timeout: 5000 });
+    await page.close();
+});
+
 test('375 px wide: no horizontal scroll, STOP visible, Connect usable (English and the longest locale, Russian)', async () => {
     const { page, errors } = await open('mock=1&mockReboot=200', { width: 375, height: 740 });
     await connectAndRead(page);

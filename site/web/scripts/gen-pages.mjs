@@ -4,7 +4,8 @@
 //
 //   node web/scripts/gen-pages.mjs
 //
-// Keys ending in "_html" hold trusted HTML (lists, <code>, <strong>); every other value is escaped.
+// Keys ending in "_html" hold trusted HTML (lists, <code>, <strong>, links); every other value is
+// escaped. Links that leave the site open in a new tab (target="_blank" rel="noopener"): checked here.
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -82,9 +83,17 @@ for (const lang of LANGS) {
         if (key === 'jsonld') return JSON.stringify(jsonld).replace(/</g, '\\u003c');
         const v = dict[key];
         if (v === undefined) throw new Error(`template key "${key}" has no English text`);
-        return key.endsWith('_html') ? v : esc(v);
+        // %LANG% inside trusted HTML: the page language (counted links /go/<slug>?l=<lang>)
+        return key.endsWith('_html') ? v.replaceAll('%LANG%', lang) : esc(v);
     });
     if (/\{\{/.test(html)) throw new Error(`unreplaced placeholder in ${lang}`);
+    // every link that leaves the site (http(s)://, /go/<slug>) opens in a new tab (WEB-PLAYBOOK §3)
+    for (const a of html.match(/<a\s[^>]*>/g) ?? []) {
+        const href = /href="([^"]*)"/.exec(a)?.[1] ?? '';
+        if (/^(https?:|\/go\/)/.test(href) && !(/target="_blank"/.test(a) && /rel="[^"]*noopener/.test(a))) {
+            throw new Error(`[${lang}] external link without target="_blank" rel="noopener": ${a}`);
+        }
+    }
     mkdirSync(join(web, lang), { recursive: true });
     writeFileSync(join(web, lang, 'index.html'), html);
     console.log(`wrote web/${lang}/index.html (${(html.length / 1024).toFixed(0)} KB, title: ${txt('meta.title')})`);

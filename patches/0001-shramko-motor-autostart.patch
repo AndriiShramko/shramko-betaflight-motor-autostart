@@ -63,7 +63,7 @@ index 33f5e81..8f081bf 100644
  
  #undef DEFS
 diff --git a/src/main/cli/settings.c b/src/main/cli/settings.c
-index 1c9b159..7594742 100644
+index 1c9b159..d4d3a21 100644
 --- a/src/main/cli/settings.c
 +++ b/src/main/cli/settings.c
 @@ -79,6 +79,7 @@
@@ -74,7 +74,7 @@ index 1c9b159..7594742 100644
  #include "pg/autopilot.h"
  #include "pg/beeper.h"
  #include "pg/beeper_dev.h"
-@@ -608,6 +609,13 @@ const char* const lookupTableYawType[] = {
+@@ -608,6 +609,17 @@ const char* const lookupTableYawType[] = {
  };
  #endif // USE_WING
  
@@ -83,22 +83,27 @@ index 1c9b159..7594742 100644
 +static const char * const lookupTableAutostartMode[] = {
 +    "OFF", "POWER", "BUTTON",
 +};
++// order must match autostartPattern_e (pg/autostart.h)
++static const char * const lookupTableAutostartPattern[] = {
++    "STEADY", "GUSTS",
++};
 +#endif
 +
  #define LOOKUP_TABLE_ENTRY(name) { name, ARRAYLEN(name) }
  
  const lookupTableEntry_t lookupTables[] = {
-@@ -741,6 +749,9 @@ const lookupTableEntry_t lookupTables[] = {
+@@ -741,6 +753,10 @@ const lookupTableEntry_t lookupTables[] = {
      LOOKUP_TABLE_ENTRY(lookupTableTpaSpeedType),
      LOOKUP_TABLE_ENTRY(lookupTableYawType),
  #endif // USE_WING
 +#ifdef USE_AUTOSTART
 +    LOOKUP_TABLE_ENTRY(lookupTableAutostartMode),
++    LOOKUP_TABLE_ENTRY(lookupTableAutostartPattern),
 +#endif
  };
  
  #undef LOOKUP_TABLE_ENTRY
-@@ -1838,6 +1849,18 @@ const clivalue_t valueTable[] = {
+@@ -1838,6 +1854,30 @@ const clivalue_t valueTable[] = {
  #endif
  #endif
  
@@ -112,21 +117,34 @@ index 1c9b159..7594742 100644
 +    { "autostart_usb_inhibit", VAR_UINT8  | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_OFF_ON }, PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, usbInhibit) },
 +    { "autostart_box",         VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 255 },  PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, rcBoxPermanentId) },
 +    { "autostart_vbat_min",    VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 0, 600 },  PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, vbatMinDeciVolts) },
++    { "autostart_throttle_limit", VAR_UINT8 | MASTER_VALUE, .config.minmaxUnsigned = { 1, 100 }, PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, throttleLimit) },
++    { "autostart_run_time",    VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 0, 65535 }, PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, runTimeSeconds) },
++    { "autostart_pattern",     VAR_UINT8  | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_AUTOSTART_PATTERN }, PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, pattern) },
++    { "autostart_gust_min",    VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 100 },  PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, gustMinPercent) },
++    { "autostart_gust_max",    VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 100 },  PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, gustMaxPercent) },
++    { "autostart_gust_len_min", VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 50, 10000 }, PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, gustLenMinMs) },
++    { "autostart_gust_len_max", VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 50, 10000 }, PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, gustLenMaxMs) },
++    { "autostart_gust_pause_min", VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 0, 6000 }, PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, gustPauseMinDs) },
++    { "autostart_gust_pause_max", VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 0, 6000 }, PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, gustPauseMaxDs) },
++    { "autostart_cells",       VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 0, 12 },   PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, cells) },
++    { "autostart_cell_cutoff", VAR_UINT16 | MASTER_VALUE, .config.minmaxUnsigned = { 0, 420 },  PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, cellCutoffCv) },
++    { "autostart_cutoff_time", VAR_UINT8  | MASTER_VALUE, .config.minmaxUnsigned = { 1, 60 },   PG_AUTOSTART_CONFIG, offsetof(autostartConfig_t, cutoffTimeSeconds) },
 +#endif
 +
  //PG USB
  #ifdef USE_USB_CDC_HID
      { "usb_hid_cdc", VAR_UINT8 | MASTER_VALUE | MODE_LOOKUP, .config.lookup = { TABLE_OFF_ON }, PG_USB_CONFIG, offsetof(usbDev_t, type) },
 diff --git a/src/main/cli/settings.h b/src/main/cli/settings.h
-index 763643e..e022d39 100644
+index 763643e..7ed4e3d 100644
 --- a/src/main/cli/settings.h
 +++ b/src/main/cli/settings.h
-@@ -152,6 +152,9 @@ typedef enum {
+@@ -152,6 +152,10 @@ typedef enum {
      TABLE_TPA_SPEED_TYPE,
      TABLE_YAW_TYPE,
  #endif // USE_WING
 +#ifdef USE_AUTOSTART
 +    TABLE_AUTOSTART_MODE,
++    TABLE_AUTOSTART_PATTERN,
 +#endif
      LOOKUP_TABLE_COUNT
  } lookupTableIndex_e;
@@ -157,10 +175,10 @@ index e4267ea..a3c40a6 100644
  
 diff --git a/src/main/fc/autostart.c b/src/main/fc/autostart.c
 new file mode 100644
-index 0000000..b24a833
+index 0000000..10298e1
 --- /dev/null
 +++ b/src/main/fc/autostart.c
-@@ -0,0 +1,511 @@
+@@ -0,0 +1,650 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -217,6 +235,9 @@ index 0000000..b24a833
 +
 +#include "config/feature.h"
 +
++#ifdef USE_DSHOT
++#include "drivers/dshot_command.h"
++#endif
 +#include "drivers/io.h"
 +#include "drivers/motor.h"
 +#include "drivers/time.h"
@@ -250,12 +271,16 @@ index 0000000..b24a833
 +#define AUTOSTART_POWER_CONFIRM_MS   300     // battery voltage must be stable this long to count as plugged in
 +#define AUTOSTART_POWER_LOSS_MS      500     // ... and absent this long to count as unplugged (ignores ADC glitches)
 +#define AUTOSTART_BOOT_POWER_WINDOW_MS 2500  // battery seen this early = it powered the board: count from boot
++#define AUTOSTART_LOWBAT_BEEP_MS     3000    // after a cut-off: ESC beacon / buzzer every 3 s
++#define AUTOSTART_NO_BATTERY_CV      100     // below 1.00 V there is no battery to protect (USB-only bench)
 +
 +typedef enum {
 +    AUTOSTART_STATE_IDLE = 0,
 +    AUTOSTART_STATE_DELAY,
 +    AUTOSTART_STATE_RAMP,
 +    AUTOSTART_STATE_RUN,
++    AUTOSTART_STATE_DONE,       // run time over, outputs at stop
++    AUTOSTART_STATE_LOWBAT,     // battery cut-off, outputs at stop, latched until the battery is replaced
 +} autostartState_e;
 +
 +typedef enum {
@@ -287,10 +312,29 @@ index 0000000..b24a833
 +    uint16_t delaySeconds;
 +    uint16_t rampDeciseconds;
 +    uint8_t throttlePercent;
++    uint8_t throttleLimit;
 +    uint8_t motorMask;
++    uint8_t pattern;
++    uint16_t runTimeSeconds;
++    uint8_t gustMin, gustMax;       // %, min <= max
++    uint16_t gustLenMin, gustLenMax;        // ms
++    uint32_t gustPauseMin, gustPauseMax;    // ms
++    uint16_t cellCutoffCv;          // per cell, 0.01 V; 0 = off
++    uint8_t cutoffTimeSeconds;
 +} autostartProgram_t;
 +static autostartProgram_t program;
 +static float lastWritten;           // value we put into motor_disarmed[] for our motors
++
++// gusts (pattern GUSTS, state RUN)
++static bool gustActive;
++static uint8_t gustPeak;
++static timeMs_t gustEdgeMs;         // end of the current gust, or start of the next one
++static uint32_t rngState = 1;
++
++// battery cut-off
++static bool lowSince;
++static timeMs_t lowSinceMs;
++static timeMs_t lastLowBatBeepMs;
 +
 +// Battery power. The ESC has no BEC: it only wakes up (and arms on stop frames) when the battery is
 +// plugged in. On USB the board runs without a battery, so the countdown must start at the battery,
@@ -317,7 +361,7 @@ index 0000000..b24a833
 +// 0.1..100 % -> external 1001..2000, converted by the active protocol like MSP_SET_MOTOR does.
 +static void writeOutputs(float percent)
 +{
-+    const float pct = constrainf(percent, 0.0f, 100.0f);
++    const float pct = constrainf(percent, 0.0f, (float)program.throttleLimit);
 +    commandedPermille = (int16_t)lrintf(pct * 10.0f);
 +    const uint16_t external = PWM_RANGE_MIN + (uint16_t)lrintf(pct * (PWM_RANGE_MAX - PWM_RANGE_MIN) / 100.0f);
 +    const float value = (external <= PWM_RANGE_MIN) ? mixerRuntime.disarmMotorOutput : motorConvertFromExternal(external);
@@ -347,9 +391,33 @@ index 0000000..b24a833
 +    commandedPermille = 0;
 +}
 +
++// DELAY / RAMP / RUN; DONE and LOWBAT are finished programs that only wait for a new battery
 +static bool programActive(void)
 +{
-+    return state != AUTOSTART_STATE_IDLE;
++    return state == AUTOSTART_STATE_DELAY || state == AUTOSTART_STATE_RAMP || state == AUTOSTART_STATE_RUN;
++}
++
++static uint32_t rngNext(void)
++{
++    // xorshift32: cheap, never 0 once seeded with a non-zero value
++    rngState ^= rngState << 13;
++    rngState ^= rngState >> 17;
++    rngState ^= rngState << 5;
++    return rngState;
++}
++
++static uint32_t rngRange(uint32_t lo, uint32_t hi)
++{
++    if (lo > hi) {
++        const uint32_t t = lo; lo = hi; hi = t;
++    }
++    return lo + rngNext() % (hi - lo + 1);
++}
++
++static uint8_t batteryCells(void)
++{
++    const uint8_t cells = autostartConfig()->cells;
++    return cells ? cells : getBatteryCellCount();
 +}
 +
 +static bool outputsOverwritten(void)
@@ -370,8 +438,25 @@ index 0000000..b24a833
 +    const autostartConfig_t *cfg = autostartConfig();
 +    program.delaySeconds = cfg->delaySeconds;
 +    program.rampDeciseconds = cfg->rampDeciseconds;
-+    program.throttlePercent = cfg->throttlePercent;
++    program.throttleLimit = constrain(cfg->throttleLimit, 1, 100);
++    program.throttlePercent = MIN(cfg->throttlePercent, program.throttleLimit);
 +    program.motorMask = cfg->motorMask;
++    program.pattern = cfg->pattern;
++    program.runTimeSeconds = cfg->runTimeSeconds;
++    program.gustMin = MIN(cfg->gustMinPercent, cfg->gustMaxPercent);
++    program.gustMax = MAX(cfg->gustMinPercent, cfg->gustMaxPercent);
++    program.gustLenMin = MIN(cfg->gustLenMinMs, cfg->gustLenMaxMs);
++    program.gustLenMax = MAX(cfg->gustLenMinMs, cfg->gustLenMaxMs);
++    program.gustPauseMin = MIN(cfg->gustPauseMinDs, cfg->gustPauseMaxDs) * 100U;
++    program.gustPauseMax = MAX(cfg->gustPauseMinDs, cfg->gustPauseMaxDs) * 100U;
++    program.cellCutoffCv = cfg->cellCutoffCv;
++    program.cutoffTimeSeconds = MAX(cfg->cutoffTimeSeconds, 1);
++    gustActive = false;
++    lowSince = false;
++    rngState = (nowMs * 2654435761U) ^ 0x9E3779B9U;
++    if (rngState == 0) {
++        rngState = 1;
++    }
 +    source = newSource;
 +    state = AUTOSTART_STATE_DELAY;
 +    // power-on start counts the delay from the moment the battery appeared ("plug in, 1, 2, 3 ... 10";
@@ -386,6 +471,38 @@ index 0000000..b24a833
 +    source = AUTOSTART_SOURCE_NONE;
 +    state = AUTOSTART_STATE_IDLE;
 +    stateStartMs = nowMs;
++    gustActive = false;
++}
++
++// run time over or battery cut-off: motor to stop, remember why
++static void programFinish(autostartState_e why, timeMs_t nowMs)
++{
++    releaseOutputs();
++    state = why;
++    stateStartMs = nowMs;
++    gustActive = false;
++    lastLowBatBeepMs = nowMs;
++}
++
++// true while the pack has stayed below the cut-off for the configured time
++static bool batteryCutoffReached(timeMs_t nowMs)
++{
++    const uint16_t vbat = getBatteryVoltage();      // filtered, 0.01 V
++    // cell count resolved every check: with auto-detection Betaflight may know it only after a while
++    const uint32_t cutoff = (uint32_t)program.cellCutoffCv * batteryCells();
++    if (cutoff == 0 || vbat < AUTOSTART_NO_BATTERY_CV || !isBatteryVoltageConfigured()) {
++        lowSince = false;
++        return false;
++    }
++    if (vbat >= cutoff) {
++        lowSince = false;
++        return false;
++    }
++    if (!lowSince) {
++        lowSince = true;
++        lowSinceMs = nowMs;
++    }
++    return cmpTimeMs(nowMs, lowSinceMs) >= (timeDelta_t)(program.cutoffTimeSeconds * 1000U);
 +}
 +
 +// returns true once per press (falling edge to GND after AUTOSTART_DEBOUNCE_MS of stable level)
@@ -451,12 +568,13 @@ index 0000000..b24a833
 +}
 +
 +// debug_mode = AUTOSTART: [0] state, [1] commanded percent x10, [2] ms in current state / 10,
-+// [3] uptime in 0.1 s, [4] flags (bit0 USB host, bit1 RX link, bit2 button pressed, bit3 battery present),
++// [3] uptime in 0.1 s, [4] flags (bit0 USB host, bit1 RX link, bit2 button pressed, bit3 battery present, bit4 gust),
 +// [5] battery voltage in 0.1 V, [6] time since the battery appeared in 0.1 s (-1 = no battery), [7] source
 +
 +static void autostartDebug(timeMs_t nowMs, bool rxValid)
 +{
-+    const int16_t flags = (usbHostPresent() ? 1 : 0) | (rxValid ? 2 : 0) | (buttonStablePressed ? 4 : 0) | (powerPresent ? 8 : 0);
++    const int16_t flags = (usbHostPresent() ? 1 : 0) | (rxValid ? 2 : 0) | (buttonStablePressed ? 4 : 0) | (powerPresent ? 8 : 0)
++        | (gustActive ? 16 : 0);
 +    DEBUG_SET(DEBUG_AUTOSTART, 0, state);
 +    DEBUG_SET(DEBUG_AUTOSTART, 1, commandedPermille);
 +    DEBUG_SET(DEBUG_AUTOSTART, 2, (int16_t)MIN(cmpTimeMs(nowMs, stateStartMs) / 10, INT16_MAX));
@@ -564,8 +682,8 @@ index 0000000..b24a833
 +    } else if (powerPresent && !powerRaw && powerStableMs >= AUTOSTART_POWER_LOSS_MS) {
 +        powerPresent = false;               // battery unplugged: the ESC is off, stop and wait for it again
 +        powerTriggerPending = false;
-+        if (programActive() || outputsWritten) {
-+            programStop(nowMs);
++        if (state != AUTOSTART_STATE_IDLE || outputsWritten) {
++            programStop(nowMs);             // also clears DONE / LOW_BATTERY: a new battery starts again
 +        }
 +    }
 +
@@ -618,7 +736,7 @@ index 0000000..b24a833
 +            programStop(nowMs); // link lost while the RC switch was running the program
 +        }
 +
-+        if (clicked) {
++        if (clicked && state != AUTOSTART_STATE_LOWBAT) {
 +            powerTriggerPending = false;
 +            if (programActive()) {
 +                programStop(nowMs);
@@ -633,10 +751,29 @@ index 0000000..b24a833
 +    }
 +    // else: an RX link is appearing but not yet confirmed - start nothing new, keep the current program
 +
-+    // 4. run the program
++    // 4. battery cut-off protects the pack in every running state (also during the countdown)
++    if (programActive() && batteryCutoffReached(nowMs)) {
++        programFinish(AUTOSTART_STATE_LOWBAT, nowMs);
++    }
++
++    // 5. run the program
 +    switch (state) {
 +    case AUTOSTART_STATE_IDLE:
++    case AUTOSTART_STATE_DONE:
 +    default:
++        break;
++
++    case AUTOSTART_STATE_LOWBAT:
++        // tell the user why the blower stopped: ESC beacon (DShot, motor at stop) or the buzzer
++        if (cmpTimeMs(nowMs, lastLowBatBeepMs) >= AUTOSTART_LOWBAT_BEEP_MS) {
++            lastLowBatBeepMs = nowMs;
++#ifdef USE_DSHOT
++            if (isMotorProtocolDshot()) {
++                dshotCommandWrite(ALL_MOTORS, getMotorCount(), DSHOT_CMD_BEACON3, DSHOT_CMD_TYPE_INLINE);
++            }
++#endif
++            beeperConfirmationBeeps(4);
++        }
 +        break;
 +
 +    case AUTOSTART_STATE_DELAY:
@@ -656,6 +793,8 @@ index 0000000..b24a833
 +        if (rampMs <= 0 || elapsedMs >= rampMs) {
 +            state = AUTOSTART_STATE_RUN;
 +            stateStartMs = nowMs;
++            gustActive = false;
++            gustEdgeMs = nowMs + rngRange(program.gustPauseMin, program.gustPauseMax);
 +            writeOutputs(program.throttlePercent);
 +        } else {
 +            writeOutputs((float)program.throttlePercent * (float)elapsedMs / (float)rampMs);
@@ -664,7 +803,25 @@ index 0000000..b24a833
 +    }
 +
 +    case AUTOSTART_STATE_RUN:
-+        writeOutputs(program.throttlePercent);
++        if (program.runTimeSeconds && cmpTimeMs(nowMs, stateStartMs) >= (timeDelta_t)(program.runTimeSeconds * 1000U)) {
++            programFinish(AUTOSTART_STATE_DONE, nowMs);
++            break;
++        }
++        if (program.pattern == AUTOSTART_PATTERN_GUSTS) {
++            if (cmpTimeMs(nowMs, gustEdgeMs) >= 0) {
++                if (gustActive) {
++                    gustActive = false;     // back to the steady level, then wait a random pause
++                    gustEdgeMs = nowMs + rngRange(program.gustPauseMin, program.gustPauseMax);
++                } else {
++                    gustActive = true;      // sharp gust: random peak for a random time
++                    gustPeak = (uint8_t)rngRange(program.gustMin, program.gustMax);
++                    gustEdgeMs = nowMs + rngRange(program.gustLenMin, program.gustLenMax);
++                }
++            }
++            writeOutputs(gustActive ? gustPeak : program.throttlePercent);
++        } else {
++            writeOutputs(program.throttlePercent);
++        }
 +        break;
 +    }
 +
@@ -832,10 +989,10 @@ index e816db0..b166d96 100644
  #endif
 diff --git a/src/main/pg/autostart.c b/src/main/pg/autostart.c
 new file mode 100644
-index 0000000..f1ad535
+index 0000000..1918a3e
 --- /dev/null
 +++ b/src/main/pg/autostart.c
-@@ -0,0 +1,76 @@
+@@ -0,0 +1,106 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -893,6 +1050,24 @@ index 0000000..f1ad535
 +#ifndef AUTOSTART_DEFAULT_VBAT_MIN_DV
 +#define AUTOSTART_DEFAULT_VBAT_MIN_DV 60        // 6.0 V: any 2S+ battery, never the USB 5 V back-feed
 +#endif
++#ifndef AUTOSTART_DEFAULT_RUN_TIME_S
++#define AUTOSTART_DEFAULT_RUN_TIME_S 0          // run until the battery cut-off / power off
++#endif
++#ifndef AUTOSTART_DEFAULT_THROTTLE_LIMIT
++#define AUTOSTART_DEFAULT_THROTTLE_LIMIT 100
++#endif
++#ifndef AUTOSTART_DEFAULT_PATTERN
++#define AUTOSTART_DEFAULT_PATTERN AUTOSTART_PATTERN_STEADY
++#endif
++#ifndef AUTOSTART_DEFAULT_CELLS
++#define AUTOSTART_DEFAULT_CELLS 0               // auto-detect
++#endif
++#ifndef AUTOSTART_DEFAULT_CELL_CUTOFF_CV
++#define AUTOSTART_DEFAULT_CELL_CUTOFF_CV 330    // 3.30 V per cell
++#endif
++#ifndef AUTOSTART_DEFAULT_CUTOFF_TIME_S
++#define AUTOSTART_DEFAULT_CUTOFF_TIME_S 5
++#endif
 +#ifndef AUTOSTART_BUTTON_PIN
 +#define AUTOSTART_BUTTON_PIN NONE
 +#endif
@@ -909,15 +1084,27 @@ index 0000000..f1ad535
 +    .rcBoxPermanentId = AUTOSTART_DEFAULT_RC_BOX,
 +    .buttonTag = IO_TAG(AUTOSTART_BUTTON_PIN),
 +    .vbatMinDeciVolts = AUTOSTART_DEFAULT_VBAT_MIN_DV,
++    .runTimeSeconds = AUTOSTART_DEFAULT_RUN_TIME_S,
++    .gustLenMinMs = 300,
++    .gustLenMaxMs = 800,
++    .gustPauseMinDs = 20,
++    .gustPauseMaxDs = 80,
++    .cellCutoffCv = AUTOSTART_DEFAULT_CELL_CUTOFF_CV,
++    .throttleLimit = AUTOSTART_DEFAULT_THROTTLE_LIMIT,
++    .pattern = AUTOSTART_DEFAULT_PATTERN,
++    .gustMinPercent = 40,
++    .gustMaxPercent = 80,
++    .cells = AUTOSTART_DEFAULT_CELLS,
++    .cutoffTimeSeconds = AUTOSTART_DEFAULT_CUTOFF_TIME_S,
 +);
 +
 +#endif // USE_AUTOSTART
 diff --git a/src/main/pg/autostart.h b/src/main/pg/autostart.h
 new file mode 100644
-index 0000000..962d4eb
+index 0000000..9d607a5
 --- /dev/null
 +++ b/src/main/pg/autostart.h
-@@ -0,0 +1,55 @@
+@@ -0,0 +1,74 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -960,6 +1147,12 @@ index 0000000..962d4eb
 +    AUTOSTART_MODE_COUNT
 +} autostartMode_e;
 +
++typedef enum {
++    AUTOSTART_PATTERN_STEADY = 0,   // ramp to the throttle and hold it
++    AUTOSTART_PATTERN_GUSTS,        // hold the throttle, with random sharp gusts on top
++    AUTOSTART_PATTERN_COUNT
++} autostartPattern_e;
++
 +typedef struct autostartConfig_s {
 +    uint8_t mode;               // autostartMode_e
 +    uint16_t delaySeconds;      // delay after boot / click before the ramp starts, 0..600 s
@@ -970,6 +1163,19 @@ index 0000000..962d4eb
 +    uint8_t rcBoxPermanentId;   // BOXUSER1..4 permanent id (40..43) that runs the program while the RX link is valid, 255 = none
 +    ioTag_t buttonTag;          // resource AUTOSTART 1 <pin>; button between pin and GND, internal pull-up
 +    uint16_t vbatMinDeciVolts;  // battery counts as plugged in at or above this voltage, 0.1 V units; 0 = don't check
++    // firmware 1.1 (appended: an older stored config keeps its values, these get their defaults)
++    uint16_t runTimeSeconds;    // run time after the ramp, 0 = until the cut-off / power off
++    uint16_t gustLenMinMs;      // gust length range, ms
++    uint16_t gustLenMaxMs;
++    uint16_t gustPauseMinDs;    // pause between gusts, 0.1 s
++    uint16_t gustPauseMaxDs;
++    uint16_t cellCutoffCv;      // battery cut-off per cell, 0.01 V; 0 = off
++    uint8_t throttleLimit;      // hard cap for every output of the program, %
++    uint8_t pattern;            // autostartPattern_e
++    uint8_t gustMinPercent;     // gust peak range, %
++    uint8_t gustMaxPercent;
++    uint8_t cells;              // battery cell count, 0 = Betaflight auto-detection
++    uint8_t cutoffTimeSeconds;  // the voltage must stay below the cut-off this long
 +} autostartConfig_t;
 +
 +PG_DECLARE(autostartConfig_t, autostartConfig);
@@ -1021,10 +1227,10 @@ index 0de224c..5dc863d 100644
  		$(USER_DIR)/common/filter.c \
 diff --git a/src/test/unit/autostart_unittest.cc b/src/test/unit/autostart_unittest.cc
 new file mode 100644
-index 0000000..7058b47
+index 0000000..c4bc63b
 --- /dev/null
 +++ b/src/test/unit/autostart_unittest.cc
-@@ -0,0 +1,569 @@
+@@ -0,0 +1,811 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -1058,6 +1264,7 @@ index 0000000..7058b47
 +    #include "build/debug.h"
 +
 +    #include "common/filter.h"
++    #include "common/maths.h"
 +    #include "common/time.h"
 +
 +    #include "config/feature.h"
@@ -1078,6 +1285,9 @@ index 0000000..7058b47
 +    #include "pg/autostart.h"
 +
 +    #include "fc/autostart.h"
++#ifdef USE_DSHOT
++    #include "drivers/dshot_command.h"
++#endif
 +
 +    #include "sensors/battery.h"
 +
@@ -1119,6 +1329,20 @@ index 0000000..7058b47
 +    bool featureIsEnabled(const uint32_t mask) { return (fakeFeatures & mask) != 0; }
 +    bool isBatteryVoltageConfigured(void) { return true; }
 +    uint16_t getBatteryVoltageLatest(void) { return fakeVbat; }
++    uint16_t getBatteryVoltage(void) { return fakeVbat; }          // filtered = latest in the fake
++    static uint8_t fakeCells;
++    uint8_t getBatteryCellCount(void) { return fakeCells; }
++    static int dshotBeacons;
++    bool isMotorProtocolDshot(void) { return true; }
++#ifdef USE_DSHOT
++    void dshotCommandWrite(uint8_t index, uint8_t motorCount, uint8_t command, dshotCommandType_e commandType)
++    {
++        UNUSED(index); UNUSED(motorCount); UNUSED(commandType);
++        if (command == DSHOT_CMD_BEACON3) {
++            dshotBeacons++;
++        }
++    }
++#endif
 +
 +    static const box_t testBoxes[] = {
 +        { .boxName = "ARM",   .boxId = BOXARM,   .permanentId = 0 },
@@ -1153,6 +1377,20 @@ index 0000000..7058b47
 +    cfg->rcBoxPermanentId = 255;
 +    cfg->buttonTag = 0;
 +    cfg->vbatMinDeciVolts = 60;     // 6.0 V
++    cfg->runTimeSeconds = 0;
++    cfg->throttleLimit = 100;
++    cfg->pattern = AUTOSTART_PATTERN_STEADY;
++    cfg->gustMinPercent = 40;
++    cfg->gustMaxPercent = 80;
++    cfg->gustLenMinMs = 300;
++    cfg->gustLenMaxMs = 800;
++    cfg->gustPauseMinDs = 20;
++    cfg->gustPauseMaxDs = 80;
++    cfg->cells = 6;
++    cfg->cellCutoffCv = 330;        // 3.30 V/cell -> 19.80 V on 6S
++    cfg->cutoffTimeSeconds = 5;
++    fakeCells = 0;
++    dshotBeacons = 0;
 +
 +    fakeMs = 1500;          // init finishes ~1.5 s after power-on
 +    fakePinHigh = true;
@@ -1593,4 +1831,214 @@ index 0000000..7058b47
 +    spikeFirstRead = true;                              // every tick: 1 of the reads pulled low by a short spike
 +    runUntil(60000);
 +    EXPECT_FALSE(autostartIsDrivingMotors());
++}
++
++// ---------------------------------------------------------------- firmware 1.1
++
++static int stateNow(void)
++{
++    debugMode = DEBUG_AUTOSTART;
++    autostartUpdate(fakeMs * 1000);     // one more tick to publish the debug channel
++    return debug[0];
++}
++
++TEST(AutostartTest, BatteryCutoffStopsAfterCutoffTime)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartInit();
++    runUntil(25000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++    fakeVbat = 1975;                    // 19.75 V < 19.80 V
++    runUntil(29900);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);  // not yet 5 s below
++    runUntil(30100);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);   // cut-off
++    EXPECT_EQ(5, stateNow());               // LOW_BATTERY
++    const int beepsAtCutoff = beepCalls;
++    fakeVbat = 2100;                    // voltage recovers at rest: stays stopped (latched)
++    runUntil(60000);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++    EXPECT_GE(beepCalls - beepsAtCutoff, 8);    // warning every 3 s
++#ifdef USE_DSHOT
++    EXPECT_GE(dshotBeacons, 8);         // and the ESC beacon with DShot
++#endif
++}
++
++TEST(AutostartTest, BatteryCutoffIgnoresShortSag)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartInit();
++    runUntil(25000);
++    fakeVbat = 1900;                    // 3 s sag during a gust
++    runUntil(28000);
++    fakeVbat = 2300;
++    runUntil(40000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++    EXPECT_EQ(3, stateNow());
++}
++
++TEST(AutostartTest, NewBatteryAfterCutoffStartsAgain)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartInit();
++    runUntil(25000);
++    fakeVbat = 1900;
++    runUntil(31000);
++    EXPECT_EQ(5, stateNow());
++    fakeVbat = 10;                      // battery unplugged (board on USB)
++    runUntil(32000);
++    EXPECT_EQ(0, stateNow());
++    fakeVbat = 2500;                    // a charged battery
++    runUntil(52500);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, CutoffDisabledKeepsRunning)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->cellCutoffCv = 0;
++    autostartInit();
++    runUntil(25000);
++    fakeVbat = 1500;
++    runUntil(60000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, NoBatteryReadingSkipsCutoff)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->vbatMinDeciVolts = 0;     // USB-only bench: gate off, 0 V on the battery pin
++    fakeVbat = 3;
++    autostartInit();
++    runUntil(60000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, AutoCellCountUsesBetaflightDetection)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->cells = 0;
++    fakeCells = 4;                      // detected 4S -> cut-off 13.20 V
++    autostartInit();
++    runUntil(25000);
++    fakeVbat = 1400;                    // 14.00 V: above 4S cut-off
++    runUntil(40000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++    fakeVbat = 1300;
++    runUntil(46000);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, RunTimeStopsAndStays)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->runTimeSeconds = 30;
++    autostartInit();
++    runUntil(49900);                    // ramp ends at 20 s, run 30 s
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++    runUntil(50100);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++    EXPECT_EQ(4, stateNow());           // DONE
++    runUntil(120000);
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++}
++
++TEST(AutostartTest, ThrottleLimitCapsTheTarget)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->throttlePercent = 80;
++    autostartConfigMutable()->throttleLimit = 50;
++    autostartInit();
++    float top = 0;
++    for (timeMs_t t = 1520; t < 40000; t += 20) {
++        runUntil(t);
++        top = MAX(top, motor_disarmed[0]);
++    }
++    EXPECT_EQ(1500.0f, top);
++}
++
++// gusts: every output is either the steady level or a peak inside [gust_min, gust_max];
++// lengths and pauses stay inside their ranges; the peaks are not all the same (random)
++static void checkGusts(uint8_t base, uint8_t gMin, uint8_t gMax, uint8_t limit)
++{
++    autostartConfigMutable()->pattern = AUTOSTART_PATTERN_GUSTS;
++    autostartConfigMutable()->throttlePercent = base;
++    autostartConfigMutable()->gustMinPercent = gMin;
++    autostartConfigMutable()->gustMaxPercent = gMax;
++    autostartConfigMutable()->gustLenMinMs = 200;
++    autostartConfigMutable()->gustLenMaxMs = 600;
++    autostartConfigMutable()->gustPauseMinDs = 15;
++    autostartConfigMutable()->gustPauseMaxDs = 60;
++    autostartConfigMutable()->throttleLimit = limit;
++    autostartInit();
++    runUntil(20100);                    // ramp done
++    const float baseUs = 1000.0f + 10.0f * MIN(base, limit);
++    const float lo = 1000.0f + 10.0f * MIN(MIN(gMin, gMax), limit), hi = 1000.0f + 10.0f * MIN(MAX(gMin, gMax), limit);
++    int gusts = 0;
++    bool in = false;
++    timeMs_t edge = fakeMs;
++    float firstPeak = -1;
++    bool peaksDiffer = false;
++    for (timeMs_t t = fakeMs + 20; t < 200000; t += 20) {
++        runUntil(t);
++        const float v = motor_disarmed[0];
++        const bool gust = v != baseUs;
++        if (gust) {
++            EXPECT_GE(v, lo);
++            EXPECT_LE(v, hi);
++        }
++        if (gust != in) {
++            const timeMs_t len = t - edge;
++            if (in) {
++                EXPECT_GE(len, 180u);       // gust 200..600 ms (+- one 20 ms tick)
++                EXPECT_LE(len, 620u);
++            } else if (gusts > 0) {
++                EXPECT_GE(len, 1480u);      // pause 1.5..6 s
++                EXPECT_LE(len, 6020u);
++            }
++            if (gust) {
++                gusts++;
++                if (firstPeak < 0) {
++                    firstPeak = v;
++                } else if (v != firstPeak) {
++                    peaksDiffer = true;
++                }
++            }
++            in = gust;
++            edge = t;
++        }
++    }
++    EXPECT_GE(gusts, 25);               // 180 s / (1.5..6 s + 0.2..0.6 s) -> about 27..107
++    EXPECT_LE(gusts, 110);
++    if (lo != hi) {
++        EXPECT_TRUE(peaksDiffer);
++    }
++}
++
++TEST(AutostartTest, GustsStayInsideTheirRanges)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    checkGusts(20, 50, 90, 100);
++}
++
++TEST(AutostartTest, GustsSwappedRangeAndLimit)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    checkGusts(20, 90, 50, 60);         // min > max is swapped, peaks capped at 60 %
++}
++
++TEST(AutostartTest, GustsDebugFlag)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->pattern = AUTOSTART_PATTERN_GUSTS;
++    debugMode = DEBUG_AUTOSTART;
++    autostartInit();
++    bool sawFlag = false;
++    for (timeMs_t t = 20100; t < 80000; t += 20) {
++        runUntil(t);
++        sawFlag = sawFlag || (debug[4] & 16);
++    }
++    EXPECT_TRUE(sawFlag);
 +}

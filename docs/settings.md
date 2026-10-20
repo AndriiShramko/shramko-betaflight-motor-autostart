@@ -49,8 +49,16 @@ again; with DShot the motor beeps (ESC beacon) every 3 s so you notice it.
 
 `0 IDLE` · `1 DELAY` · `2 RAMP` · `3 RUN` · `4 DONE` (run time over) · `5 LOW_BATTERY` (cut-off).
 `debug[1]` commanded % ×10 · `[2]` ms in state /10 · `[3]` uptime 0.1 s · `[4]` flags (1 USB host,
-2 RX link, 4 button, 8 battery present, 16 gust active) · `[5]` battery 0.1 V · `[6]` time since the
+2 RX link, 4 button, 8 battery present, 16 gust active, 32 battery voltage implausible for the cell
+count — outside 2.50–4.45 V/cell, i.e. calibrate `vbat_scale`) · `[5]` battery 0.1 V · `[6]` time since the
 battery appeared 0.1 s (−1 = none) · `[7]` source (0 none, 1 power, 2 button, 3 RC switch).
+
+## ESC telemetry (optional, for the voltage cross-check and ESC temperature)
+- **ESC TX wire** (recommended): ESC pad `TX` → FC cable yellow (`R`, UART5 RX) + `feature ESC_SENSOR`.
+  `MSP_MOTOR_TELEMETRY` then reports the ESC's own battery voltage, current and temperature.
+- **Extended DShot telemetry** (no extra wire, needs BLHeli_32 ≥ 32.10): `dshot_bidir = ON`,
+  `dshot_edt = ON`; the module asks the ESC to enable it 3 s after the battery appears (stock Betaflight
+  does it only when arming).
 
 ## What stops the program (no automatic restart)
 Entering the CLI · the Configurator Motors tab (any `MSP_SET_MOTOR`) · arming via a receiver · a

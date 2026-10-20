@@ -1,6 +1,8 @@
 # Shramko Motor Autostart — Betaflight firmware that spins a motor on power-up, no receiver needed
 
-**Plug in the battery → wait 10 s → the motor ramps up smoothly over 10 s to the throttle you set → it keeps running until you unplug.**
+**Plug in the battery → wait 10 s → the motor ramps up smoothly over 10 s to the throttle you set → it keeps running until the battery reaches its cut-off voltage or you unplug.**
+
+**Configure it in the browser:** <https://autostart.flyreelstudio.eu> — plug the flight controller into USB, press Connect, change any value, save, watch it live. Firmware 1.1 adds a **battery cut-off** (6S: 3.30 V/cell), **run time**, **throttle limit** and **random gusts** that blow droplets off a lens. Full list: [docs/settings.md](docs/settings.md).
 No transmitter, no receiver, no switch. A small, tested module for **Betaflight 2025.12.1** that turns any Betaflight flight controller into a standalone, configurable **motor / ESC driver** for blowers, fans, pumps, test stands and art installations — with DShot or PWM, and every number changeable from the Betaflight CLI without rebuilding.
 
 Optional extras: a **single momentary push-button on two pads** (internal pull-up, no resistors or diodes), and a **standard RC receiver** (stock Betaflight behaviour, or an AUX switch that starts the same program).

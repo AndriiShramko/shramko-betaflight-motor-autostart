@@ -145,7 +145,8 @@ def main():
                 s = open_port(a.port, 5)
                 for _ in range(20):
                     x = sample(s)
-                    if x and x["flags"] & 8:
+                    # the voltage itself: with autostart_mode = OFF the module does not update its debug flags
+                    if x and (x["v_fc"] > 6.0 or (x["esc"] and x["esc"]["volts"] > 6.0)):
                         seen = True
                         break
                     time.sleep(0.5)

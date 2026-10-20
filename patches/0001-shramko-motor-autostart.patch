@@ -175,10 +175,10 @@ index e4267ea..a3c40a6 100644
  
 diff --git a/src/main/fc/autostart.c b/src/main/fc/autostart.c
 new file mode 100644
-index 0000000..4a518e8
+index 0000000..9fbccda
 --- /dev/null
 +++ b/src/main/fc/autostart.c
-@@ -0,0 +1,701 @@
+@@ -0,0 +1,706 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -505,12 +505,17 @@ index 0000000..4a518e8
 +}
 +
 +// true while the pack has stayed below the cut-off for the configured time
++static bool escHadTimeToArm(timeMs_t nowMs);
++
 +static bool batteryCutoffReached(timeMs_t nowMs)
 +{
 +    const uint16_t vbat = getBatteryVoltage();      // filtered, 0.01 V
 +    // cell count resolved every check: with auto-detection Betaflight may know it only after a while
 +    const uint32_t cutoff = (uint32_t)program.cellCutoffCv * batteryCells();
-+    if (cutoff == 0 || vbat < AUTOSTART_NO_BATTERY_CV || !isBatteryVoltageConfigured()) {
++    // escHadTimeToArm: Betaflight's filtered voltage needs ~1.5 s to rise after the battery appears
++    // (measured 20.10: 14.8 V -> 22.0 V on a 22.3 V pack); counting before that tripped a high cut-off
++    // with a short cut-off time on every power-up. The motor cannot run in those 3 s anyway.
++    if (cutoff == 0 || vbat < AUTOSTART_NO_BATTERY_CV || !isBatteryVoltageConfigured() || !escHadTimeToArm(nowMs)) {
 +        lowSince = false;
 +        return false;
 +    }
@@ -1302,10 +1307,10 @@ index 0de224c..5dc863d 100644
  		$(USER_DIR)/common/filter.c \
 diff --git a/src/test/unit/autostart_unittest.cc b/src/test/unit/autostart_unittest.cc
 new file mode 100644
-index 0000000..fc64bbd
+index 0000000..d66a4f2
 --- /dev/null
 +++ b/src/test/unit/autostart_unittest.cc
-@@ -0,0 +1,921 @@
+@@ -0,0 +1,937 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -1404,7 +1409,8 @@ index 0000000..fc64bbd
 +    bool featureIsEnabled(const uint32_t mask) { return (fakeFeatures & mask) != 0; }
 +    bool isBatteryVoltageConfigured(void) { return true; }
 +    uint16_t getBatteryVoltageLatest(void) { return fakeVbat; }
-+    uint16_t getBatteryVoltage(void) { return fakeVbat; }          // filtered = latest in the fake
++    static uint16_t fakeVbatFiltered;  // 0 = same as the latest reading
++    uint16_t getBatteryVoltage(void) { return fakeVbatFiltered ? fakeVbatFiltered : fakeVbat; }
 +    static uint8_t fakeCells;
 +    uint8_t getBatteryCellCount(void) { return fakeCells; }
 +    static int dshotBeacons;
@@ -1475,6 +1481,7 @@ index 0000000..fc64bbd
 +    fakeActiveBox = (boxId_e)BOXID_NONE;
 +    fakeFeatures = 0;
 +    fakeVbat = 2500;        // 6S battery present from power-on (battery-only use)
++    fakeVbatFiltered = 0;
 +    spikeFirstRead = false;
 +    tickReadIndex = 0;
 +    cliMode = false;
@@ -2031,6 +2038,20 @@ index 0000000..fc64bbd
 +#ifdef USE_DSHOT
 +    EXPECT_GE(dshotBeacons, 8);         // and the ESC beacon with DShot
 +#endif
++}
++
++// the filtered voltage rises for ~1.5 s after power-up; a high cut-off with a 1 s cut-off time must not trip on it
++TEST(AutostartTest, CutoffIgnoresTheFilterRisingAtPowerUp)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->cellCutoffCv = 360;      // 3.60 V/cell -> 21.60 V on 6S
++    autostartConfigMutable()->cutoffTimeSeconds = 1;
++    fakeVbatFiltered = 1500;                            // filter still rising: 15.00 V
++    autostartInit();
++    runUntil(3000);                                     // 1.5 s after init, filter settled
++    fakeVbatFiltered = 0;                               // now 25.00 V
++    runUntil(25000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);              // the program runs, no LOW_BATTERY
 +}
 +
 +TEST(AutostartTest, BatteryCutoffIgnoresShortSag)

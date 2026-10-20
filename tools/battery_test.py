@@ -116,6 +116,7 @@ def main():
     ap.add_argument("--apply-scale", action="store_true")
     ap.add_argument("--only", default="0,1,2,3,4,5")
     ap.add_argument("--finish", action="store_true")
+    ap.add_argument("--wait-min", type=int, default=5, help="how long to wait for the battery")
     ap.add_argument("--dry-run", action="store_true", help="USB only, no battery: autostart_vbat_min = 0 so the program runs with the ESC unpowered (checks the flow, not RPM)")
     a = ap.parse_args()
     only = {int(x) for x in a.only.split(",")}
@@ -137,16 +138,24 @@ def main():
         print("dry run: autostart_vbat_min = 0 (the board acts as if a battery were in; ESC unpowered)")
     results = {}
     try:
-        print("\nbattery: plug it in now (propeller off). Waiting for it ...")
-        s = open_port(a.port, 30)
-        t_end = time.time() + 300
-        while time.time() < t_end:
-            x = sample(s)
-            if x and x["flags"] & 8:
-                break
-            time.sleep(0.5)
-        s.close()
-        print("battery seen by the board")
+        print("\nbattery: plug it in now (propeller off). Waiting up to %d min ..." % a.wait_min, flush=True)
+        t_end, seen = time.time() + a.wait_min * 60, False
+        while time.time() < t_end and not seen:   # the USB cable may be unplugged meanwhile (soldering)
+            try:
+                s = open_port(a.port, 5)
+                for _ in range(20):
+                    x = sample(s)
+                    if x and x["flags"] & 8:
+                        seen = True
+                        break
+                    time.sleep(0.5)
+                s.close()
+            except (serial.SerialException, SystemExit, OSError):
+                time.sleep(2)
+        if not seen:
+            raise SystemExit("no battery within %d min" % a.wait_min)
+        print("battery seen by the board; settling 5 s", flush=True)
+        time.sleep(5)
 
         if only & {0, 1}:
             rows = watch(a.port, 15)
@@ -162,7 +171,8 @@ def main():
                 diff = (v - ev) / ev * 100
                 new_scale = max(10, min(255, round(scale * ev / v)))
                 print("   board vs ESC %+.1f %% -> vbat_scale %d would agree (now %d)" % (diff, new_scale, scale))
-                if a.apply_scale and abs(diff) > 3 and new_scale != scale:
+                plausible = cells and 3.0 <= ev / cells <= 4.35   # trust the ESC only for a believable LiPo reading
+                if a.apply_scale and plausible and abs(diff) > 3 and new_scale != scale:
                     cli(a.port, ["set vbat_scale = %d" % new_scale, "save"])
                     restore = [r for r in restore if not r.startswith("set vbat_scale")] + ["set vbat_scale = %d" % new_scale]
                     rows = watch(a.port, 6)

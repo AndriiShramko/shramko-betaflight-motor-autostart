@@ -1,6 +1,6 @@
 {
   "tool.title": "Connect your flight controller",
-  "tool.intro": "Plug the board into this computer with a USB data cable, press Connect and pick its port (usually “STM32 Virtual ComPort”). Keep the propeller off while you set things up.",
+  "tool.intro": "Plug the board into this computer with a USB data cable, press Connect and pick the board in the list (its name has “STM32” or “Betaflight” in it). Keep the propeller off while you set things up.",
   "tool.connect": "Connect",
   "tool.connecting": "Connecting…",
   "tool.disconnect": "Disconnect",
@@ -210,5 +210,7 @@
   "tool.retry": "Try again",
   "tool.cal.escApply": "Use the ESC’s reading ({v} V)",
   "tool.cal.escHint": "The ESC measures {esc} V, the board shows {fc} V ({d} % apart). More than 5 % apart: calibrate.",
-  "tool.cal.escNone": "No ESC voltage yet. Without a multimeter: solder the ESC’s TX pad to the cable’s yellow wire, then this box offers the ESC’s reading."
+  "tool.cal.escNone": "No ESC voltage yet. Without a multimeter: solder the ESC’s TX pad to the cable’s yellow wire, then this box offers the ESC’s reading.",
+  "tool.connect.all": "Board not in the list? Show all ports",
+  "tool.err.not-usb": "That port is a Bluetooth device (headphones, a phone link), not the board. Press Connect and pick the board — its name has “STM32” or “Betaflight” in it."
 }

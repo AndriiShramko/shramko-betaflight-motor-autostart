@@ -297,6 +297,53 @@ class Reports(Api):
         self.assertEqual(len(self.diag_files()), 1)
 
 
+class TestMarked(Api):
+    """The site's own acceptance runs send X-Autostart-Test: 1 (WEB-PLAYBOOK §5): stored with test=true,
+    nothing to Telegram, no error dedup. Negative control: the same request unmarked notifies."""
+
+    T = {"X-Autostart-Test": "1"}
+
+    def post(self, path: str, body: dict, headers: dict | None = None) -> tuple[int, dict]:
+        s, raw = self.call("POST", path, body, headers=headers)
+        return s, json.loads(raw) if raw else {}
+
+    def test_report_marked_is_stored_not_sent(self):
+        b = {"kind": "bug", "message": "acceptance run", "lang": "en", "page": "tool", "t": 9000, "website": ""}
+        s, j = self.post("/api/report", b, self.T)
+        self.assertEqual(s, 200)
+        self.assertTrue(j["test"])
+        self.assertFalse(j["delivered"])
+        self.assertEqual(self.sent, [])
+        self.assertTrue(self.records()[-1]["test"])
+        s, j = self.post("/api/report", b, {"X-Autostart-Test": "0"})  # control: not the marker
+        self.assertNotIn("test", j)
+        self.assertTrue(j["delivered"])
+        self.assertEqual(len(self.sent), 1)
+        self.assertFalse(self.records()[-1]["test"])
+
+    def test_marked_error_does_not_mute_a_real_one(self):
+        e = {"kind": "error", "message": "RangeError: x", "lang": "en", "page": "tool", "stage": "sort"}
+        self.post("/api/report", e, self.T)
+        s, j = self.post("/api/report", e)  # the real one right after: still notified, not a repeat
+        self.assertTrue(j["delivered"])
+        self.assertEqual(self.records()[-1]["repeatOf"], "")
+        s, j = self.post("/api/report", e)  # control: a second real one is a repeat
+        self.assertFalse(j["delivered"])
+        self.assertNotEqual(self.records()[-1]["repeatOf"], "")
+
+    def test_lead_marked_is_stored_not_sent(self):
+        b = {"role": "maker", "email": "ops@scan.example", "consent": True, "lang": "en", "page": "cooperate",
+             "t": 9000, "website": ""}
+        s, j = self.post("/api/lead", b, self.T)
+        self.assertTrue(j["test"])
+        self.assertFalse(j["delivered"])
+        self.assertEqual(self.sent, [])
+        lead = json.loads(server.leads_file().read_text(encoding="utf-8").splitlines()[-1])
+        self.assertTrue(lead["test"])
+        s, j = self.post("/api/lead", b)  # control
+        self.assertTrue(j["delivered"])
+
+
 class RateLimits(Api):
     def test_eleventh_report_an_hour_is_refused(self):
         for i in range(10):

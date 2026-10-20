@@ -38,7 +38,7 @@
   "hero.m3t": "Max deviation from a straight ramp",
   "hero.m3": "1 µs",
   "hero.m4t": "Unit tests",
-  "hero.m4": "26",
+  "hero.m4": "42",
   "hero.mNote_html": "Measured on a real HGLRC F405 8S V2 over USB with the default settings (10 s delay, 10 s ramp to 15 %). Raw data and test tools: <a href=\"https://github.com/AndriiShramko/shramko-betaflight-motor-autostart#verified-on-hardware-2026-10-19-hglrc-f405-8s-v2-no-esc\" target=\"_blank\" rel=\"noopener\">README → Verified on hardware</a>.",
   "cfg.title": "Configurator",
   "cfg.lead": "Plug the board in by USB and press Connect. The board's settings and live data stay between your browser and the board.",

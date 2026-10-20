@@ -126,6 +126,8 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
     const supportEl = h('p', { class: 'st-note' });
     const connectBtn = h('button', { type: 'button', class: 'st-btn st-primary st-big' }, tr('tool.connect'));
     const disconnectBtn = h('button', { type: 'button', class: 'st-btn st-ghost', hidden: true }, tr('tool.disconnect'));
+    // the picker lists flight-controller USB chips only; this one lists every port
+    const allPortsBtn = h('button', { type: 'button', class: 'st-btn st-ghost st-small' }, tr('tool.connect.all'));
     const facts = h('dl', { class: 'st-facts', hidden: true });
     const banner = h('div', { class: 'st-banners' });
     const errorBox = h('div', { class: 'st-error', role: 'alert', hidden: true });
@@ -137,7 +139,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         h('p', { class: 'st-muted', text: tr('tool.intro') }),
         mock ? h('p', { class: 'st-note st-demo', text: tr('tool.mock') }) : null,
         supportEl,
-        h('div', { class: 'st-row' }, connectBtn, disconnectBtn),
+        h('div', { class: 'st-row' }, connectBtn, disconnectBtn, allPortsBtn),
         statusEl,
         errorBox,
         facts,
@@ -283,6 +285,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         else supportEl.textContent = tr('tool.support.none');
         supportEl.className = `st-note${support === 'web-serial' || support === 'webusb' ? '' : ' st-warn'}`;
         connectBtn.disabled = support === 'none' || support === 'insecure';
+        allPortsBtn.disabled = connectBtn.disabled;
     };
 
     // ---------- connection ----------
@@ -306,8 +309,10 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         const on = connected();
         show(connectBtn, !on);
         show(disconnectBtn, on);
+        show(allPortsBtn, !on);
         connectBtn.textContent = p === 'connecting' ? tr('tool.connecting') : tr('tool.connect');
         connectBtn.disabled = p === 'connecting' || support === 'none' || support === 'insecure';
+        allPortsBtn.disabled = connectBtn.disabled;
         show(stopBar, on);
         show(liveCard, on && !!identity && identity.verdict !== 'not-betaflight');
         show(settingsCard, on && !!identity && identity.verdict !== 'not-betaflight');
@@ -355,7 +360,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         }
     };
 
-    const connect = async () => {
+    const connect = async (anyPort = false) => {
         clearError();
         if (device) await device.disconnect().catch(() => undefined);
         let serial: SerialLike;
@@ -383,7 +388,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         readBtn.textContent = tr('tool.read');
         renderPhase();
         try {
-            identity = await dev.connect();
+            identity = await dev.connect({ anyPort });
             renderFacts();
         } catch (e) {
             if (device === dev) device = null;
@@ -428,6 +433,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
                 return [name, run ? tr('tool.live.runLeft', { s: fmt(Math.max(0, Math.ceil(run - sec))) }) : ''];
             case 0: {
                 if (s.motors.slice(0, 8).some(m => m > 1000)) return [name, tr('tool.live.manual')];
+                if (s.flags?.held) return [name, tr('tool.live.stopped')];
                 const mode = board?.values.autostart_mode;
                 if (mode === 'BUTTON') return [name, tr('tool.live.waitButton')];
                 if (s.flags && !s.flags.battery && savedNum('autostart_vbat_min') !== 0) return [name, tr('tool.live.waitBattery')];
@@ -1020,6 +1026,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
     });
 
     connectBtn.addEventListener('click', () => void connect());
+    allPortsBtn.addEventListener('click', () => void connect(true));
     disconnectBtn.addEventListener('click', () => void disconnect());
     formEl.addEventListener('submit', ev => ev.preventDefault());
 

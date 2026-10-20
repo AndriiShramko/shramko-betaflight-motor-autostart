@@ -38,7 +38,7 @@ Arbitration, highest priority first:
 2. **Receiver link valid** for 0.5 s → stock Betaflight; an AUX switch (`autostart_box`) can run the same program.
 3. **No receiver** → `POWER` mode starts the program at boot; a **button click** starts it, the next click stops it.
 
-Safety: the ESC always gets ≥ 3 s of stop frames after it is powered before the ramp; the program parameters are frozen when it starts (a CLI `set` while running never steps the throttle); entering the CLI or moving a slider in the Configurator Motors tab stops the program and hands the motor to you; never takes a pin owned by another driver; generic default is `OFF` (only the project board config enables `POWER`).
+Safety: the ESC always gets ≥ 3 s of stop frames after it is powered before the ramp; the program parameters are frozen when it starts (a CLI `set` while running never steps the throttle); entering the CLI, moving a slider in the Configurator Motors tab or the web configurator's STOP stops the program and hands the motor to you, and nothing starts by itself again until the board restarts (also when it was only waiting for the battery); never takes a pin owned by another driver; generic default is `OFF` (only the project board config enables `POWER`).
 
 ## CLI settings
 
@@ -101,7 +101,29 @@ Details and sources: [docs/wiring.md](docs/wiring.md).
 | … link lost | motor stops, no restart |
 | Reviewed firmware, final ramp | delay 10.01 s, ramp 10.00 s (host clock 10.03 s), max deviation 1.0 µs |
 
-Tools: `tools/autostart_selftest.py` (timing measured on the FC clock, independent of the expected values; `--self-check` proves the evaluator rejects a ramp 1 s early/late or a wrong plateau), `tools/interference_test.py`, `tools/rx_arbitration_test.py`. Raw data: [docs/selftest/](docs/selftest/). 26 unit tests of the state machine (incl. battery plugged later / unplugged / glitch, settings change while running, CLI session, Motors-tab takeover, EMI spikes on the button pin; each checked with a code mutant that must fail it) (Betaflight googletest harness) + regression tests of the touched modules: `docker run --rm -v "$PWD:/repo" shramko-bf-build:2025.12.1 bash /repo/build/test.sh`.
+Tools: `tools/autostart_selftest.py` (timing measured on the FC clock, independent of the expected values; `--self-check` proves the evaluator rejects a ramp 1 s early/late or a wrong plateau), `tools/interference_test.py`, `tools/rx_arbitration_test.py`. Raw data: [docs/selftest/](docs/selftest/). 42 unit tests of the state machine (incl. battery plugged later / unplugged / glitch, settings change while running, CLI session, Motors-tab takeover, hold until reboot after CLI/STOP on a USB bench, EMI spikes on the button pin; the safety cases are checked with code mutants that must fail them) (Betaflight googletest harness) + regression tests of the touched modules: `docker run --rm -v "$PWD:/repo" shramko-bf-build:2025.12.1 bash /repo/build/test.sh`.
+
+### Web configurator on the real board (2026-10-20, Chrome on Windows 10, live site)
+
+`site/tools/e2e-real.mjs` drives https://autostart.flyreelstudio.eu the way a visitor does: real Chrome,
+Chrome's own port picker (answered through Windows UI Automation by `site/tools/pick-serial-port.ps1`),
+mouse and keyboard on the page, then the board's own CLI checks the result with the browser closed.
+
+| Step | Result |
+|---|---|
+| Port picker | lists only the board (`Betaflight STM32F405 (COM6)`); Bluetooth ports hidden, "Board not in the list? Show all ports" lists everything |
+| Connect | board, firmware, build and "this build has the autostart module" shown |
+| Live view, USB only | "Waiting for the battery", "No battery (USB power only)", "No answer from an ESC" |
+| STOP | acknowledged; live view: "Program stopped" (held until a restart) |
+| Restart program | dialog, *Restart now* blocked until the safety box is ticked; board reboots, page reconnects by itself |
+| Read settings | every value matches the board |
+| Change 6 values (number, %, choice, "until cut-off" box, volts, motor boxes) → Save | "Saved and verified: 6 values"; board CLI afterwards: exactly the new values |
+| The same back to the defaults | "Saved and verified: 6 values"; board CLI: defaults again |
+| Feedback (bug + diagnostics) | report number shown, stored with diagnostics, marked as a test (not sent to the owner's chat) |
+
+Found and fixed by this run: picking a Bluetooth port gave a misleading "port is busy" (now the list is
+filtered and a Bluetooth pick says so); *Read settings* or *STOP* on a USB bench did not keep the program
+from starting when the battery was plugged in afterwards (firmware now holds it until a reboot, `debug[4]` bit 64).
 
 ## Build from source
 

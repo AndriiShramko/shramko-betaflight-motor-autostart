@@ -376,7 +376,7 @@ export class MockFc {
                 const v = this.shownVolts();
                 const cells = this.num('autostart_cells') || (v > 0 ? Math.max(1, Math.ceil(v / 4.3)) : 0);
                 const implausible = v > 0 && cells > 0 && (v / cells < 2.5 || v / cells > 4.45);
-                const flags = 1 | (v > 0 && this.batteryPresent() ? 8 : 0) | (pr.gust ? 16 : 0) | (implausible ? 32 : 0);
+                const flags = 1 | (v > 0 && this.batteryPresent() ? 8 : 0) | (pr.gust ? 16 : 0) | (implausible ? 32 : 0) | (this.yielded ? 64 : 0);
                 const since = this.shownVolts() > 0 ? up : -1;
                 const ms10 = Math.round(pr.msInState / 10) & 0xffff;
                 const d = [pr.state, Math.round(pr.pct * 10), ms10 > 0x7fff ? ms10 - 0x10000 : ms10, up & 0x7fff, flags, Math.round(this.shownVolts(pr.pct) * 10), since & 0x7fff, pr.source];

@@ -1,6 +1,6 @@
 {
   "tool.title": "Podłącz kontroler lotu",
-  "tool.intro": "Podłącz płytkę do tego komputera kablem USB do transmisji danych, kliknij Połącz i wybierz jej port (zwykle „STM32 Virtual ComPort”). Na czas konfiguracji zdejmij śmigło.",
+  "tool.intro": "Podłącz płytkę do tego komputera kablem USB do transmisji danych, naciśnij Połącz i wybierz płytkę z listy (w jej nazwie jest „STM32” albo „Betaflight”). Podczas ustawień śmigło ma być zdjęte.",
   "tool.connect": "Połącz",
   "tool.connecting": "Łączenie…",
   "tool.disconnect": "Rozłącz",
@@ -210,5 +210,7 @@
   "tool.retry": "Spróbuj ponownie",
   "tool.cal.escApply": "Użyj odczytu z ESC ({v} V)",
   "tool.cal.escHint": "ESC mierzy {esc} V, płytka pokazuje {fc} V (różnica {d} %). Powyżej 5 % skalibruj.",
-  "tool.cal.escNone": "Brak napięcia z ESC. Bez multimetru: przylutuj pad TX na ESC do żółtego przewodu kabla — wtedy tu pojawi się odczyt z ESC."
+  "tool.cal.escNone": "Brak napięcia z ESC. Bez multimetru: przylutuj pad TX na ESC do żółtego przewodu kabla — wtedy tu pojawi się odczyt z ESC.",
+  "tool.connect.all": "Nie ma płytki na liście? Pokaż wszystkie porty",
+  "tool.err.not-usb": "Ten port to urządzenie Bluetooth (słuchawki, połączenie z telefonem), a nie płytka. Naciśnij Połącz i wybierz płytkę — w jej nazwie jest „STM32” albo „Betaflight”."
 }

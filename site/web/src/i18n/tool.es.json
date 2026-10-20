@@ -1,6 +1,6 @@
 {
   "tool.title": "Conecta tu controladora de vuelo",
-  "tool.intro": "Conecta la placa a este ordenador con un cable USB de datos, pulsa Conectar y elige su puerto (normalmente «STM32 Virtual ComPort»). Mientras lo configuras, deja la hélice quitada.",
+  "tool.intro": "Conecta la placa a este ordenador con un cable USB de datos, pulsa Conectar y elige la placa en la lista (su nombre contiene «STM32» o «Betaflight»). Mantén la hélice quitada mientras lo configuras.",
   "tool.connect": "Conectar",
   "tool.connecting": "Conectando…",
   "tool.disconnect": "Desconectar",
@@ -210,5 +210,7 @@
   "tool.retry": "Reintentar",
   "tool.cal.escApply": "Usar la lectura del ESC ({v} V)",
   "tool.cal.escHint": "El ESC mide {esc} V y la placa muestra {fc} V (diferencia del {d} %). Si pasa del 5 %, calibra.",
-  "tool.cal.escNone": "Aún no hay tensión del ESC. Sin polímetro: suelda el pad TX del ESC al cable amarillo del mazo y este cuadro te ofrecerá la lectura del ESC."
+  "tool.cal.escNone": "Aún no hay tensión del ESC. Sin polímetro: suelda el pad TX del ESC al cable amarillo del mazo y este cuadro te ofrecerá la lectura del ESC.",
+  "tool.connect.all": "¿La placa no aparece? Mostrar todos los puertos",
+  "tool.err.not-usb": "Ese puerto es un dispositivo Bluetooth (auriculares, un enlace con el móvil), no la placa. Pulsa Conectar y elige la placa: su nombre contiene «STM32» o «Betaflight»."
 }

@@ -58,7 +58,7 @@ export interface LiveSample {
     msInState: number | null;
     uptimeS: number | null;
     /** debug[4]; `implausible` = battery voltage outside 2.50–4.45 V/cell for the cell count (calibrate vbat_scale) */
-    flags: { usb: boolean; rx: boolean; button: boolean; battery: boolean; gust: boolean; implausible: boolean } | null;
+    flags: { usb: boolean; rx: boolean; button: boolean; battery: boolean; gust: boolean; implausible: boolean; held: boolean } | null;
     sinceBatteryS: number | null;
     source: number | null;
     motors: number[];
@@ -85,7 +85,8 @@ export interface DeviceOptions {
 }
 
 /** debug[4] flags (docs/settings.md) */
-const decodeFlags = (f: number) => ({ usb: !!(f & 1), rx: !!(f & 2), button: !!(f & 4), battery: !!(f & 8), gust: !!(f & 16), implausible: !!(f & 32) });
+// held (bit 6, firmware 1.1+): a CLI session, STOP or the Motors tab happened; nothing starts until a reboot
+const decodeFlags = (f: number) => ({ usb: !!(f & 1), rx: !!(f & 2), button: !!(f & 4), battery: !!(f & 8), gust: !!(f & 16), implausible: !!(f & 32), held: !!(f & 64) });
 
 /**
  * The output whose ESC really answers (bidirectional DShot: fewest bad frames; ESC sensor wire: any data).
@@ -206,10 +207,10 @@ export class AutostartDevice {
     // ---------- connect / identify ----------
 
     /** Open the port (picker in a browser) and identify the board. Starts the live view. */
-    async connect(): Promise<Identity> {
+    async connect(opts: { anyPort?: boolean } = {}): Promise<Identity> {
         this.setPhase('connecting');
         try {
-            await this.transport.open();
+            await this.transport.open(opts);
             this.log(`port open: ${this.transport.describe()}`);
             const id = await this.identifyWithRecovery();
             this.setPhase('ready');

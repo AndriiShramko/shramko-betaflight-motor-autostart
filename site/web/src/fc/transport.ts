@@ -8,6 +8,7 @@ export type FcErrorCode =
     | 'cancelled' // the visitor closed the port picker
     | 'permission' // the browser or OS refused access
     | 'busy' // the port is open in another program (Betaflight Configurator, a terminal)
+    | 'not-usb' // the picked port is not a USB one (a Bluetooth headset or phone link), so not the board
     | 'not-open'
     | 'lost' // the board disappeared (unplugged, rebooting)
     | 'timeout' // no answer in time
@@ -36,8 +37,9 @@ export type CloseReason = 'lost' | 'closed';
 
 export interface Transport {
     readonly isOpen: boolean;
-    /** Pick (first time) and open the port. In a browser call it from a click handler. */
-    open(): Promise<void>;
+    /** Pick (first time) and open the port. In a browser call it from a click handler.
+     *  anyPort: list every port, not only the USB chips flight controllers use. */
+    open(opts?: { anyPort?: boolean }): Promise<void>;
     close(): Promise<void>;
     write(bytes: Uint8Array): Promise<void>;
     /** Subscribe to incoming bytes; returns an unsubscribe function. */
@@ -119,6 +121,12 @@ export const mapSerialError = (e: unknown, stage: 'request' | 'open'): FcError =
     return new FcError('internal', `${n || 'Error'}: ${m}`);
 };
 
+/** USB vendors of flight-controller ports: the picker lists only these, so a Bluetooth headset or a
+ *  phone link is not offered as "the board". STM32 (0483) and Artery AT32 (2e3c) native USB, plus the
+ *  usual USB-serial chips on boards and adapters: Silicon Labs CP210x (10c4), FTDI (0403), CH340 (1a86).
+ *  Anything else is one click away ("show all ports"). */
+export const BOARD_USB_FILTERS = [0x0483, 0x2e3c, 0x10c4, 0x0403, 0x1a86].map(usbVendorId => ({ usbVendorId }));
+
 export interface WebSerialOptions {
     baudRate?: number;
     /** poll interval while waiting for the board to come back */
@@ -164,15 +172,22 @@ export class WebSerialTransport implements Transport {
         return this.closed.on(cb);
     }
 
-    async open() {
+    async open(opts: { anyPort?: boolean } = {}) {
         if (this.open_) return;
         let port: SerialPortLike;
         try {
-            port = await this.serial.requestPort({});
+            port = await this.serial.requestPort(opts.anyPort ? {} : { filters: BOARD_USB_FILTERS });
         } catch (e) {
             throw mapSerialError(e, 'request');
         }
-        await this.openPort(port);
+        try {
+            await this.openPort(port);
+        } catch (e) {
+            // a Bluetooth port that will not open is a wrong pick, not a board held by another program
+            const info = port.getInfo?.();
+            if (isFcError(e, 'busy') && info && info.usbVendorId === undefined) throw new FcError('not-usb', e.message);
+            throw e;
+        }
     }
 
     private async openPort(port: SerialPortLike) {

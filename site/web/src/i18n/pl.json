@@ -38,7 +38,7 @@
   "hero.m3t": "Maks. odchyłka od prostej",
   "hero.m3": "1 µs",
   "hero.m4t": "Testy jednostkowe",
-  "hero.m4": "26",
+  "hero.m4": "42",
   "hero.mNote_html": "Zmierzone na prawdziwym HGLRC F405 8S V2 przez USB, na ustawieniach domyślnych (opóźnienie 10 s, rozruch 10 s do 15 %). Surowe dane i narzędzia testowe: <a href=\"https://github.com/AndriiShramko/shramko-betaflight-motor-autostart#verified-on-hardware-2026-10-19-hglrc-f405-8s-v2-no-esc\" target=\"_blank\" rel=\"noopener\">README → Verified on hardware</a>.",
   "cfg.title": "Konfigurator",
   "cfg.lead": "Podłącz płytkę przez USB i kliknij „Połącz”. Ustawienia płytki i dane na żywo zostają między Twoją przeglądarką a płytką.",

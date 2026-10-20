@@ -38,7 +38,7 @@
   "hero.m3t": "Desviación máx. de una rampa recta",
   "hero.m3": "1 µs",
   "hero.m4t": "Pruebas unitarias",
-  "hero.m4": "26",
+  "hero.m4": "42",
   "hero.mNote_html": "Medido en una HGLRC F405 8S V2 real por USB con los ajustes por defecto (retardo de 10 s, rampa de 10 s hasta el 15 %). Datos en bruto y herramientas de prueba: <a href=\"https://github.com/AndriiShramko/shramko-betaflight-motor-autostart#verified-on-hardware-2026-10-19-hglrc-f405-8s-v2-no-esc\" target=\"_blank\" rel=\"noopener\">README → Verified on hardware</a>.",
   "cfg.title": "Configurador",
   "cfg.lead": "Conecta la placa por USB y pulsa «Conectar». Los ajustes de la placa y los datos en directo se quedan entre tu navegador y la placa.",

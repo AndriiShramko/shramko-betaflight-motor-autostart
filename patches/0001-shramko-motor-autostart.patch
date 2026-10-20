@@ -175,10 +175,10 @@ index e4267ea..a3c40a6 100644
  
 diff --git a/src/main/fc/autostart.c b/src/main/fc/autostart.c
 new file mode 100644
-index 0000000..1c26367
+index 0000000..bc1d5a8
 --- /dev/null
 +++ b/src/main/fc/autostart.c
-@@ -0,0 +1,686 @@
+@@ -0,0 +1,701 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -299,6 +299,7 @@ index 0000000..1c26367
 +static timeMs_t stateStartMs;
 +static timeMs_t lastBeepMs;
 +static bool powerTriggerPending;
++static bool heldByComputer;          // see autostartComputerTookOver(): no start until a reboot
 +static bool outputsWritten;
 +static bool uptimeReached;
 +
@@ -588,13 +589,14 @@ index 0000000..1c26367
 +
 +// debug_mode = AUTOSTART: [0] state, [1] commanded percent x10, [2] ms in current state / 10,
 +// [3] uptime in 0.1 s, [4] flags (bit0 USB host, bit1 RX link, bit2 button pressed, bit3 battery present, bit4 gust,
-+//     bit5 battery voltage implausible for the cell count = calibrate vbat_scale),
++//     bit5 battery voltage implausible for the cell count = calibrate vbat_scale,
++//     bit6 held by the computer: a CLI session, a motor write or STOP happened, no start until a reboot),
 +// [5] battery voltage in 0.1 V, [6] time since the battery appeared in 0.1 s (-1 = no battery), [7] source
 +
 +static void autostartDebug(timeMs_t nowMs, bool rxValid)
 +{
 +    const int16_t flags = (usbHostPresent() ? 1 : 0) | (rxValid ? 2 : 0) | (buttonStablePressed ? 4 : 0) | (powerPresent ? 8 : 0)
-+        | (gustActive ? 16 : 0) | (batteryVoltageSuspect() ? 32 : 0);
++        | (gustActive ? 16 : 0) | (batteryVoltageSuspect() ? 32 : 0) | (heldByComputer ? 64 : 0);
 +    DEBUG_SET(DEBUG_AUTOSTART, 0, state);
 +    DEBUG_SET(DEBUG_AUTOSTART, 1, commandedPermille);
 +    DEBUG_SET(DEBUG_AUTOSTART, 2, (int16_t)MIN(cmpTimeMs(nowMs, stateStartMs) / 10, INT16_MAX));
@@ -615,6 +617,11 @@ index 0000000..1c26367
 +    return outputsWritten;
 +}
 +
++void autostartComputerTookOver(void)
++{
++    heldByComputer = true;
++}
++
 +// While this build runs receiverless (no RX link confirmed since boot) the stock RX_LOST
 +// beeper would sound forever and, having priority 1, would mask the countdown beeps.
 +bool autostartSuppressRxLostBeeper(void)
@@ -633,6 +640,7 @@ index 0000000..1c26367
 +    rxSeen = false;
 +    rxWasValid = false;
 +    powerTriggerPending = false;       // armed when battery power is confirmed
++    heldByComputer = false;
 +    powerRaw = false;
 +    powerRawChangeMs = 0;
 +    powerPresent = false;
@@ -710,7 +718,14 @@ index 0000000..1c26367
 +    }
 +
 +    // a CLI session or another writer of motor_disarmed[] (Configurator Motors tab, CLI "motor",
-+    // cliExit reset) stops the program for good: the person at the computer is in charge now
++    // cliExit reset) stops the program for good: the person at the computer is in charge now.
++    // "For good" = until the board restarts, also while it only waits for a battery or a click.
++    if (cliMode || outputsOverwritten()) {
++        heldByComputer = true;
++    }
++    if (heldByComputer) {
++        powerTriggerPending = false;
++    }
 +    if (programActive() && (cliMode || outputsOverwritten())) {
 +        outputsWritten = outputsWritten && !outputsOverwritten();   // don't stomp on the other writer
 +        programStop(nowMs);
@@ -743,7 +758,7 @@ index 0000000..1c26367
 +        powerTriggerPending = false;
 +        if (rcBoxActive()) {
 +            if (!programActive()) {
-+                if (powerPresent) {
++                if (powerPresent && !heldByComputer) {
 +                    programStart(AUTOSTART_SOURCE_RCBOX, nowMs);
 +                }
 +            } else {
@@ -763,7 +778,7 @@ index 0000000..1c26367
 +            if (programActive()) {
 +                programStop(nowMs);
 +                beeperConfirmationBeeps(2);
-+            } else if (powerPresent) {
++            } else if (powerPresent && !heldByComputer) {
 +                programStart(AUTOSTART_SOURCE_BUTTON, nowMs);
 +            }
 +        } else if (powerTriggerPending && powerPresent) {
@@ -867,10 +882,10 @@ index 0000000..1c26367
 +#endif // USE_AUTOSTART
 diff --git a/src/main/fc/autostart.h b/src/main/fc/autostart.h
 new file mode 100644
-index 0000000..62d50b8
+index 0000000..85d2119
 --- /dev/null
 +++ b/src/main/fc/autostart.h
-@@ -0,0 +1,42 @@
+@@ -0,0 +1,44 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -913,6 +928,8 @@ index 0000000..62d50b8
 +bool autostartIsEnabled(void);
 +bool autostartIsDrivingMotors(void);
 +bool autostartSuppressRxLostBeeper(void);
++// MSP_SET_MOTOR (Configurator Motors tab, the web configurator's STOP): nothing starts by itself until a reboot
++void autostartComputerTookOver(void);
 diff --git a/src/main/fc/init.c b/src/main/fc/init.c
 index 69c7357..35dd615 100644
 --- a/src/main/fc/init.c
@@ -995,6 +1012,28 @@ index 58d3fde..bad5313 100644
          beeperMode = BEEPER_RX_LOST;
      }
  
+diff --git a/src/main/msp/msp.c b/src/main/msp/msp.c
+index c890a0a..ad0d67c 100644
+--- a/src/main/msp/msp.c
++++ b/src/main/msp/msp.c
+@@ -73,6 +73,7 @@
+ #include "drivers/vtx_table.h"
+ #include "drivers/rangefinder/rangefinder_lidarmt.h"
+ 
++#include "fc/autostart.h"
+ #include "fc/board_info.h"
+ #include "fc/controlrate_profile.h"
+ #include "fc/core.h"
+@@ -2928,6 +2929,9 @@ static mspResult_e mspProcessInCommand(mspDescriptor_t srcDesc, int16_t cmdMSP,
+         for (int i = 0; i < getMotorCount(); i++) {
+             motor_disarmed[i] = motorConvertFromExternal(sbufReadU16(src));
+         }
++#ifdef USE_AUTOSTART
++        autostartComputerTookOver();    // the person at the computer drives the motors now
++#endif
+         break;
+ 
+     case MSP_SET_SERVO_CONFIGURATION:
 diff --git a/src/main/msp/msp_box.c b/src/main/msp/msp_box.c
 index e816db0..b166d96 100644
 --- a/src/main/msp/msp_box.c
@@ -1263,10 +1302,10 @@ index 0de224c..5dc863d 100644
  		$(USER_DIR)/common/filter.c \
 diff --git a/src/test/unit/autostart_unittest.cc b/src/test/unit/autostart_unittest.cc
 new file mode 100644
-index 0000000..65f7a5d
+index 0000000..fd6ef40
 --- /dev/null
 +++ b/src/test/unit/autostart_unittest.cc
-@@ -0,0 +1,828 @@
+@@ -0,0 +1,895 @@
 +/*
 + * This file is part of Betaflight.
 + *
@@ -1827,6 +1866,73 @@ index 0000000..65f7a5d
 +    cliMode = false;                                    // "exit noreboot"
 +    runUntil(60000);
 +    EXPECT_FALSE(autostartIsDrivingMotors());           // no surprise restart
++}
++
++// Web configurator on a USB bench: reading the settings (CLI) or STOP while the program only waits for
++// the battery must keep it from starting when the battery is plugged in later, until a reboot.
++static void usbBenchWaitingForBattery(void)
++{
++    setDefaults(AUTOSTART_MODE_POWER);
++    autostartConfigMutable()->usbInhibit = 0;
++    debugMode = DEBUG_AUTOSTART;
++    fakeUsb = true;
++    fakeVbat = 10;                              // USB only
++    autostartInit();
++    runUntil(20000);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++    EXPECT_EQ(0, debug[4] & 64);                // not held yet
++}
++
++TEST(AutostartTest, CliWhileWaitingForBatteryHoldsUntilReboot)
++{
++    usbBenchWaitingForBattery();
++    cliMode = true;                             // "Read settings"
++    runUntil(21000);
++    cliMode = false;                            // "exit noreboot"
++    runUntil(22000);
++    EXPECT_EQ(64, debug[4] & 64);               // the page shows "Program stopped"
++    fakeVbat = 2500;                            // battery plugged in later
++    runUntil(60000);
++    EXPECT_FALSE(autostartIsDrivingMotors());   // no surprise start
++    EXPECT_EQ(DISARM, motor_disarmed[0]);
++
++    autostartInit();                            // reboot ("Restart program"), battery still in
++    runUntil(fakeMs + 25000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);      // the program runs again
++}
++
++TEST(AutostartTest, MotorWriteWhileWaitingForBatteryHolds)
++{
++    usbBenchWaitingForBattery();
++    autostartComputerTookOver();                // MSP_SET_MOTOR: the page's STOP or the Motors tab
++    fakeVbat = 2500;
++    runUntil(60000);
++    EXPECT_FALSE(autostartIsDrivingMotors());
++    EXPECT_EQ(64, debug[4] & 64);
++}
++
++TEST(AutostartTest, WithoutComputerTheBatteryStartsTheProgram)    // negative control for the two above
++{
++    usbBenchWaitingForBattery();
++    fakeVbat = 2500;
++    runUntil(60000);
++    EXPECT_EQ(1150.0f, motor_disarmed[0]);
++    EXPECT_EQ(0, debug[4] & 64);
++}
++
++TEST(AutostartTest, HeldIgnoresTheButtonToo)
++{
++    setDefaults(AUTOSTART_MODE_BUTTON);
++    autostartConfigMutable()->buttonTag = 1;
++    autostartConfigMutable()->usbInhibit = 0;
++    autostartInit();
++    runUntil(30000);
++    autostartComputerTookOver();
++    fakePinHigh = false;                        // click
++    runUntil(30100);
++    fakePinHigh = true;
++    runUntil(60000);
++    EXPECT_FALSE(autostartIsDrivingMotors());
 +}
 +
 +TEST(AutostartTest, ForeignMotorWriteYields)

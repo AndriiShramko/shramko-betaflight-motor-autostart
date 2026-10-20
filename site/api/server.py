@@ -551,12 +551,12 @@ def store_report(r: dict, now: float | None = None) -> dict:
                 _write_durable(reports_dir() / f"{rid}.json", blob)
                 S.dir_bytes[str(reports_dir())] += len(blob)
                 rec["diagnostics"], rec["diagBytes"] = True, len(blob)
-        if r["kind"] == "error" and not r["suspect"]:
+        if r["kind"] == "error" and not r["suspect"] and not r.get("test"):
             # decided before the line is written so the record says it, committed after it
             e = _errors()["seen"].get(error_key(r))
             rec["repeatOf"] = e["first"] if e and now - float(e.get("at", 0)) < DEDUP_WINDOW else ""
         _append_durable(reports_file(), rec)
-        if r["kind"] == "error" and not r["suspect"]:
+        if r["kind"] == "error" and not r["suspect"] and not r.get("test"):
             rec["repeatOf"] = _note_error(r, rid, now)
     return rec
 
@@ -930,18 +930,26 @@ class Handler(BaseHTTPRequestHandler):
         r = parse_report(self._upload())
         if not S.allow("error" if r["kind"] == "error" else "report", client):
             return self._json(429, {"ok": False})
+        r["test"] = self._is_test()
         rec = store_report(r)
-        notify = not rec["suspect"] and not rec.get("repeatOf")
+        notify = not rec["suspect"] and not rec.get("repeatOf") and not rec["test"]
         mid = send_telegram(report_text(rec)) if notify else None
-        self._json(200, {"ok": True, "id": rec["id"], "diagnostics": rec["diagnostics"], "delivered": mid is not None})
+        self._json(200, {"ok": True, "id": rec["id"], "diagnostics": rec["diagnostics"], "delivered": mid is not None,
+                         **({"test": True} if rec["test"] else {})})
 
     def _lead(self, client: str) -> None:
         if not S.allow("lead", client):
             self._drain(MAX_BODY)
             return self._json(429, {"ok": False})
-        rec = store_lead(parse_lead(self._body()))
-        mid = None if rec["suspect"] else send_telegram(lead_text(rec))
-        self._json(200, {"ok": True, "id": rec["id"], "delivered": mid is not None})
+        rec = store_lead({**parse_lead(self._body()), "test": self._is_test()})
+        mid = None if rec["suspect"] or rec["test"] else send_telegram(lead_text(rec))
+        self._json(200, {"ok": True, "id": rec["id"], "delivered": mid is not None,
+                         **({"test": True} if rec["test"] else {})})
+
+    def _is_test(self) -> bool:
+        """The site's own acceptance runs mark what they send (WEB-PLAYBOOK §5): stored with test=true,
+        never sent to Telegram, never part of the error dedup, never cleaned up (links stay valid)."""
+        return self.headers.get("X-Autostart-Test") == "1"
 
     def _event(self, client: str) -> None:
         if not S.allow("event", client):

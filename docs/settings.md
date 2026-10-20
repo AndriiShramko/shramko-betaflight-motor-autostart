@@ -50,7 +50,7 @@ again; with DShot the motor beeps (ESC beacon) every 3 s so you notice it.
 `0 IDLE` · `1 DELAY` · `2 RAMP` · `3 RUN` · `4 DONE` (run time over) · `5 LOW_BATTERY` (cut-off).
 `debug[1]` commanded % ×10 · `[2]` ms in state /10 · `[3]` uptime 0.1 s · `[4]` flags (1 USB host,
 2 RX link, 4 button, 8 battery present, 16 gust active, 32 battery voltage implausible for the cell
-count — outside 2.50–4.45 V/cell, i.e. calibrate `vbat_scale`) · `[5]` battery 0.1 V · `[6]` time since the
+count — outside 2.50–4.45 V/cell, i.e. calibrate `vbat_scale`; 64 held by the computer, see below) · `[5]` battery 0.1 V · `[6]` time since the
 battery appeared 0.1 s (−1 = none) · `[7]` source (0 none, 1 power, 2 button, 3 RC switch).
 
 ## ESC telemetry (optional, for the voltage cross-check and ESC temperature)
@@ -64,3 +64,10 @@ battery appeared 0.1 s (−1 = none) · `[7]` source (0 none, 1 power, 2 button,
 Entering the CLI · the Configurator Motors tab (any `MSP_SET_MOTOR`) · arming via a receiver · a
 valid receiver link (unless `autostart_box`) · run time over · battery cut-off · battery unplugged
 (re-plugging starts the countdown again in `POWER` mode) · a button click while running.
+
+**Held by the computer (firmware 1.1).** Entering the CLI (the web configurator's *Read settings*), any
+`MSP_SET_MOTOR` (Configurator Motors tab, the web configurator's *STOP*) also holds the program when it
+is only waiting for the battery or a click: nothing starts by itself — battery, button or RC switch —
+until the board restarts (*Restart program*, a CLI `exit`/`save`, or power off and on). `debug[4]`
+bit 64 shows it. Found on the real board on 2026-10-20: before this, *Read settings* or *STOP* on a
+USB bench and then plugging the battery in started the countdown.

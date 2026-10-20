@@ -1,7 +1,14 @@
 # Deploying the Shramko Motor Autostart
 
-The site is static: the converter runs in the visitor's browser. The hub serves the built files
-from `dist/` (written by `npm run build`) and a tiny API (feedback, reports, counters, health). Nothing is built on the hub.
+The site is static: the configurator runs in the visitor's browser and talks to the flight
+controller over Web Serial. The hub serves the built files from `site/dist/` (written by
+`npm run build` in `site/`) and a tiny API (feedback, reports, counters, `/go/` redirects, health).
+Nothing is built on the hub. All commands below run from `site/` (the web app's root inside the
+firmware repository), e.g. `cd site && bash deploy/deploy.sh`.
+
+On the owner's hub the service directory is `/home/fpv/autostart` (set `SMA_BASE` in your local
+`deploy/hub.env`; the public example keeps neutral paths). Nothing deploys automatically: the
+first run is the "First deploy" section below.
 The hub is shared with other services, so these scripts never touch anything that is not ours.
 
 ## Settings: `deploy/hub.env`
@@ -202,11 +209,20 @@ python tools/reports/pull.py show R-20261002-0007    # one report and its diagno
 python tools/reports/pull.py close R-20261002-0007 --note "fixed in <commit>"
 ```
 
+## Retention
+
+The privacy note on the page promises 12 months. The API deletes diagnostics files after 365 days
+by itself; `reports.jsonl` and `leads.jsonl` are append-only, so once a quarter drop the lines older
+than 12 months with [`api/trim.py`](../api/trim.py) (look first with `--dry-run`):
+`bash deploy/hub.sh 'docker exec sma-api python /app/trim.py --dry-run'`, then without `--dry-run`.
+The site must also be in the hub's backup registry
+(`/etc/server-backup/paths.d/autostart.paths` with `$BASE/data`, WEB-PLAYBOOK §20) before it goes live.
+
 ## Tests (local, no hub)
 
 | Script | What it proves |
 |---|---|
-| [`tests/nginx.sh`](tests/nginx.sh) | It runs `nginx -t` on this `nginx.conf` in `nginx:1.29-alpine`, then serves a fake release (behind a symlink) with a fake `sma-api`. It checks: the language redirect (cookie, Accept-Language, query string kept); `/en/` with the exact enforced CSP; the security headers on every kind of response; `.wasm` served as `application/wasm`, immutable and gzipped; dotfiles answering 404; a symlink switch without a reload; the proxy (the real client address, no cookies, body limits, methods); `/api/stats` refused even with a forged `X-Forwarded-For: 127.0.0.1`; the API found again after it is recreated with a new address. |
+| [`tests/nginx.sh`](tests/nginx.sh) | It runs `nginx -t` on this `nginx.conf` in `nginx:1.29-alpine`, then serves a fake release (behind a symlink) with a fake `sma-api`. It checks: the language redirect (cookie, Accept-Language, query string kept); `/en/` with the exact enforced CSP; the security headers on every kind of response; `Permissions-Policy` allowing `serial=(self)` and `usb=(self)` (the configurator); hashed assets immutable and gzipped; dotfiles answering 404; a symlink switch without a reload; the proxy (the real client address, no cookies, body limits, methods); `/api/stats` refused even with a forged `X-Forwarded-For: 127.0.0.1`; `/go/<slug>` proxied with the real client address and no cookies; the API found again after it is recreated with a new address; the access log has no IP address and no query string, the referrer only as its host. |
 | [`tests/fakehub.sh`](tests/fakehub.sh) | It runs `deploy.sh`, `rollback.sh` and `hub.sh` end to end against a fake hub. That is a local container running the real nginx and this config, plus a `docker` stub; `ssh` is replaced by `docker exec`. It covers: `--init`, then a refused second `--init`; the printed `config.env` command; first, repeat and second deploys; the nginx.conf guard; `--sync-config`, including a broken config; a failed internal check and a failed public check (each puts the previous release back); the lock; pruning; rollback (listing, switching, unknown ids); `--sync-api` (success, a parse error, a failed health check that puts the previous files back); bad `hub.env` files; `--check` making no changes. |
 
 Both need Docker and curl. Run them with `bash deploy/tests/nginx.sh` and

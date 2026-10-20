@@ -546,6 +546,25 @@ class Telegram(Api):
             os.environ.update(env)
 
 
+class Trim(unittest.TestCase):
+    """api/trim.py: report and lead lines older than the retention go, newer and unreadable ones stay."""
+
+    def test_trim(self):
+        import trim
+        with tempfile.TemporaryDirectory() as tmp:
+            f = Path(tmp) / "reports.jsonl"
+            lines = ['{"id": "R-1", "ts": "2025-01-01T00:00:00Z"}', '{"id": "R-2", "ts": "2026-10-01T00:00:00Z"}', "not json"]
+            f.write_text("".join(x + "\n" for x in lines), encoding="utf-8")
+            self.assertEqual(trim.trim(f, "2025-10-20T00:00:00Z", dry_run=True), (2, 1))
+            self.assertIn("R-1", f.read_text(encoding="utf-8"))           # dry run: unchanged
+            self.assertEqual(trim.trim(f, "2025-10-20T00:00:00Z"), (2, 1))
+            left = f.read_text(encoding="utf-8")
+            self.assertNotIn("R-1", left)
+            self.assertIn("R-2", left)
+            self.assertIn("not json", left)                                # never guesses
+            self.assertEqual(trim.trim(Path(tmp) / "leads.jsonl", "2025-10-20T00:00:00Z"), (0, 0))  # no file
+
+
 class Process(unittest.TestCase):
     """`python api/server.py` as the container runs it: env config, real Telegram path with no token, logs."""
 

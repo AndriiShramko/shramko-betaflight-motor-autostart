@@ -1,0 +1,29 @@
+# Shramko Motor Autostart
+
+> Betaflight 2025.12.1 firmware module by Andrii Shramko that turns a flight controller into a standalone motor / ESC driver: on power-up it waits for the battery, counts down, ramps the throttle linearly and holds it (optionally with random gusts, a run time and a LiPo cut-off) - no transmitter, receiver or switch. Configured in the Betaflight CLI or in the browser at https://autostart.flyreelstudio.eu (Web Serial). Built for the META4 Tornado storm-chasing camera case: a blower clears water from the 360 camera optics with nobody touching it. GPL-3.0-or-later.
+
+## Start here
+- README: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart#readme
+- Settings reference (single source of truth: names, ranges, defaults, states): https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/docs/settings.md
+- Wiring (HGLRC F405 8S V2 + Flycolor X-Cross HV3 160A, 6S): https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/docs/wiring.md
+- Setup protocol for AI agents: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/AGENT_SETUP.md
+- Notes for coding agents: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/AGENTS.md
+- Safety and privacy: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/SECURITY.md and https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/docs/warnings.md
+- Releases (.hex): https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/releases/latest
+- Web configurator: https://autostart.flyreelstudio.eu/en/ (also /es/ /pl/ /ru/)
+
+## Key facts
+- Ready firmware: HGLRC F405 8S V2 (Betaflight board_name HGLRC_F405_S8), file betaflight_2025.12.1_STM32F405_HGLRC_F405_S8_autostart.hex; ..._stock.hex is the same Betaflight without the module. Tested with a Flycolor X-Cross HV3 160A (BLHeli_32) on 6S.
+- Other Betaflight boards: build from source with Docker; add #define USE_AUTOSTART to the board's config.h.
+- Flash with https://app.betaflight.com -> Firmware Flasher -> Load Firmware [Local]. Windows "DFU device not found": ImpulseRC Driver Fixer or Zadig (WinUSB). The first boot after flashing resets settings once; the build's defaults are the project settings.
+- Defaults: autostart_mode POWER, autostart_delay 10 s, autostart_ramp 100 (10.0 s), autostart_throttle 15 %, autostart_motors 15 (motors 1-4), autostart_vbat_min 60 (6.0 V). Firmware 1.1 adds autostart_pattern (STEADY / GUSTS), autostart_run_time, autostart_throttle_limit and the battery cut-off (autostart_cells, autostart_cell_cutoff, autostart_cutoff_time).
+- Stops the program (never restarts by itself): entering the CLI, the Configurator Motors tab, arming via a receiver, a valid receiver link (unless autostart_box), run time over, battery cut-off, battery unplugged, a button click while running. Re-plugging the battery in POWER mode starts the countdown again.
+- Measured on hardware: ramp starts 10.01 s after power-on, takes 10.02 s, max deviation 1 us; 26 unit tests.
+- Web configurator browsers: Chrome, Edge, Opera on Windows/macOS/Linux. Android: Chrome with USB-OTG (not confirmed). iPhone/iPad: not possible.
+
+## Author
+Andrii Shramko - drone and 360-degree camera systems for extreme shoots; open to interesting people and ready to help teams build ambitious projects.
+- Book a call: https://calendar.app.google/Ff729HqGk4RpzPNDA
+- LinkedIn: https://www.linkedin.com/in/andrii-shramko/
+- Email: zmei116@gmail.com
+- GitHub: https://github.com/AndriiShramko

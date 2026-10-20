@@ -12,7 +12,7 @@ web/src/i18n/tool.*.json) belongs to the serial-core lane; this lane ships only 
 - [x] 4. web/public: favicon, robots, sitemap, llms.txt, og.png, img/
 - [x] 5. api/server.py (+ /go/<slug>) + tests
 - [ ] 6. deploy/ (compose, nginx.conf, scripts, hub.env.example, README) + tools/reports/pull.py
-- [ ] 7. repo files: AGENT_SETUP.md, AGENTS.md, SECURITY.md, docs/warnings.md, llms.txt, .gitignore
+- [x] 7. repo files: AGENT_SETUP.md, AGENTS.md, SECURITY.md, docs/warnings.md, llms.txt, .gitignore
 - [ ] 8. gates: npm install + build green, screenshots 1440/375 en+ru, lang switch, feedback dialog, no console errors
 
 ## Notes for the lead / serial-core lane

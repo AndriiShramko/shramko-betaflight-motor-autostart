@@ -3,6 +3,11 @@
   "version": "1.0.0",
   "description": "Shramko Motor Autostart web configurator: connect a Betaflight flight controller over USB (Web Serial), edit the motor autostart settings, save them to the board and watch the motor live - in the browser.",
   "scripts": {
+    "typecheck:fc": "tsc -p tests/tsconfig.json",
+    "test:fc": "node --import tsx --test tests/msp.test.ts tests/cli.test.ts tests/settings.test.ts tests/transport.test.ts tests/device.test.ts tests/fcnode.test.ts tests/i18n-tool.test.ts",
+    "test:tool-e2e": "node --import tsx --test tests/tool.e2e.test.ts",
+    "fc:check": "node tools/fc-node/check.mjs",
+    "fc:check:mock": "node tools/fc-node/check.mjs --mock --write-test",
     "pages": "node web/scripts/gen-pages.mjs",
     "dev": "node web/scripts/gen-pages.mjs && vite",
     "build": "node web/scripts/gen-pages.mjs && tsc -p . && vite build && node web/scripts/post-build.mjs",
@@ -28,8 +33,10 @@
   "author": "Andrii Shramko <zmei116@gmail.com> (https://github.com/AndriiShramko)",
   "license": "GPL-3.0-or-later",
   "devDependencies": {
+    "@serialport/stream": "13.0.0",
     "@types/node": "26.6.4",
     "playwright": "1.63.0",
+    "serialport": "13.0.0",
     "tsx": "4.23.15",
     "typescript": "5.9.3",
     "vite": "6.4.3"
@@ -44,5 +51,8 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "dependencies": {
+    "web-serial-polyfill": "1.0.15"
   }
 }

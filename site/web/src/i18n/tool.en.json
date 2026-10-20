@@ -5,8 +5,8 @@
   "tool.connecting": "Connecting…",
   "tool.disconnect": "Disconnect",
   "tool.support.ok": "Your browser can talk to the board over USB.",
-  "tool.support.webusb": "This browser has no Web Serial, so the tool uses WebUSB instead (Android: Chrome with a USB-OTG adapter).",
-  "tool.support.none": "This browser can’t open USB serial ports. Use Chrome, Edge or Opera on Windows, macOS or Linux, or Chrome on Android with a USB-OTG adapter. iPhone and iPad can’t do it: their browsers have no Web Serial or WebUSB.",
+  "tool.support.webusb": "This browser has no Web Serial, so the tool uses WebUSB instead (Android Chrome with a USB-OTG cable). Some phones keep the port for themselves — then this cannot work here.",
+  "tool.support.none": "This browser can’t open USB serial ports. Use Chrome, Edge or Opera on Windows, macOS or Linux (or Firefox 151+), or Chrome 148+ on Android with a USB-OTG cable. iPhone and iPad can’t do it: their browsers have no Web Serial or WebUSB.",
   "tool.support.insecure": "Open this page over https:// — browsers allow USB access only on secure pages.",
   "tool.mock": "Demo mode: a simulated board, nothing real is connected.",
   "tool.status.idle": "Not connected.",
@@ -189,7 +189,7 @@
   "tool.step.verify": "Reading back to check every value…",
   "tool.saved": "Saved and verified: {n} values.",
   "tool.saved.after": "The program is stopped because the settings were read. Press Restart program when you are ready.",
-  "tool.err.no-api": "This browser can’t open USB serial ports. Use Chrome, Edge or Opera on a computer, or Chrome on Android with a USB-OTG adapter.",
+  "tool.err.no-api": "This browser can’t open USB serial ports. Use Chrome, Edge or Opera on a computer (or Firefox 151+), or Chrome 148+ on Android with a USB-OTG cable.",
   "tool.err.insecure": "Open this page over https:// — browsers allow USB access only on secure pages.",
   "tool.err.cancelled": "No port selected. Press Connect again and pick the board’s port.",
   "tool.err.permission": "The browser or the system refused access to the port. Allow USB access and try again.",
@@ -207,5 +207,8 @@
   "tool.err.not-ours": "The autostart module is not on this board.",
   "tool.err.busy-op": "Wait for the current step to finish.",
   "tool.err.internal": "Something went wrong on our side ({msg}). Please tell us with the Feedback button.",
-  "tool.retry": "Try again"
+  "tool.retry": "Try again",
+  "tool.cal.escApply": "Use the ESC’s reading ({v} V)",
+  "tool.cal.escHint": "The ESC measures {esc} V, the board shows {fc} V ({d} % apart). More than 5 % apart: calibrate.",
+  "tool.cal.escNone": "No ESC voltage yet. Without a multimeter: solder the ESC’s TX pad to the cable’s yellow wire, then this box offers the ESC’s reading."
 }

@@ -21,7 +21,7 @@ test('harness over the serialport adapter: identify, read all, write test with t
     const { mock, transport } = nodeRig();
     const lines: string[] = [];
     const r = await runCheck(transport, { writeTest: true, print: l => lines.push(l), reconnectTimeoutMs: 3000 });
-    assert.equal(r.ok, true, r.error);
+    assert.equal(r.ok, true, r.error ?? "");
     assert.equal(r.verdict, 'autostart');
     assert.equal(r.level, '1.1');
     assert.equal(Object.keys(r.settings).length, 21);

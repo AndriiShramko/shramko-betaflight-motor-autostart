@@ -19,7 +19,7 @@
 - Defaults: autostart_mode POWER, autostart_delay 10 s, autostart_ramp 100 (10.0 s), autostart_throttle 15 %, autostart_motors 15 (motors 1-4), autostart_vbat_min 60 (6.0 V). Firmware 1.1 adds autostart_pattern (STEADY / GUSTS), autostart_run_time, autostart_throttle_limit and the battery cut-off (autostart_cells, autostart_cell_cutoff, autostart_cutoff_time).
 - Stops the program (never restarts by itself): entering the CLI, the Configurator Motors tab, arming via a receiver, a valid receiver link (unless autostart_box), run time over, battery cut-off, battery unplugged, a button click while running. Re-plugging the battery in POWER mode starts the countdown again.
 - Measured on hardware: ramp starts 10.01 s after power-on, takes 10.02 s, max deviation 1 us; 26 unit tests.
-- Web configurator browsers: Chrome, Edge, Opera on Windows/macOS/Linux. Android: Chrome with USB-OTG (not confirmed). iPhone/iPad: not possible.
+- Web configurator browsers: Chrome, Edge, Opera on Windows/macOS/Linux. Firefox 151+ (one-time site permission). Android: Chrome 148+ with USB-OTG, only on phones whose Android supports USB serial (Google: limited set of devices). iPhone/iPad: not possible.
 
 ## Author
 Andrii Shramko - drone and 360-degree camera systems for extreme shoots; open to interesting people and ready to help teams build ambitious projects.

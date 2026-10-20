@@ -5,8 +5,8 @@
   "tool.connecting": "Łączenie…",
   "tool.disconnect": "Rozłącz",
   "tool.support.ok": "Twoja przeglądarka może łączyć się z płytką przez USB.",
-  "tool.support.webusb": "Ta przeglądarka nie ma Web Serial, więc narzędzie korzysta z WebUSB (Android: Chrome z przejściówką USB-OTG).",
-  "tool.support.none": "Ta przeglądarka nie obsługuje portów szeregowych USB. Użyj Chrome, Edge lub Opery w Windows, macOS albo Linuksie, ewentualnie Chrome na Androidzie z przejściówką USB-OTG. Na iPhonie i iPadzie się nie da: ich przeglądarki nie mają Web Serial ani WebUSB.",
+  "tool.support.webusb": "Ta przeglądarka nie ma Web Serial, więc narzędzie używa WebUSB (Chrome na Androidzie z kablem USB-OTG). Niektóre telefony zatrzymują port dla siebie — wtedy tutaj to nie zadziała.",
+  "tool.support.none": "Ta przeglądarka nie otworzy portu szeregowego USB. Użyj Chrome, Edge lub Opery na Windows, macOS albo Linuksie (lub Firefoksa 151+), albo Chrome 148+ na Androidzie z kablem USB-OTG. iPhone i iPad tego nie potrafią: ich przeglądarki nie mają Web Serial ani WebUSB.",
   "tool.support.insecure": "Otwórz tę stronę przez https:// — przeglądarki pozwalają na dostęp do USB tylko na bezpiecznych stronach.",
   "tool.mock": "Tryb demo: symulowana płytka, nic nie jest naprawdę podłączone.",
   "tool.status.idle": "Nie połączono.",
@@ -189,7 +189,7 @@
   "tool.step.verify": "Ponowny odczyt i sprawdzenie każdej wartości…",
   "tool.saved": "Zapisano i sprawdzono: {n} wartości.",
   "tool.saved.after": "Program jest zatrzymany, bo ustawienia zostały odczytane. Kliknij Uruchom program ponownie, gdy będziesz gotowy.",
-  "tool.err.no-api": "Ta przeglądarka nie obsługuje portów szeregowych USB. Użyj Chrome, Edge lub Opery na komputerze albo Chrome na Androidzie z przejściówką USB-OTG.",
+  "tool.err.no-api": "Ta przeglądarka nie otworzy portu szeregowego USB. Użyj Chrome, Edge lub Opery na komputerze (lub Firefoksa 151+), albo Chrome 148+ na Androidzie z kablem USB-OTG.",
   "tool.err.insecure": "Otwórz tę stronę przez https:// — przeglądarki pozwalają na dostęp do USB tylko na bezpiecznych stronach.",
   "tool.err.cancelled": "Nie wybrano portu. Kliknij Połącz jeszcze raz i wybierz port płytki.",
   "tool.err.permission": "Przeglądarka lub system odmówiły dostępu do portu. Zezwól na dostęp do USB i spróbuj ponownie.",
@@ -207,5 +207,8 @@
   "tool.err.not-ours": "Na tej płytce nie ma modułu autostartu.",
   "tool.err.busy-op": "Poczekaj, aż skończy się bieżący krok.",
   "tool.err.internal": "Coś poszło nie tak po naszej stronie ({msg}). Daj nam znać przyciskiem Feedback.",
-  "tool.retry": "Spróbuj ponownie"
+  "tool.retry": "Spróbuj ponownie",
+  "tool.cal.escApply": "Użyj odczytu z ESC ({v} V)",
+  "tool.cal.escHint": "ESC mierzy {esc} V, płytka pokazuje {fc} V (różnica {d} %). Powyżej 5 % skalibruj.",
+  "tool.cal.escNone": "Brak napięcia z ESC. Bez multimetru: przylutuj pad TX na ESC do żółtego przewodu kabla — wtedy tu pojawi się odczyt z ESC."
 }

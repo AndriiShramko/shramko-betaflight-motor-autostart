@@ -5,8 +5,8 @@
   "tool.connecting": "Подключаемся…",
   "tool.disconnect": "Отключить",
   "tool.support.ok": "Ваш браузер умеет работать с платой по USB.",
-  "tool.support.webusb": "В этом браузере нет Web Serial, поэтому инструмент работает через WebUSB (Android: Chrome с переходником USB-OTG).",
-  "tool.support.none": "Этот браузер не умеет открывать USB-порты. Используйте Chrome, Edge или Opera в Windows, macOS или Linux либо Chrome на Android с переходником USB-OTG. На iPhone и iPad это невозможно: в их браузерах нет ни Web Serial, ни WebUSB.",
+  "tool.support.webusb": "В этом браузере нет Web Serial, поэтому инструмент работает через WebUSB (Chrome на Android с кабелем USB-OTG). Некоторые телефоны держат порт за собой — тогда здесь не получится.",
+  "tool.support.none": "Этот браузер не умеет открывать USB-serial. Нужен Chrome, Edge или Opera на Windows, macOS или Linux (или Firefox 151+), либо Chrome 148+ на Android с кабелем USB-OTG. iPhone и iPad не умеют: в их браузерах нет Web Serial и WebUSB.",
   "tool.support.insecure": "Откройте страницу по https:// — браузеры дают доступ к USB только на защищённых страницах.",
   "tool.mock": "Демо-режим: плата смоделирована, ничего настоящего не подключено.",
   "tool.status.idle": "Не подключено.",
@@ -189,7 +189,7 @@
   "tool.step.verify": "Читаем обратно и проверяем каждое значение…",
   "tool.saved": "Сохранено и проверено: значений — {n}.",
   "tool.saved.after": "Программа остановлена, потому что настройки читались. Когда будете готовы, нажмите «Перезапустить программу».",
-  "tool.err.no-api": "Этот браузер не умеет открывать USB-порты. Используйте Chrome, Edge или Opera на компьютере либо Chrome на Android с переходником USB-OTG.",
+  "tool.err.no-api": "Этот браузер не умеет открывать USB-serial. Нужен Chrome, Edge или Opera на компьютере (или Firefox 151+), либо Chrome 148+ на Android с кабелем USB-OTG.",
   "tool.err.insecure": "Откройте страницу по https:// — браузеры дают доступ к USB только на защищённых страницах.",
   "tool.err.cancelled": "Порт не выбран. Нажмите «Подключить» ещё раз и выберите порт платы.",
   "tool.err.permission": "Браузер или система не дали доступа к порту. Разрешите доступ к USB и попробуйте снова.",
@@ -207,5 +207,8 @@
   "tool.err.not-ours": "На этой плате нет модуля автозапуска.",
   "tool.err.busy-op": "Дождитесь окончания текущего шага.",
   "tool.err.internal": "У нас что-то пошло не так ({msg}). Пожалуйста, сообщите нам кнопкой Feedback.",
-  "tool.retry": "Попробовать снова"
+  "tool.retry": "Попробовать снова",
+  "tool.cal.escApply": "Взять показание ESC ({v} В)",
+  "tool.cal.escHint": "ESC меряет {esc} В, плата показывает {fc} В (расхождение {d} %). Больше 5 % — откалибруйте.",
+  "tool.cal.escNone": "Напряжения от ESC пока нет. Без тестера: припаяйте пятак TX на ESC к жёлтому проводу шлейфа — тогда здесь появится показание ESC."
 }

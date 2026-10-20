@@ -740,11 +740,22 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         const input = h('input', { type: 'text', id, inputmode: 'decimal', autocomplete: 'off', class: 'st-num' });
         const apply = h('button', { type: 'button', class: 'st-btn st-small' }, tr('tool.cal.apply'));
         const msg = h('p', { class: 'st-fnote', 'aria-live': 'polite' });
+        // the ESC measures the pack too: one click calibrates without a multimeter
+        const escHint = h('p', { class: 'st-help' });
+        const escApply = h('button', { type: 'button', class: 'st-btn st-small' }, tr('tool.cal.escApply', { v: '—' }));
+        const escVolts = (): number => {
+            const s0 = last;
+            if (!s0 || s0.bestOutput < 0) return 0;
+            const v = s0.esc[s0.bestOutput]?.volts ?? 0;
+            return v > 1 ? v : 0;
+        };
         const box = h(
             'div',
             { class: 'st-cal' },
             h('h4', { text: tr('tool.cal.title') }),
             shown,
+            escHint,
+            h('div', { class: 'st-inrow' }, escApply),
             h('label', { for: id, class: 'st-flabel', text: tr('tool.cal.input') }),
             h('div', { class: 'st-inrow' }, input, h('span', { class: 'st-unit', text: tr('tool.unit.V') }), apply),
             msg
@@ -753,7 +764,27 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             const v = last?.battery?.volts ?? 0;
             shown.textContent = v >= 1 ? tr('tool.cal.shown', { v: fmtFixed(v, 2) }) : tr('tool.cal.noReading');
             apply.disabled = v < 1 || device?.phase !== 'ready';
+            const ev = escVolts();
+            if (ev > 0 && v >= 1) {
+                const diff = Math.abs(v - ev) / ev * 100;
+                escHint.textContent = tr('tool.cal.escHint', { esc: fmtFixed(ev, 2), fc: fmtFixed(v, 2), d: fmtFixed(diff, 1) });
+                escHint.className = diff > 5 ? 'st-help st-warn' : 'st-help';
+                escApply.textContent = tr('tool.cal.escApply', { v: fmtFixed(ev, 2) });
+                escApply.disabled = device?.phase !== 'ready';
+                show(escApply, true);
+            } else {
+                escHint.textContent = tr('tool.cal.escNone');
+                escHint.className = 'st-help';
+                show(escApply, false);
+            }
         };
+        escApply.addEventListener('click', () => {
+            const ev = escVolts();
+            if (ev > 0) {
+                input.value = fmtFixed(ev, 2);
+                go();
+            }
+        });
         const go = () => {
             const shownV = last?.battery?.volts ?? 0;
             const old = Number(board?.values.vbat_scale ?? 0);

@@ -5,8 +5,8 @@
   "tool.connecting": "Conectando…",
   "tool.disconnect": "Desconectar",
   "tool.support.ok": "Tu navegador puede comunicarse con la placa por USB.",
-  "tool.support.webusb": "Este navegador no tiene Web Serial, así que la herramienta usa WebUSB (Android: Chrome con un adaptador USB-OTG).",
-  "tool.support.none": "Este navegador no puede abrir puertos serie USB. Usa Chrome, Edge u Opera en Windows, macOS o Linux, o Chrome en Android con un adaptador USB-OTG. En iPhone y iPad no es posible: sus navegadores no tienen Web Serial ni WebUSB.",
+  "tool.support.webusb": "Este navegador no tiene Web Serial, así que la herramienta usa WebUSB (Chrome en Android con cable USB-OTG). Algunos teléfonos se quedan el puerto para sí; entonces aquí no funcionará.",
+  "tool.support.none": "Este navegador no puede abrir puertos serie USB. Usa Chrome, Edge u Opera en Windows, macOS o Linux (o Firefox 151+), o Chrome 148+ en Android con cable USB-OTG. iPhone y iPad no pueden: sus navegadores no tienen Web Serial ni WebUSB.",
   "tool.support.insecure": "Abre esta página con https://: los navegadores solo permiten el acceso USB en páginas seguras.",
   "tool.mock": "Modo demo: una placa simulada, no hay nada real conectado.",
   "tool.status.idle": "Sin conectar.",
@@ -189,7 +189,7 @@
   "tool.step.verify": "Releyendo para comprobar cada valor…",
   "tool.saved": "Guardado y verificado: {n} valores.",
   "tool.saved.after": "El programa está parado porque se leyeron los ajustes. Pulsa Reiniciar programa cuando estés listo.",
-  "tool.err.no-api": "Este navegador no puede abrir puertos serie USB. Usa Chrome, Edge u Opera en un ordenador, o Chrome en Android con un adaptador USB-OTG.",
+  "tool.err.no-api": "Este navegador no puede abrir puertos serie USB. Usa Chrome, Edge u Opera en un ordenador (o Firefox 151+), o Chrome 148+ en Android con cable USB-OTG.",
   "tool.err.insecure": "Abre esta página con https://: los navegadores solo permiten el acceso USB en páginas seguras.",
   "tool.err.cancelled": "No se eligió ningún puerto. Pulsa Conectar otra vez y elige el puerto de la placa.",
   "tool.err.permission": "El navegador o el sistema denegó el acceso al puerto. Permite el acceso USB e inténtalo de nuevo.",
@@ -207,5 +207,8 @@
   "tool.err.not-ours": "Esta placa no tiene el módulo de autoarranque.",
   "tool.err.busy-op": "Espera a que termine el paso actual.",
   "tool.err.internal": "Algo falló por nuestra parte ({msg}). Avísanos con el botón Feedback, por favor.",
-  "tool.retry": "Reintentar"
+  "tool.retry": "Reintentar",
+  "tool.cal.escApply": "Usar la lectura del ESC ({v} V)",
+  "tool.cal.escHint": "El ESC mide {esc} V y la placa muestra {fc} V (diferencia del {d} %). Si pasa del 5 %, calibra.",
+  "tool.cal.escNone": "Aún no hay tensión del ESC. Sin polímetro: suelda el pad TX del ESC al cable amarillo del mazo y este cuadro te ofrecerá la lectura del ESC."
 }

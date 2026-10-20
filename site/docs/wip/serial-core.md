@@ -1,0 +1,23 @@
+# Lane: serial-core + tool UI (branch `site-serial`, worktree `C:/dev/sma-wt-serial`)
+
+Owns: `site/web/src/fc/**`, `site/web/src/ui/tool.ts`, `site/web/src/ui/tool.css`,
+`site/web/src/i18n/tool.{en,es,pl,ru}.json`, `site/tools/fc-node/**`, `site/tests/**`,
+and a minimal `site/package.json` (the lead merges it with the shell lane's one).
+
+Hardware rule: never open a COM port here, test only against `mockfc.ts`.
+
+## Status
+
+- [x] 0. Worktree, status file
+- [ ] 1. package.json + deps (typescript, tsx, vite, playwright, serialport, web-serial-polyfill)
+- [ ] 2. fc/transport.ts, fc/msp.ts, fc/cli.ts, fc/settings.ts
+- [ ] 3. fc/mockfc.ts, fc/device.ts
+- [ ] 4. unit + device e2e tests vs mock (node --test)
+- [ ] 5. ui/tool.ts + tool.css + i18n tool.{en,es,pl,ru}.json
+- [ ] 6. Playwright harness test (?mock=1) with negative controls
+- [ ] 7. tools/fc-node (serialport adapter, check.mjs) — compiled + passes vs mock, NOT run on hardware
+
+## Notes for the next agent
+
+- Commit after each step; tick the box in the same commit.
+- `git add` explicit paths only (`site/node_modules` is not in any .gitignore yet).

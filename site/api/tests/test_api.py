@@ -529,6 +529,30 @@ class Events(Api):
         # a /go/ count cannot be forged through the event counter (control: the real redirect counts)
         self.assertEqual(self.ev({"e": "go_releases", "p": "en"}), 400)
 
+    def test_page_analytics_events(self):
+        """the names web/src/ui/analytics.ts, feedback.ts and tool.ts send (GA gets the same names after consent)"""
+        ok = ({"e": "cta_click", "p": "hero_install"}, {"e": "contact_click", "p": "email"}, {"e": "section_view", "p": "faq"},
+              {"e": "video_play", "p": "ma-r01-pl"}, {"e": "video_complete", "p": "ma-r04"}, {"e": "file_download_click", "p": "svg"},
+              {"e": "form_start", "p": "lead"}, {"e": "form_step", "p": "consent"}, {"e": "form_submit", "p": "feedback"},
+              {"e": "feedback_send", "p": "idea"}, {"e": "feedback_fail", "p": "429"}, {"e": "lead_fail", "p": "0"},
+              {"e": "exception"}, {"e": "firmware_found", "p": "module"}, {"e": "tool_read", "p": "stock"}, {"e": "tool_run"},
+              {"e": "tool_calibrate", "p": "esc"}, {"e": "tool_disconnect", "p": "15m-plus"})
+        for b in ok:
+            self.assertEqual(self.ev(b), 204, b)
+        # values off their lists count bare (never stored): an e-mail address, a message, a long id
+        for b in ({"e": "contact_click", "p": "a@b.example"}, {"e": "form_step", "p": "hello there"},
+                  {"e": "cta_click", "p": "x" * 40}):
+            self.assertEqual(self.ev(b), 204, b)
+        day = server.S.events.days[server.utc_day(time.time())]
+        self.assertEqual(day["counts"]["contact_click"], 2)
+        self.assertEqual(day["props"]["contact_click"], {"email": 1})
+        self.assertEqual(day["props"]["form_step"], {"consent": 1})
+        self.assertEqual(day["props"]["cta_click"], {"hero_install": 1})
+        self.assertEqual(day["props"]["video_play"], {"ma-r01-pl": 1})
+        self.assertEqual(day["props"]["tool_disconnect"], {"15m-plus": 1})
+        self.assertEqual(self.ev({"e": "generate_lead"}), 400)  # GA only: the counter has lead_submit
+        self.assertEqual(self.ev({"e": "tool_demo"}), 400)      # GA only: the demo (?mock=1) is not counted
+
     def test_event_rate_limit(self):
         server.S.limits["event"] = server.RateLimiter(5, 3600)
         self.assertEqual([self.ev({"e": "page_view"}) for _ in range(6)], [204] * 5 + [429])

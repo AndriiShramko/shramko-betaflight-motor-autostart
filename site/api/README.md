@@ -80,8 +80,26 @@ a value off its list is dropped and the event still counts. `go_<slug>` names ar
 | `copy_prompt` | `target`: slug (the id of the copied block) |
 | `consent` | `choice`: `yes no` |
 | `tool_save` | `preset`: `steady gusts custom` |
-| `tool_unsupported`, `tool_connect_fail`, `tool_error` | `reason`: slug |
+| `tool_unsupported`, `tool_connect_fail`, `tool_error`, `feedback_fail`, `lead_fail` | `reason`: slug (an HTTP status for the forms) |
+| `tool_read`, `firmware_found` | `result`: `module stock` |
+| `tool_run`, `exception` | none |
+| `tool_calibrate` | `method`: `tester esc` |
+| `tool_disconnect` | `bucket`: `lt1m 1-5m 5-15m 15m-plus` (how long the board was connected) |
+| `cta_click` | `cta_id`: slug (`data-cta`, `go_<slug>`, `nav_<section>`) |
+| `contact_click` | `method`: `email phone calendar linkedin whatsapp telegram messenger` |
+| `section_view` | `section_id`: slug |
+| `video_play`, `video_complete` | `video_id`: slug (`ma-r01` …) |
+| `file_download_click` | `file_ext`: up to 5 letters/digits |
+| `form_start`, `form_submit` | `form`: `lead feedback` |
+| `form_step` | `step`: `role email consent` |
+| `feedback_send` | `kind`: `bug idea` |
 | `go_<slug>` (from `/go/` only) | `lang`: two letters |
+
+The page sends the same names (with named parameters, never GA's reserved `value`) to Google
+Analytics 4, and only after the visitor accepted it. GA alone gets `generate_lead` (after the
+server stored a lead; the counter has `lead_submit`), `video_progress` and `tool_demo` (the demo,
+`?mock=1`, is not counted); GA's own `page_view` comes
+from `gtag('config')`, the counter's from the page.
 
 The configurator (serial-core lane) sends its events with `track()` from `web/src/ui/api.ts`; a new
 event name must be added to `EVENTS` in `server.py` first, or it is refused.

@@ -642,6 +642,17 @@ PROP_RULES: dict[str, set | re.Pattern] = {
     "preset": {"steady", "gusts", "custom"},
     "target": re.compile(r"[a-z0-9][a-z0-9_-]{0,23}"),
     "choice": {"yes", "no"},
+    # page analytics (web/src/ui/analytics.ts, feedback.ts, tool.ts): ids of buttons, sections, videos, never text
+    "cta_id": re.compile(r"[a-z0-9][a-z0-9_-]{0,23}"),
+    "section_id": re.compile(r"[a-z0-9][a-z0-9_-]{0,23}"),
+    "video_id": re.compile(r"[a-z0-9][a-z0-9_-]{0,23}"),
+    "file_ext": re.compile(r"[a-z0-9]{1,5}"),
+    "method": {"email", "phone", "calendar", "linkedin", "whatsapp", "telegram", "messenger", "tester", "esc"},
+    "form": {"lead", "feedback"},
+    "step": {"role", "email", "consent"},
+    "kind": {"bug", "idea"},
+    "result": {"module", "stock"},
+    "bucket": {"lt1m", "1-5m", "5-15m", "15m-plus"},
 }
 # event name -> its one optional property (None: a bare count)
 EVENTS: dict[str, str | None] = {
@@ -658,6 +669,25 @@ EVENTS: dict[str, str | None] = {
     "tool_save": "preset",
     "tool_stop": None,
     "tool_error": "reason",
+    "tool_read": "result",
+    "tool_run": None,
+    "tool_calibrate": "method",
+    "tool_disconnect": "bucket",
+    "firmware_found": "result",
+    # page analytics (the same names go to Google Analytics after consent)
+    "cta_click": "cta_id",
+    "contact_click": "method",
+    "section_view": "section_id",
+    "video_play": "video_id",
+    "video_complete": "video_id",
+    "file_download_click": "file_ext",
+    "form_start": "form",
+    "form_step": "step",
+    "form_submit": "form",
+    "feedback_send": "kind",
+    "feedback_fail": "reason",
+    "lead_fail": "reason",
+    "exception": None,
     # counted redirects: recorded by GET /go/<slug> only, never accepted from POST /api/e
     **{f"go_{k}": "lang" for k in GO_TARGETS},
 }

@@ -100,7 +100,10 @@ bash deploy/deploy.sh            # or --check: pack the artifact + read-only pre
 `deploy.sh` stops at the first failed step. Every step prints what it found.
 
 1. **Artifact.** `dist/` is copied without dotfiles, takes its id from `release.json`, and is
-   packed into `dist-<id>.tgz` with its sha256.
+   packed into `dist-<id>.tgz` with its sha256. A build whose JS lacks the GA4 id of
+   `web/.env.production` (`VITE_GA_ID`, committed: it is public) is refused here, before the hub is
+   asked anything; `npm run build` (`web/scripts/post-build.mjs`) already refuses it too. An empty
+   variable once meant "no consent banner, no analytics" and nothing failed.
 2. **Preflight (read-only).** `$BASE` exists and `sma-web` is running. There is enough free disk:
    at least 2 GB, and at least 3x the artifact. The hub's `nginx.conf` **and** the copy `sma-web`
    actually sees are byte-identical to `deploy/nginx.conf`. If any of this fails, nothing is

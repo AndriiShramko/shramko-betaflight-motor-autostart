@@ -46,7 +46,8 @@ web/src/i18n/tool.*.json) belongs to the serial-core lane; this lane ships only 
 - Wiring images: the page loads `/img/wiring-<lang>.svg` (1600x1050) — not in this branch; the
   lead adds them to `web/public/img/`. Until then the figure shows the alt text (shots.mjs reports
   the 404 as expected).
-- GA4: `web/.env.production` has an empty `VITE_GA_ID` (no banner, no consent links). Create a
-  GA4 property for this site and put its id there.
+- GA4 (done 2026-10-21): `web/.env.production` has `VITE_GA_ID=G-T03S1T7LV3` (property 559963445
+  "Shramko Motor Autostart"); post-build.mjs and deploy.sh refuse a build without it. Events:
+  `web/src/ui/analytics.ts`, `feedback.ts`, `tool.ts`; the counter's list is `EVENTS` in `api/server.py`.
 - Local `site/deploy/hub.env` (gitignored) exists in this worktree only, derived from SOG's with
   `SMA_BASE=/home/fpv/autostart`; the main checkout needs its own copy.

@@ -177,12 +177,14 @@ EOF
 sed "s#^SMA_PUBLIC_URL=.*#SMA_PUBLIC_URL=http://127.0.0.1:1#" "$WORK/hub.env" > "$WORK/hub-deadpublic.env"
 
 # fake builds and API
-# mkdist N [SHA]: a fake `npm run build` output; with SHA, a release.json as post-build.mjs writes it
+# mkdist N [SHA]: a fake `npm run build` output; with SHA, a release.json as post-build.mjs writes it.
+# Its JS carries the GA4 id of web/.env.production, as a real build does (deploy.sh refuses one without it).
+GA_ID=$(sed -n 's/^VITE_GA_ID=\(G-[A-Z0-9]*\).*$/\1/p' "$DEPLOY/../web/.env.production" | head -n 1)
 mkdist() {
   local d="$WORK/dist$1"
   mkdir -p "$d/en" "$d/es" "$d/pl" "$d/ru" "$d/assets" "$d/.cache"
   for l in en es pl ru; do echo "<!doctype html><title>$l build $1</title>" > "$d/$l/index.html"; done
-  echo "console.log($1)" > "$d/assets/app-$1.js"
+  echo "console.log($1,\"$GA_ID\")" > "$d/assets/app-$1.js"
   echo "junk" > "$d/.cache/x"
   if [ -n "${2:-}" ]; then echo "{\"sha\":\"$2\",\"built\":\"2026-10-02T10:00:00.000Z\"}" > "$d/release.json"; fi
 }
@@ -190,6 +192,7 @@ mkdist 1                      # no release.json: deploy.sh computes the id
 mkdist 2 2222aaaa2222         # the build named itself 2222aaaa2222
 for i in 3 4 5 6; do mkdist "$i"; done
 mkdist 7 2222aaaa2222         # a stale release.json: same sha, different content
+mkdist 8 && echo "console.log(8)" > "$WORK/dist8/assets/app-8.js"   # built without the GA4 id
 mkdir -p "$WORK/api/tests" "$WORK/api/__pycache__"
 echo 'print("api v1")' > "$WORK/api/server.py"
 echo 'x = 1' > "$WORK/api/tests/test_x.py"
@@ -202,6 +205,11 @@ echo "== 1. --check before --init: refused"
 run "$D" --check --dist "$WORK/dist1"
 expect "exit code" "$RC" 1
 has "says to run --init" "$OUT" "run 'bash deploy/deploy.sh --init' first"
+
+echo "== 1b. a build without the GA4 id: refused before the hub is asked anything"
+run "$D" --check --dist "$WORK/dist8"
+expect "exit code" "$RC" 1
+has "names the missing id" "$OUT" "REFUSED: the build has no Google Analytics id $GA_ID"
 
 echo "== 2. --init"
 run "$D" --init --api-dir "$WORK/api"

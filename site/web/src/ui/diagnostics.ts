@@ -9,6 +9,7 @@
 //   setDiagnostic(key, val)  facts for a bug report, e.g. setDiagnostic('fc', { board, firmware })
 //   showSiteError(err)       show the banner for an error the tool caught itself
 
+import { track } from './api';
 import { t } from './i18n';
 
 const ERRORS_KEPT = 20;
@@ -102,6 +103,9 @@ export const showSiteError = (err: unknown) => {
     if (!box || !msg) return;
     lastMessage = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
     bannerShown++;
+    // analytics: an error of OUR code (this function is called for nothing else), at most 5 per page;
+    // the counter only counts it, GA gets the first 100 characters (query strings already cut by clean())
+    if (bannerShown <= 5) track('exception', undefined, { description: Array.from(clean(lastMessage)).slice(0, 100).join(''), fatal: false });
     msg.textContent = clean(lastMessage).substring(0, 200) + (bannerShown > 1 ? ` (×${bannerShown})` : '');
     box.hidden = false;
 };

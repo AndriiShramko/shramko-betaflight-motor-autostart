@@ -82,10 +82,10 @@
     <p class="sub">{{hero.sub}}</p>
     <p class="lead">{{hero.lead}}</p>
     <div class="cta-row">
-      <a class="btn primary big" href="#install">{{hero.cta}}</a>
-      <a class="btn big" href="#tool">{{hero.cta2}}</a>
+      <a class="btn primary big" href="#install" data-cta="hero_install">{{hero.cta}}</a>
+      <a class="btn big" href="#tool" data-cta="hero_tool">{{hero.cta2}}</a>
     </div>
-    <a class="byline" href="#contact">
+    <a class="byline" href="#contact" data-cta="hero_byline">
       <picture><source type="image/webp" srcset="/img/andrii-shramko-160.webp"><img src="/img/andrii-shramko-160.jpg" alt="Andrii Shramko" width="40" height="40" decoding="async"></picture>
       <span>{{hero.by}}</span>
     </a>
@@ -115,7 +115,7 @@
   <h2 id="video-title">{{video.title}}</h2>
   <div class="video-grid">
     <figure class="video-fig">
-      <video controls playsinline preload="none" poster="{{r01Poster}}" width="360" height="640" aria-describedby="video-r01-cap"><source src="{{r01File}}" type="video/mp4"></video>
+      <video controls playsinline preload="none" data-video-id="{{r01Id}}" poster="{{r01Poster}}" width="360" height="640" aria-describedby="video-r01-cap"><source src="{{r01File}}" type="video/mp4"></video>
       <figcaption id="video-r01-cap" class="small muted">{{video.r01cap}}</figcaption>
     </figure>
     <div class="video-text">
@@ -123,7 +123,7 @@
       <ul class="video-points">{{video.points_html}}</ul>
       <details class="fold" id="video-transcript"><summary>{{r01TrLabel}}</summary>{{r01Tr_html}}</details>
       <p class="small muted">{{video.ai}}</p>
-      <a class="btn primary" href="#install">{{video.cta}}</a>
+      <a class="btn primary" href="#install" data-cta="video_install">{{video.cta}}</a>
     </div>
   </div>
   <h3 id="reels-title" class="reels-title">{{video.moreT}}</h3>
@@ -329,7 +329,7 @@
       <label class="hp" aria-hidden="true">Website <input type="text" name="website" tabindex="-1" autocomplete="off"></label>
       <button type="button" class="btn primary" id="fb-send">{{fb.send}}</button>
     </div>
-    <div class="fb-coop" hidden><p>{{fb.coopText}}</p><a class="btn primary" href="#contact" id="fb-to-contact">{{fb.coopGo}}</a></div>
+    <div class="fb-coop" hidden><p>{{fb.coopText}}</p><a class="btn primary" href="#contact" id="fb-to-contact" data-cta="feedback_to_contact">{{fb.coopGo}}</a></div>
     <p class="form-status small" role="status" aria-live="polite"></p>
   </form>
 </dialog>

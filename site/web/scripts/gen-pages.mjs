@@ -75,7 +75,7 @@ for (const lang of LANGS) {
     const cardsHtml = cards.map((r) => {
         const id = `reel-${r.key}`;
         return `<li class="reel"><figure class="reel-fig">`
-            + `<video controls playsinline preload="none" poster="${r.poster}" width="270" height="480" aria-labelledby="${id}-t" aria-describedby="${id}-cap"><source src="${r.file}" type="video/mp4"></video>`
+            + `<video controls playsinline preload="none" data-video-id="${r.id}" poster="${r.poster}" width="270" height="480" aria-labelledby="${id}-t" aria-describedby="${id}-cap"><source src="${r.file}" type="video/mp4"></video>`
             + `<figcaption><span class="reel-t" id="${id}-t">${esc(txt(`video.${r.key}t`))}</span> <span class="reel-dur">${Math.round(r.seconds)} ${esc(txt('hero.artSec'))}</span>`
             + `<span class="reel-cap small muted" id="${id}-cap">${esc(txt(`video.${r.key}cap`))}</span></figcaption></figure>`
             + `<details class="fold reel-tr" id="${id}-tr"><summary>${trLabel(r)}</summary>${trText(r)}</details></li>`;
@@ -93,7 +93,7 @@ for (const lang of LANGS) {
         transcript: r.transcript
     });
     const special = {
-        r01File: main.file, r01Poster: main.poster, r01TrLabel: trLabel(main), r01Tr_html: trText(main), reelCards_html: cardsHtml
+        r01Id: main.id, r01File: main.file, r01Poster: main.poster, r01TrLabel: trLabel(main), r01Tr_html: trText(main), reelCards_html: cardsHtml
     };
 
     const faq = [];

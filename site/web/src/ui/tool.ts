@@ -14,7 +14,7 @@ import enStrings from '../i18n/tool.en.json';
 import { AutostartDevice, type BoardSettings, type Identity, type LateVerify, type LiveSample, type Phase, type WriteStep } from '../fc/device';
 import { CELL_PLAUSIBLE_MAX, EscTracker, StateClock, VoltSettle, plausibleVolts, type EscView, type StateTime } from '../fc/live';
 import { keepError, logLine, setDiagnosticsProvider } from './diagnostics';
-import { track } from './api';
+import { gaEvent, track, type GaParams } from './api';
 import {
     CHIP_VALUES,
     DEF,
@@ -197,6 +197,8 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
     let connecting = false;
     /** Disconnect not finished yet: Connect waits */
     let disconnecting = false;
+    /** when the current board connected (analytics: how long a session lasted, in coarse buckets) */
+    let connectedAt = 0;
     // live data the page can trust (fc/live.ts)
     const escTrack = new EscTracker();
     let esc: EscView = escTrack.push(0, []);
@@ -230,8 +232,9 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         if (log.length > 80) log.shift();
         logLine(`tool ${l}`); // the page's report log (sent only with consent)
     };
-    const trackTool = (name: string, p?: string) => {
-        if (!mock) track(name, p); // the demo is not counted
+    // the counter gets p; GA (after consent) gets its own named parameters, never GA's reserved `value`
+    const trackTool = (name: string, p?: string, ga?: GaParams) => {
+        if (!mock) track(name, p, ga); // the demo is not counted (GA gets 'tool_demo' once)
     };
 
     // ---------- skeleton ----------
@@ -473,7 +476,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         addLog(`error ${lastError}`);
         keepError('tool', lastError); // the page's report ring (sent only with consent)
         // a cancelled picker is the visitor's own choice, not an error worth counting
-        if (code !== 'cancelled') trackTool('tool_error', code);
+        if (code !== 'cancelled') trackTool('tool_error', code, { reason: code });
         alarm(text);
         if (where === errorBox) {
             errorBox.replaceChildren(h('p', { text }));
@@ -505,7 +508,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         show(supportEl, !!key);
         connectBtn.disabled = support === 'none' || support === 'insecure';
         allPortsBtn.disabled = connectBtn.disabled;
-        if (support === 'none' || support === 'insecure') trackTool('tool_unsupported', support);
+        if (support === 'none' || support === 'insecure') trackTool('tool_unsupported', support, { reason: support });
     };
 
     // ---------- values in words ----------
@@ -898,7 +901,10 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
                 renderFacts();
                 renderPhase();
                 say(connText());
+                connectedAt = Date.now();
                 trackTool('tool_connect');
+                // the demo: GA only (after consent), the counter keeps counting real boards only
+                if (mock) gaEvent('tool_demo');
                 // the Connect button is gone: focus the connection line (the next Tab is STOP), unless the
                 // visitor already moved on to something else
                 const a = document.activeElement;
@@ -913,7 +919,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
                 await dev.disconnect().catch(() => undefined);
                 resetSession();
                 const code = e instanceof FcError ? e.code : 'internal';
-                trackTool('tool_connect_fail', code);
+                trackTool('tool_connect_fail', code, { reason: code });
                 // unplugged while connecting: nothing reconnects by itself here
                 showError(code === 'lost' || code === 'not-open' ? new FcError('lost-connect', String(e)) : e, errorBox, true);
                 if (stopLost) {
@@ -940,6 +946,12 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
             if (p === 'rebooting' || p === 'reconnecting') closedKey = 'tool.status.closedRestart';
             else if (running) closedKey = s!.state === 1 ? 'tool.status.closedStarting' : 'tool.status.closedRunning';
         }
+        if (d && connectedAt) {
+            const min = (Date.now() - connectedAt) / 60000;
+            const session_bucket = min < 1 ? 'lt1m' : min < 5 ? '1-5m' : min < 15 ? '5-15m' : '15m-plus';
+            trackTool('tool_disconnect', session_bucket, { session_bucket });
+        }
+        connectedAt = 0;
         session++;
         device = null;
         disconnecting = true;
@@ -1990,6 +2002,8 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
                 return;
             }
             setValue('vbat_scale', r.scale);
+            const method = fromEsc ? 'esc' : 'tester';
+            trackTool('tool_calibrate', method, { method });
             msg.textContent = tr(fromEsc ? 'tool.cal.resultEsc' : 'tool.cal.result', { new: r.scale, old });
             msg.className = 'st-fnote st-ok';
             say(msg.textContent);
@@ -2431,6 +2445,8 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
         buildForm();
         renderFacts();
         say(board.level ? tr('tool.read.done') : tr('tool.verdict.stock'));
+        const result = board.level ? 'module' : 'stock';
+        trackTool('tool_read', result, { result });
     }
 
     readBtn.addEventListener('click', async () => {
@@ -2480,7 +2496,9 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
                 renderFacts();
                 showSaved(r.verified.length);
                 if (swaps.length) saveMsg.append(' ', h('span', { text: tr('tool.saved.swapped', { list: swaps.join(', ') }) }));
-                trackTool('tool_save', sameValue(board.values.autostart_pattern, 'GUSTS') ? 'gusts' : 'steady');
+                const preset = sameValue(board.values.autostart_pattern, 'GUSTS') ? 'gusts' : 'steady';
+                const nChanged = Object.keys(changes).length;
+                trackTool('tool_save', preset, { preset, changed: nChanged === 1 ? '1' : nChanged <= 3 ? '2-3' : '4-plus' });
             } catch (e) {
                 if (device !== dev) throw e;
                 // the save may be in flash: once the board is back by itself it is checked and the result shown
@@ -2608,6 +2626,7 @@ export function mountTool(root: HTMLElement, t: Translate, locale: Locale): Tool
     dlgConfirm.addEventListener('click', () => {
         if (!dlgCheck.checked) return;
         // the motor is about to start: focus goes to STOP (the button that opened the dialog is disabled now)
+        trackTool('tool_run');
         runOpener = stopBtn;
         closeDialog();
         stopBtn.focus();

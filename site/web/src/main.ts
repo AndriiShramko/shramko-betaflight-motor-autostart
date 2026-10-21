@@ -3,7 +3,8 @@ import { installErrorCapture, keepError, describe, loadRelease, showSiteError } 
 installErrorCapture();
 
 import './styles.css';
-import { gaAvailable, loadGa, track } from './ui/api';
+import { count, gaAvailable, loadGa, stopGa, track } from './ui/api';
+import { initAnalytics } from './ui/analytics';
 import { initFeedback } from './ui/feedback';
 import { lang, loadStrings, rememberLang, t } from './ui/i18n';
 
@@ -14,7 +15,8 @@ const initLangSwitch = () => {
         if (a.dataset.lang === document.documentElement.lang) a.setAttribute('aria-current', 'true');
         a.addEventListener('click', () => {
             rememberLang(a.dataset.lang!);
-            track('lang_switch', a.dataset.lang!);
+            // the page navigates away at once: GA sends this one with sendBeacon
+            track('lang_switch', a.dataset.lang!, { lang_to: a.dataset.lang! }, { beacon: true });
         });
     });
 };
@@ -28,7 +30,7 @@ const initCopyButtons = () => {
             const text = document.getElementById(b.dataset.copy!)?.textContent ?? '';
             navigator.clipboard.writeText(text).then(() => {
                 b.textContent = t('ui.copied');
-                track('copy_prompt', b.dataset.copy);
+                track('copy_prompt', b.dataset.copy, { cta_id: `copy_${b.dataset.copy ?? ''}`.slice(0, 40) });
                 if (timer) clearTimeout(timer);
                 timer = setTimeout(() => {
                     timer = null;
@@ -55,35 +57,33 @@ const writeConsent = (v: string | null) => {
 
 const initConsent = () => {
     // without a GA4 id for this site there is nothing to consent to: no banner, no consent buttons
+    // (a production build without the id is refused by web/scripts/post-build.mjs and deploy/deploy.sh)
     if (!gaAvailable()) return;
     const bar = document.getElementById('consent')!;
     const ask = () => {
         bar.hidden = false;
     };
     const set = (v: 'yes' | 'no') => {
+        const was = readConsent();
         writeConsent(v);
         bar.hidden = true;
-        track('consent', v);
+        count('consent', v);
         if (v === 'yes') loadGa();
+        else stopGa(was === 'yes');
     };
     document.getElementById('consent-yes')!.addEventListener('click', () => set('yes'));
     document.getElementById('consent-no')!.addEventListener('click', () => set('no'));
-    // withdrawing: forget the choice; if GA already ran on this page, drop its cookies and reload
+    // withdrawing (footer link on every page, and the Privacy section): GA stops at once on this page, its cookies
+    // are deleted, "no" is remembered; the banner comes back so the visitor can choose again
     document.querySelectorAll<HTMLElement>('[data-consent-wrap]').forEach((w) => {
         w.hidden = false;
     });
     document.querySelectorAll<HTMLButtonElement>('[data-consent-reset]').forEach((b) => {
         b.addEventListener('click', () => {
-            const was = readConsent();
-            writeConsent(null);
-            if (was === 'yes') {
-                for (const c of document.cookie.split(';')) {
-                    const name = c.split('=')[0].trim();
-                    if (name.startsWith('_ga')) document.cookie = `${name}=; max-age=0; path=/; domain=${location.hostname.split('.').slice(-2).join('.')}`;
-                    if (name.startsWith('_ga')) document.cookie = `${name}=; max-age=0; path=/`;
-                }
-                location.reload();
-                return;
+            if (readConsent() === 'yes') {
+                writeConsent('no');
+                count('consent', 'no');
+                stopGa(true);
             }
             ask();
         });
@@ -188,12 +188,19 @@ const initFoldedTargets = () => {
 };
 
 // the connected board already has the module: Step 1 says so (the configurator sends 'sma:board')
+const fwSeen = new Set<boolean>();
 const initFirmwareBadge = () => {
     const badge = document.querySelector<HTMLElement>('[data-fw-found]');
     if (!badge) return;
     window.addEventListener('sma:board', (e) => {
         const d = (e as CustomEvent<{ connected?: boolean; module?: boolean }>).detail;
         badge.hidden = !(d?.connected && d.module);
+        // the demo (?mock=1) is not counted as a board
+        if (d?.connected && typeof d.module === 'boolean' && !fwSeen.has(d.module) && new URLSearchParams(location.search).get('mock') !== '1') {
+            fwSeen.add(d.module);
+            const result = d.module ? 'module' : 'stock';
+            track('firmware_found', result, { result });
+        }
     });
 };
 
@@ -248,6 +255,7 @@ const main = async () => {
     initFeedback();
     initFeedbackButtonPlacement();
     initConsent();
+    initAnalytics();
     await mountConfigurator();
     // a deep link into the configurator (#tool-connect, #tool-status …) exists only after the mount; a target
     // below the configurator moved when it mounted (its height changed): land on it again, unless the visitor
@@ -259,7 +267,8 @@ const main = async () => {
     const rel = await loadRelease();
     const el = document.getElementById('release');
     if (el) el.textContent = t('ui.release', { v: rel });
-    track('page_view', lang);
+    // the counter's page view; GA's page_view is sent by gtag's config itself (one per page load, never twice)
+    count('page_view', lang);
 };
 
 main();

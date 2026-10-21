@@ -75,6 +75,14 @@ build_artifact() {
   cp -R "$DIST/." "$WORK/release/"
   # dotfiles never ship (nginx answers 404 for them anyway)
   find "$WORK/release" -mindepth 1 -name '.*' -prune -exec rm -rf {} +
+  # the GA4 id committed in web/.env.production must be in the build's JS: an empty or overridden
+  # VITE_GA_ID builds a site without the consent banner and without analytics, and nothing else fails
+  local ga
+  ga=$(sed -n 's/^VITE_GA_ID=\(G-[A-Z0-9]*\)[[:space:]]*$/\1/p' "$ROOT/web/.env.production" 2>/dev/null | head -n 1)
+  [[ "$ga" =~ ^G-[A-Z0-9]{6,16}$ ]] || die "REFUSED: $ROOT/web/.env.production has no GA4 id (VITE_GA_ID=G-...). Nothing was uploaded."
+  grep -rqF --include='*.js' "\"$ga\"" "$WORK/release" \
+    || die "REFUSED: the build has no Google Analytics id $ga in its JS (built with an empty or another VITE_GA_ID?): run npm run build again. Nothing was uploaded."
+  say "analytics: GA4 $ga is in the build"
   local commit meta="" source
   commit=$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)
   [ -f "$WORK/release/release.json" ] && meta=$(tr -d ' \r\n\t' < "$WORK/release/release.json")

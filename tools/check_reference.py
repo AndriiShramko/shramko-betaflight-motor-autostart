@@ -10,6 +10,7 @@ usage: python tools/check_reference.py PORT [--cells N] [--motors MASK] [--usb-i
                   `get battery_meter`, `feature`, `serial` (UTF-8 or UTF-16, as PowerShell writes it)
   --cells/--motors/--usb-inhibit   the values adapted to YOUR hardware (default: the reference 6 / 15 / OFF)
   --no-esc-sensor no ESC TX wire: feature ESC_SENSOR is not expected
+  --esc-uart UARTn the UART whose RX pad gets the ESC TX wire: function 1024 must be on it and only on it
   --vbat-scale N  your calibrated value: checked (otherwise WARN while it is still at the build default)
   --protocol NAME an ESC that needs another protocol (e.g. PWM; then ESC_SENSOR is not expected either)
   --no-vbat-meter a board without battery voltage sensing: battery_meter is not ADC, USB inhibit must be ON
@@ -91,7 +92,7 @@ def expected(cells, motors, usb_inhibit, protocol=None):
 
 
 def check(state, cells, motors, usb_inhibit, esc_sensor=True, vbat_scale=None, protocol=None, vbat_meter=True,
-          commit=None, board=None):
+          commit=None, board=None, esc_uart=None):
     """-> list of (status, name, found, wanted); status PASS / FAIL / WARN / INFO"""
     rows = []
     rev = state["revision"] or ""
@@ -123,7 +124,11 @@ def check(state, cells, motors, usb_inhibit, esc_sensor=True, vbat_scale=None, p
     ports = [p for p, fn in state["serial"].items() if fn & ESC_SENSOR_FUNCTION]
     if esc_sensor:
         rows.append(("PASS" if has else "FAIL", "feature ESC_SENSOR", "on" if has else ("off" if feats is not None else "not read"), "on"))
-        rows.append(("PASS" if ports else "FAIL", "serial ESC_SENSOR (1024)", ", ".join(ports) or "no port", "one UART"))
+        if esc_uart:
+            ok = ports == [esc_uart]
+            rows.append(("PASS" if ok else "FAIL", "serial ESC_SENSOR (1024)", ", ".join(ports) or "no port", esc_uart + " only"))
+        else:
+            rows.append(("PASS" if len(ports) == 1 else "FAIL", "serial ESC_SENSOR (1024)", ", ".join(ports) or "no port", "one UART"))
     else:
         rows.append(("INFO", "feature ESC_SENSOR", "on" if has else "off", "not expected"))
     got = state["settings"].get("vbat_scale")
@@ -185,6 +190,7 @@ def main(argv=None):
                     help="outputs whose motor should spin, bitmask (reference 15)")
     ap.add_argument("--usb-inhibit", choices=["ON", "OFF"], help="reference OFF; ON with --no-vbat-meter")
     ap.add_argument("--no-esc-sensor", action="store_true", help="no ESC TX wire")
+    ap.add_argument("--esc-uart", help="the UART whose RX pad gets the ESC TX wire (UARTn)")
     ap.add_argument("--vbat-scale", type=int, help="your calibrated vbat_scale")
     ap.add_argument("--protocol", help="motor_pwm_protocol your ESC needs (reference DSHOT300)")
     ap.add_argument("--no-vbat-meter", action="store_true", help="the board has no battery voltage sensing")
@@ -206,13 +212,20 @@ def main(argv=None):
     if not state["settings"]:
         print("cannot read the board: no `name = value` lines in the CLI output")
         return 2
-    rows = check(state, a.cells, a.motors, usb, esc_sensor, a.vbat_scale, protocol, not a.no_vbat_meter, a.commit, a.board)
+    esc_uart = a.esc_uart.strip().upper().replace("USART", "UART") if a.esc_uart else None
+    rows = check(state, a.cells, a.motors, usb, esc_sensor, a.vbat_scale, protocol, not a.no_vbat_meter, a.commit, a.board,
+                 esc_uart)
     w = max(len(r[1]) for r in rows)
     for st, name, got, want in rows:
         print("%-4s  %-*s  %-12s %s" % (st, w, name, got, ("(want %s)" % want) if st == "FAIL" else want if st in ("INFO", "WARN") else ""))
     fails = [r for r in rows if r[0] == "FAIL"]
     warns = [r for r in rows if r[0] == "WARN"]
-    print("RESULT: %s%s" % ("PASS, the board matches the reference setup" if not fails else
+    adapted = [x for x in ("cells %d" % a.cells if str(a.cells) != REFERENCE["cli"]["autostart_cells"] else "",
+                            "motors %d" % a.motors if str(a.motors) != REFERENCE["cli"]["autostart_motors"] else "",
+                            "USB inhibit %s" % usb if usb != REFERENCE["cli"]["autostart_usb_inhibit"] else "",
+                            "no ESC telemetry" if not esc_sensor else "", "protocol %s" % protocol if protocol else "") if x]
+    ref = "the reference setup" + (" (adapted: %s)" % ", ".join(adapted) if adapted else "")
+    print("RESULT: %s%s" % ("PASS, the board matches " + ref if not fails else
                             "FAIL, %d setting(s) differ: %s" % (len(fails), ", ".join(r[1] for r in fails)),
                             "; WARN: %s" % ", ".join(r[1] for r in warns) if warns else ""))
     if a.port and not a.exit:

@@ -7,6 +7,7 @@ save
 # As one command:
 #   python tools/bf_cli.py <PORT> "feature ESC_SENSOR" "save"
 
-# Then calibrate vbat_scale (AGENT_PORTING.md, step 8) and check (step 9):
-#   python tools/check_reference.py <PORT> --cells 6 --motors 15 --vbat-scale <calibrated> --commit <the commit you built> --board HGLRC_F405_S8 --exit
+# Then calibrate vbat_scale (AGENT_PORTING.md, step 8; not calibrated: leave out --vbat-scale and
+# expect WARN vbat_scale) and check (step 9):
+#   python tools/check_reference.py <PORT> --cells 6 --motors 15 --esc-uart UART5 --vbat-scale <calibrated> --commit <the commit you built> --board HGLRC_F405_S8 --exit
 

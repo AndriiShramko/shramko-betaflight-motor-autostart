@@ -20,8 +20,11 @@ Every `set` is confirmed by the board, or the CLI is left without saving.
 
 usage: python battery_test.py COM6 [--apply-scale] [--only 0,1,2,...]
        python battery_test.py COM6 --finish        # unplug the battery first: restores autostart_mode
+       python battery_test.py COM6 --restore       # an interrupted run: put the saved settings back
+Before the first test the board's settings are written to tools/battery_test.keep.json (git-ignored); it is
+deleted when the restore succeeds. While it exists, --finish refuses and asks for --restore.
 """
-import argparse, struct, sys, time
+import argparse, json, os, struct, sys, time
 import serial
 
 sys.path.insert(0, __file__.rsplit("\\", 1)[0] if "\\" in __file__ else __file__.rsplit("/", 1)[0])
@@ -29,13 +32,17 @@ from autostart_selftest import msp, msp_frame, open_port  # noqa: E402
 
 STATE = {0: "IDLE", 1: "DELAY", 2: "RAMP", 3: "RUN", 4: "DONE", 5: "LOW_BATTERY"}
 KEEP = ["autostart_mode", "autostart_vbat_min", "autostart_delay", "autostart_ramp", "autostart_throttle", "autostart_run_time",
-        "autostart_pattern", "autostart_cell_cutoff", "autostart_cutoff_time", "autostart_cells", "vbat_scale"]
+        "autostart_pattern", "autostart_cell_cutoff", "autostart_cutoff_time", "autostart_cells", "vbat_scale", "autostart_motors"]
 CAP_S = 15
+KEEP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "battery_test.keep.json")
+MASK = 1  # autostart_motors of the board: the outputs whose motor and ESC telemetry are watched
 
 
 def cli(port, cmds, wait=4.0):
-    """Run CLI commands, return the text. End with 'save' or 'exit' (both reboot the board).
-    Every `set` must be confirmed by the board (`... set to ...`), or the CLI is left WITHOUT saving."""
+    """Run CLI commands, return the text. End with 'save' or 'exit' (both reboot the board) or 'exit noreboot'.
+    Every `set` must be confirmed by the board (`... set to ...`). If one is not, nothing is saved and the board
+    is left IN the CLI (the program is held there): leaving it with `exit` would reboot into what was saved
+    before, possibly a test program with the battery in."""
     s = open_port(port, 30)
     time.sleep(0.3)
     for _ in range(10):
@@ -62,10 +69,10 @@ def cli(port, cmds, wait=4.0):
                 time.sleep(0.8)
                 chunk += s.read(8000).decode(errors="replace")
                 if " set to " not in chunk:
-                    s.write(b"exit\r\n")
-                    time.sleep(0.3)
                     s.close()
-                    raise SystemExit("not confirmed by the board: %s -- left the CLI without saving" % c)
+                    raise SystemExit("not confirmed by the board: %s -- nothing saved, the board stays in the CLI "
+                                     "(program held). Unplug the battery, then replug USB and check the settings "
+                                     "(check_reference.py)" % c)
             out += chunk
         except serial.SerialException:
             break
@@ -77,24 +84,69 @@ def cli(port, cmds, wait=4.0):
     return out
 
 
-def sample(s):
+def outputs(mask):
+    return [i for i in range(8) if mask >> i & 1] or [0]
+
+
+def sample(s, mask=None):
+    """one MSP snapshot; the motor value and the ESC telemetry come from the outputs of autostart_motors"""
+    mask = MASK if mask is None else mask
     m, d, t, b = msp(s, 104), msp(s, 254), msp(s, 139), msp(s, 130)
     if not (m and d and b):
         return None
     dbg = struct.unpack("<8h", d[:16])
+    motors = struct.unpack("<%dH" % (len(m) // 2), m)
+    outs = [i for i in outputs(mask) if i < len(motors)] or [0]
     best = None
     if t:
-        for i in range(min(t[0], 4)):
+        for i in range(min(t[0], 8)):
+            if len(t) < 1 + 13 * (i + 1):
+                break
             rpm, inv, temp, ev, cur, cons = struct.unpack_from("<IHBHHH", t, 1 + 13 * i)
-            if best is None or inv < best["bad"]:
-                best = dict(rpm=rpm, bad=inv / 100.0, temp=temp, volts=ev / 100.0, amps=cur / 100.0, out=i + 1)
+            e = dict(rpm=rpm, bad=inv / 100.0, temp=temp, volts=ev / 100.0, amps=cur / 100.0, out=i + 1)
+            # an output of the mask that answers (voltage or rpm) wins; then the fewest bad frames
+            key = (i in outs and (ev > 0 or rpm > 0), -inv)
+            if best is None or key > best[0]:
+                best = (key, e)
     return dict(t=time.time(), state=dbg[0], pct=dbg[1] / 10.0, flags=dbg[4], v_fc=struct.unpack_from("<H", b, 9)[0] / 100.0,
-                esc=best, motor=struct.unpack("<H", m[:2])[0])
+                esc=best[1] if best else None, motor=max(motors[i] for i in outs))
 
 
 def battery_present(samples):
-    """the board or the ESC reads 1 V or more: a battery is connected"""
-    return any(x["v_fc"] >= 1.0 or (x["esc"] and x["esc"]["volts"] >= 1.0) for x in samples)
+    """the board reads 1 V or more on its battery pad (AGENT_PORTING.md question 8: it gets the ESC's pack).
+    The ESC voltage is not used: MSP keeps the last value the ESC sent, also after the battery is unplugged."""
+    return any(x["v_fc"] >= 1.0 for x in samples)
+
+
+def no_battery_or_exit(port, what):
+    """refuse `what` unless MSP answers and the board sees no battery"""
+    s = open_port(port, 15)
+    xs = []
+    for _ in range(10):
+        x = sample(s)
+        if x:
+            xs.append(x)
+        time.sleep(0.2)
+    s.close()
+    if not xs:
+        raise SystemExit("no MSP answer from the board (in the CLI or rebooting): replug USB with the battery out, "
+                         "then run %s again" % what)
+    if battery_present(xs):
+        raise SystemExit("a battery is still connected (board %.2f V): unplug it, then run %s again"
+                         % (max(x["v_fc"] for x in xs), what))
+
+
+def save_keep(base):
+    with open(KEEP_FILE, "w", encoding="utf-8") as f:
+        json.dump(base, f, indent=1)
+
+
+def load_keep():
+    try:
+        with open(KEEP_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
 
 
 def calibration(v_fc, v_esc, cells, scale):
@@ -140,7 +192,8 @@ def show(rows, label):
 
 def run(port, label, sets, seconds, stop_at_state=None, on_sample=None):
     """One capped program run: mode POWER + the given settings, saved (reboot) - the battery is already in,
-    so the countdown starts at boot - then watched, then back to mode OFF."""
+    so the countdown starts at boot - then watched, then back to mode OFF. A mode OFF the board does not confirm
+    leaves it in the CLI, where the program is held (cli())."""
     print("\n%s: %s" % (label, ", ".join(sets)))
     cli(port, ["set autostart_mode = POWER"] + ["set " + x for x in sets] + ["save"], wait=1.0)  # watch from the boot on
     try:
@@ -156,37 +209,52 @@ def main():
     ap.add_argument("port")
     ap.add_argument("--apply-scale", action="store_true")
     ap.add_argument("--only", default="0,1,2,3,4,5")
-    ap.add_argument("--finish", action="store_true")
+    ap.add_argument("--finish", action="store_true", help="battery unplugged: autostart_mode back to POWER")
+    ap.add_argument("--restore", action="store_true", help="battery unplugged: put back the settings of an interrupted run")
     ap.add_argument("--wait-min", type=int, default=5, help="how long to wait for the battery")
     ap.add_argument("--dry-run", action="store_true", help="USB only, no battery: autostart_vbat_min = 0 so the program runs with the ESC unpowered (checks the flow, not RPM)")
     a = ap.parse_args()
     only = {int(x) for x in a.only.split(",")}
 
-    text = cli(a.port, ["get " + k for k in KEEP] + ["exit"])
-    vals = {l.split(" = ")[0].strip(): l.split(" = ")[1].strip() for l in text.splitlines() if " = " in l}
-    if a.finish:
-        # POWER with a battery in = the save reboots the board into a countdown: only with the battery unplugged
-        s = open_port(a.port, 15)
-        xs = []
-        for _ in range(10):
-            x = sample(s)
-            if x:
-                xs.append(x)
-            time.sleep(0.2)
-        s.close()
-        if not xs:
-            raise SystemExit("no MSP answer from the board: replug USB, then run --finish again")
-        if battery_present(xs):
-            raise SystemExit("a battery is still connected (board %.2f V): unplug it, then run --finish again"
-                             % max(x["v_fc"] for x in xs))
+    global MASK
+    keep = load_keep()
+    if a.finish or a.restore:
+        # POWER, or the saved settings, with a battery in = the save reboots the board into a countdown
+        no_battery_or_exit(a.port, "--restore" if a.restore else "--finish")
+        if a.restore:
+            if not keep:
+                raise SystemExit("no saved settings (%s): nothing to restore" % KEEP_FILE)
+            cmds = ["set %s = %s" % (k, v) for k, v in keep.items() if k != "autostart_mode"] + ["set autostart_mode = OFF"]
+            cli(a.port, cmds + ["save"])
+            got = cli(a.port, ["get " + k for k in KEEP] + ["exit noreboot"], wait=1.0)
+            vals = {l.split(" = ")[0].strip(): l.split(" = ")[1].strip() for l in got.splitlines() if " = " in l}
+            bad = [k for k in keep if k != "autostart_mode" and vals.get(k) != keep[k]]
+            if bad:
+                raise SystemExit("restore not confirmed for: %s" % ", ".join(bad))
+            os.remove(KEEP_FILE)
+            print("restored the saved settings with autostart_mode = OFF; run --finish to put POWER back")
+            return
+        if keep:
+            raise SystemExit("an earlier run did not restore its settings (%s): run --restore first" % KEEP_FILE)
         print(cli(a.port, ["set autostart_mode = POWER", "save"]) and "autostart_mode = POWER: the motor starts again on every power-up")
         return
+    if keep:
+        raise SystemExit("an earlier run did not restore its settings (%s): run --restore first" % KEEP_FILE)
+    # read-only visit: `exit noreboot` leaves the CLI without a restart (the program stays held)
+    text = cli(a.port, ["get " + k for k in KEEP] + ["exit noreboot"], wait=1.0)
+    vals = {l.split(" = ")[0].strip(): l.split(" = ")[1].strip() for l in text.splitlines() if " = " in l}
     base = {k: vals[k] for k in KEEP if k in vals}
+    missing = [k for k in KEEP if k not in base]
+    if missing:
+        raise SystemExit("could not read %s from the board: nothing changed" % ", ".join(missing))
+    MASK = int(base["autostart_motors"])
+    save_keep(base)
     print("board now:", base)
     if base.get("autostart_mode") != "OFF":
         cli(a.port, ["set autostart_mode = OFF", "save"])
         print("autostart_mode -> OFF for the session")
     restore = ["set %s = %s" % (k, v) for k, v in base.items() if k != "autostart_mode"] + ["set autostart_mode = OFF"]
+    restored = []
     cells, scale = int(base.get("autostart_cells", 6)), int(base.get("vbat_scale", 210))
     if a.dry_run:
         cli(a.port, ["set autostart_vbat_min = 0", "save"])
@@ -234,6 +302,7 @@ def main():
                 results["1 calibrated board within 2 % of the ESC"] = good
                 if good:   # otherwise the restore puts the old value back
                     restore = [r for r in restore if not r.startswith("set vbat_scale")] + ["set vbat_scale = %d" % new_scale]
+                    save_keep(dict(base, vbat_scale=str(new_scale)))
             elif a.apply_scale and verdict is not None:
                 results["1 vbat_scale: " + why] = verdict
 
@@ -260,21 +329,33 @@ def main():
                 if x["state"] == 1 and not sent:      # countdown: what the web page's STOP sends
                     s.write(msp_frame(214, struct.pack("<8H", *[1000] * 8)))
                     sent.append(x["t"])
-            rows = run(a.port, "4 STOP during the countdown", ["autostart_delay = 10", "autostart_ramp = 30",
+            rows = run(a.port, "4 STOP during the countdown", ["autostart_delay = 10", "autostart_ramp = 30", "autostart_throttle = 15",
                                                                  "autostart_run_time = 8", "autostart_pattern = STEADY"], 25, on_sample=stop_once)
             after = [r for r in rows if sent and r["t"] > sent[0]]
             results["4 STOP sent during the countdown"] = bool(sent)
             results["4 nothing turns after STOP (held flag)"] = bool(after) and all(r["motor"] <= 1000 and r["state"] in (0, 4) for r in after[3:]) \
                 and any(r["flags"] & 64 for r in after)
 
-        if 5 in only:
-            rows = run(a.port, "5 cut-off", ["autostart_delay = 3", "autostart_ramp = 30", "autostart_run_time = 12",
+        v_now = None
+        try:
+            s = open_port(a.port, 5)
+            v_now = (sample(s) or {}).get("v_fc")
+            s.close()
+        except (serial.SerialException, SystemExit, OSError):
+            pass
+        if 5 in only and cells and v_now and v_now / cells >= 4.15:
+            print("\n5 cut-off: SKIPPED, the pack is at %.2f V/cell, at or above the highest cut-off (4.20 V/cell)" % (v_now / cells))
+        elif 5 in only:
+            rows = run(a.port, "5 cut-off", ["autostart_delay = 3", "autostart_ramp = 30", "autostart_throttle = 15", "autostart_run_time = 12",
                                               "autostart_cell_cutoff = 420", "autostart_cutoff_time = 2", "autostart_pattern = STEADY"], 20, stop_at_state=5)
             low = [r for r in rows if r["state"] == 5]
             results["5 cut-off: LOW_BATTERY and motor stopped"] = bool(low) and max(r["motor"] for r in low) <= 1000
     finally:
         cli(a.port, restore + ["save"])
+        restored.append(True)
         print("\nrestored: " + "; ".join(x[4:] for x in restore))
+    if restored and os.path.exists(KEEP_FILE):
+        os.remove(KEEP_FILE)
     print()
     for k, ok in results.items():
         print(("PASS " if ok else "FAIL ") + k)

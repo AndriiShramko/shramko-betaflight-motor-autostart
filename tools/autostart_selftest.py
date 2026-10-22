@@ -21,8 +21,11 @@ usage
 
 Without a battery set `autostart_vbat_min = 0` on the board, otherwise the program waits for the battery.
 With a battery connected the motor really turns: the test refuses unless --hot is given (propeller off).
-At the end it sends STOP (what the Configurator Motors tab / the web page's STOP sends): the program is held
-until the board restarts, so a hot run does not keep the motor turning.
+It also refuses when the board does not answer MSP (in the CLI or rebooting: the battery cannot be checked),
+and stops the capture when a battery appears during a run without --hot. At the end - also after an error -
+it sends STOP (what the Configurator Motors tab / the web page's STOP sends): the program is held until the
+board restarts, so a hot run does not keep the motor turning. For a hot run cap it first:
+`set autostart_run_time = 15`.
 """
 import argparse, csv, statistics, struct, sys, time
 import serial
@@ -126,11 +129,39 @@ def battery_volts(port):
     return struct.unpack_from("<H", b, 9)[0] / 100.0 if b and len(b) >= 11 else None
 
 
+def send_stop(port, s=None):
+    """MSP_SET_MOTOR all at 1000 (STOP): the program is held until the board restarts"""
+    for attempt in range(2):
+        try:
+            if s is None:
+                s = open_port(port, 5)
+            s.write(msp_frame(MSP_SET_MOTOR, struct.pack("<8H", *[1000] * 8)))
+            time.sleep(0.2)
+            s.close()
+            return True
+        except (serial.SerialException, SystemExit, OSError):
+            s = None
+    return False
+
+
 def capture(a):
+    if not 1 <= a.motor <= 8:
+        raise SystemExit("--motor must be 1-8 (1-based output number)")
     v = battery_volts(a.port)
-    if v is not None and v >= 1.0 and not a.hot:
+    if v is None:
+        raise SystemExit("no MSP answer from the board (in the CLI or rebooting): the battery cannot be checked. "
+                         "Replug USB with the battery out, then run again.")
+    if v >= 1.0 and not a.hot:
         raise SystemExit("a battery is connected (board %.2f V): the test reboots the board and the motor turns. "
                          "Propeller off, then run again with --hot (or unplug the battery)." % v)
+    try:
+        return _capture(a)
+    finally:
+        if not send_stop(a.port):
+            print("!!! STOP could not be sent: unplug the battery")
+
+
+def _capture(a):
     cfg = read_settings_and_reboot(a.port)
     if cfg:
         a.delay = float(cfg.get("autostart_delay", a.delay))
@@ -169,17 +200,15 @@ def capture(a):
                 rpm, inv = best[0], best[1] / 100.0
         if b and len(b) >= 11:
             vbat = struct.unpack_from("<H", b, 9)[0] / 100.0
+            if vbat >= 1.0 and not a.hot:
+                print("!!! a battery appeared during the capture (board %.2f V): STOP, capture ended" % vbat)
+                break
         f = dbg[4]
         rows.append((dbg[3] / 10.0, motors[a.motor - 1], dbg[0], dbg[1] / 10.0, dbg[2] * 10,
                      f & 1, (f >> 1) & 1, (f >> 2) & 1, dbg[7], rpm, inv, vbat, (f >> 3) & 1, dbg[6] / 10.0,
                      round(time.monotonic() - t_start, 3)))
     # STOP: the program is held until the board restarts (a hot run must not keep the motor turning)
-    try:
-        s.write(msp_frame(MSP_SET_MOTOR, struct.pack("<8H", *[1000] * 8)))
-        time.sleep(0.2)
-    except serial.SerialException:
-        pass
-    s.close()
+    send_stop(a.port, s)
     with open(a.csv, "w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(COLS)

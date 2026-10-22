@@ -7,11 +7,13 @@ appends the block, and writes:
   configs/<BOARD>/after-flash.txt the CLI lines to send after the first boot, and the exact check command
 
 usage: python tools/make_board_config.py BOARD --cells N --motors MASK --esc-telemetry UARTn|none
-                                         [--usb-inhibit ON|OFF] [--from FILE_OR_DIR] [--force] [--print]
+                                         [--backup FILE] [--usb-inhibit ON|OFF] [--from FILE_OR_DIR] [--force] [--print]
   BOARD            the config folder name in betaflight/config (usually the board_name; a few differ)
   --cells N        series cells of YOUR battery (reference 6)
   --motors MASK    outputs whose motor should spin: 1 = output 1, 15 = outputs 1-4 (reference 15)
   --esc-telemetry  the UART whose RX pad gets the ESC's TX wire (pad R4/RX4 = UART4), or none
+  --backup FILE    the board's CLI backup (version + status): its board_name, MCU and gyro are checked against
+                   the config before anything is flashed
   --usb-inhibit    ON: never spin while a computer is connected (reference OFF; forced ON without a voltage meter)
   --from           a config.h (or a folder with config.h and config.c) instead of betaflight/config
   --force          overwrite configs/<BOARD>/, replace an existing project block, accept an unknown MCU
@@ -116,13 +118,49 @@ def fetch(board, name):
         raise
 
 
-def similar_boards(board):
-    """config folders on the branch that look like `board` (best effort: the GitHub API may be rate-limited)"""
+def read_text(path):
+    raw = Path(path).read_bytes()
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        return raw.decode("utf-16", errors="replace")
+    return raw.decode("utf-8-sig", errors="replace")
+
+
+def backup_facts(text):
+    """board_name, MCU (version line) and gyro chip (status) from a CLI backup"""
+    m = re.search(r"board_name: (\S+)", text)
+    name = m.group(1) if m else None
+    m = re.search(r"^# \w+ / (\S+) ", text, re.M)
+    mcu = m.group(1) if m else None
+    m = re.search(r"^GYRO(?::\s*(?:\(\d\)\s*)?|=)([A-Za-z0-9_]+)", text, re.M)
+    gyro = m.group(1) if m else None
+    return name, mcu, gyro
+
+
+def config_folders():
     try:
         tree = json.loads(http_get(TREE_URL + "?recursive=1"))["tree"]
     except Exception:  # offline, rate limit
         return []
-    names = sorted({t["path"].split("/")[1] for t in tree if t["path"].startswith("configs/") and t["path"].count("/") >= 1})
+    return sorted({t["path"].split("/")[1] for t in tree if t["path"].startswith("configs/") and t["path"].count("/") >= 2})
+
+
+def folders_for_board_name(name, folders):
+    """config folders whose BOARD_NAME is `name` (a few differ from their folder: BHF405V2 = BROTHERHOBBYF405V2)"""
+    m = re.search(r"[A-Z]\d{3}[A-Z0-9_]*", name.upper())
+    key = m.group(0) if m else name.upper()
+    hits = []
+    for f in [f for f in folders if key in f.upper()][:25]:
+        try:
+            if defines(http_get(CONFIG_URL.format(board=f, name="config.h"))).get("BOARD_NAME") == name:
+                hits.append(f)
+        except Exception:
+            pass
+    return hits
+
+
+def similar_boards(board):
+    """config folders on the branch that look like `board` (best effort: the GitHub API may be rate-limited)"""
+    names = config_folders()
     key = board.upper()
     hits = [n for n in names if key in n.upper() or n.upper() in key]
     return (hits + [n for n in difflib.get_close_matches(key, names, n=6, cutoff=0.5) if n not in hits])[:8]
@@ -153,7 +191,7 @@ def mask_bits(mask):
     return [i + 1 for i in range(8) if mask >> i & 1]
 
 
-def block(cells, motors, usb_inhibit):
+def block(cells, motors, usb_inhibit, vbat_line=False, gate=True):
     outputs = mask_bits(motors)
     out_txt = "output %d" % outputs[0] if len(outputs) == 1 else "outputs " + ", ".join(map(str, outputs))
     return "\n".join([
@@ -169,10 +207,16 @@ def block(cells, motors, usb_inhibit):
         "#define AUTOSTART_DEFAULT_MOTOR_MASK   0x%02X    // %s" % (motors, out_txt),
         "#define AUTOSTART_DEFAULT_USB_INHIBIT  %d       // %s" % (
             usb_inhibit, "never spin while a computer is connected" if usb_inhibit else
-            "may spin while a computer is connected (the battery gate keeps USB-only safe)"),
+            "may spin while a computer is connected (the battery gate keeps USB-only safe)" if gate else
+            "may spin while a computer is connected: this board has NO battery gate"),
         "#define AUTOSTART_DEFAULT_VBAT_MIN_DV  60      // 6.0 V: countdown starts when the battery is plugged in",
         "#define AUTOSTART_DEFAULT_CELLS        %d       // %s" % (cells, "%dS battery" % cells if cells else "auto-detect"),
         "#define AUTOSTART_DEFAULT_CELL_CUTOFF_CV 330   // stop the motor below 3.30 V per cell for 5 s",
+    ] + ([
+        "// the board has the battery pad (ADC_VBAT_PIN) but its config leaves the voltage meter off: the battery",
+        "// gate and the cut-off need it",
+        "#define DEFAULT_VOLTAGE_METER_SOURCE   VOLTAGE_METER_ADC",
+    ] if vbat_line else []) + [
         "",
         "// Survive any config reset (Betaflight resets the whole config when a parameter group changes):",
         "#define DEFAULT_MOTOR_DSHOT_SPEED      MOTOR_PROTOCOL_DSHOT300",
@@ -210,11 +254,14 @@ def repo_commit():
 
 
 def after_flash(board, esc_uart, preset_uart, rx, cells, motors, usb_inhibit, vbat_meter, board_name=None, commit=None):
+    """(after-flash.txt text, the complete check_reference.py command)"""
     send = []
     lines = ["# Shramko Motor Autostart: board-level part of the reference setup for %s." % board,
              "# Send after the first boot of the new firmware, USB only, battery unplugged, propeller off."]
     if esc_uart:
         if esc_uart != preset_uart:
+            if preset_uart:  # Betaflight reads the first UART with the function: take it off the preset one
+                send.append("serial %s 0 115200 57600 0 115200" % preset_uart)
             send.append("serial %s 1024 115200 57600 0 115200" % esc_uart)
         send.append("feature ESC_SENSOR")
         lines.append("# ESC TX wire -> %s RX pad (%s): function 1024 (ESC_SENSOR) on that UART, feature ESC_SENSOR." % (esc_uart, rx.get(esc_uart, "?")))
@@ -224,20 +271,23 @@ def after_flash(board, esc_uart, preset_uart, rx, cells, motors, usb_inhibit, vb
         lines.append("# No ESC TX wire: nothing to send for ESC telemetry.")
     lines += send
     check = "python tools/check_reference.py <PORT> --cells %d --motors %d" % (cells, motors)
-    if usb_inhibit:
+    if vbat_meter and usb_inhibit:
         check += " --usb-inhibit ON"
     if not vbat_meter:
-        check += " --no-vbat-meter"
-    if esc_uart is False or esc_uart is None:
+        check += " --no-vbat-meter" + ("" if usb_inhibit else " --usb-inhibit OFF")
+    if esc_uart:
+        check += " --esc-uart %s" % esc_uart
+    else:
         check += " --no-esc-sensor"
+    check += " --vbat-scale <calibrated> --commit %s --board %s --exit" % (commit or "<the commit you built>", board_name or "<board_name>")
     if send:
         lines += ["save", "",
                   "# As one command:",
                   "#   python tools/bf_cli.py <PORT> %s \"save\"" % " ".join('"%s"' % x for x in send)]
     else:
         lines += ["", "# Nothing to send: skip this file."]
-    lines += ["", "# Then calibrate vbat_scale (AGENT_PORTING.md, step 8) and check (step 9):",
-              "#   " + check + " --vbat-scale <calibrated> --commit %s --board %s --exit" % (commit or "<the commit you built>", board_name or "<board_name>"), ""]
+    lines += ["", "# Then calibrate vbat_scale (AGENT_PORTING.md, step 8; not calibrated: leave out --vbat-scale and",
+              "# expect WARN vbat_scale) and check (step 9):", "#   " + check, ""]
     return "\n".join(lines), check
 
 
@@ -249,6 +299,7 @@ def main(argv=None):
     ap.add_argument("--cells", type=int, help="series cells of your battery (reference %s)" % REFERENCE["cli"]["autostart_cells"])
     ap.add_argument("--motors", type=lambda s: int(s, 0), help="outputs whose motor should spin, bitmask (reference %s)" % REFERENCE["cli"]["autostart_motors"])
     ap.add_argument("--esc-telemetry", help="UARTn whose RX pad gets the ESC TX wire, or none")
+    ap.add_argument("--backup", help="the board's CLI backup (version, status): board_name, MCU and gyro are checked")
     ap.add_argument("--usb-inhibit", choices=["ON", "OFF"], help="reference %s" % REFERENCE["cli"]["autostart_usb_inhibit"])
     ap.add_argument("--force", action="store_true", help="overwrite, replace a block, accept an unknown MCU")
     ap.add_argument("--print", dest="print_only", action="store_true", help="print the result, write nothing")
@@ -275,11 +326,15 @@ def main(argv=None):
         return 2
     if text is None:
         print("%s is not a config folder on betaflight/config branch %s (%s)." % (a.board, BRANCH, origin))
+        exact = folders_for_board_name(a.board, config_folders())
+        if exact:
+            print("board_name %s is the config folder %s: run again with that name" % (a.board, " or ".join(exact)))
+            return 2
         near = similar_boards(a.board)
         if near:
-            print("folders with a similar name: %s (a few folders differ from the board_name)" % ", ".join(near))
-        print("Otherwise look on master under configs/<MANUFACTURER_ID>/%s, or rebuild the config from `dump hardware`"
-              " (AGENT_PORTING.md, appendix A), then run with --from." % a.board)
+            print("folders with a similar name: %s. Use one only if its BOARD_NAME is the board's board_name" % ", ".join(near))
+        print("A config on master (configs/<MANUFACTURER_ID>/%s) targets newer firmware: use it only through appendix A"
+              " of AGENT_PORTING.md (--from, checked against dump hardware), or rebuild the config from `dump hardware`." % a.board)
         return 2
     text = text.replace("\r\n", "\n").replace("\r", "\n")
 
@@ -321,11 +376,19 @@ def main(argv=None):
     text = "\n".join(out).rstrip("\n") + "\n"
 
     # voltage sensing: the battery gate and the cut-off need it
-    vbat_meter = "ADC_VBAT_PIN" in d and d.get("DEFAULT_VOLTAGE_METER_SOURCE") == "VOLTAGE_METER_ADC"
+    vbat_line = "ADC_VBAT_PIN" in d and d.get("DEFAULT_VOLTAGE_METER_SOURCE") != "VOLTAGE_METER_ADC"
+    if vbat_line:
+        if "DEFAULT_VOLTAGE_METER_SOURCE" in d:  # set to something else: the block's line replaces it
+            text = "\n".join("// " + l.strip() + "   // replaced by the Shramko Motor Autostart block below"
+                              if (DEFINE.match(l) and DEFINE.match(l).group(1) == "DEFAULT_VOLTAGE_METER_SOURCE") else l
+                              for l in text.split("\n"))
+        notes.append("the board has a battery pad (ADC_VBAT_PIN %s) but its config leaves the voltage meter off: "
+                     "the block turns it on (battery_meter = ADC)" % d["ADC_VBAT_PIN"])
+    vbat_meter = "ADC_VBAT_PIN" in d
     usb_inhibit = None if a.usb_inhibit is None else int(a.usb_inhibit == "ON")
     if not vbat_meter:
-        warnings.append("no ADC voltage meter (ADC_VBAT_PIN + DEFAULT_VOLTAGE_METER_SOURCE VOLTAGE_METER_ADC): "
-                        "no battery gate and no cut-off, the countdown starts at boot")
+        warnings.append("no battery pad in this config (ADC_VBAT_PIN): no battery gate and no cut-off, the countdown "
+                        "starts at boot, and no tool can see whether a battery is connected")
         if usb_inhibit is None:
             usb_inhibit = 1
             warnings.append("so autostart_usb_inhibit = ON here (pass --usb-inhibit OFF to override)")
@@ -343,6 +406,9 @@ def main(argv=None):
                      "(after flashing, `status` must show a GYRO line with a chip)" % ", ".join(unknown_imu))
 
     motor_pins = sorted(int(m.group(1)) for k in d for m in [re.match(r"MOTOR(\d+)_PIN$", k)] if m)
+    if [b for b in mask_bits(motors) if b > 4]:
+        warnings.append("--motors includes outputs above 4: the default mixer (QUADX) drives outputs 1-4 only, so "
+                        "those never spin unless the mixer is changed")
     beyond = [b for b in mask_bits(motors) if b not in motor_pins]
     if beyond:
         warnings.append("--motors includes output(s) %s, the config has motor pins %s"
@@ -389,7 +455,26 @@ def main(argv=None):
     else:
         warnings.append("--esc-telemetry not given: say which UART gets the ESC TX wire (UARTn) or none")
 
-    result = text + "\n" + block(cells, motors, usb_inhibit)
+    if a.backup:
+        try:
+            bname, bmcu, bgyro = backup_facts(read_text(a.backup))
+        except OSError as e:
+            print("cannot read the backup: %s" % e)
+            return 2
+        if bname and bname != name:
+            warnings.append("the backup's board_name is %s, this config's BOARD_NAME is %s: wrong config?" % (bname, name))
+        if bmcu and mcu and bmcu.upper() != mcu.upper():
+            warnings.append("the backup's MCU is %s, this config's is %s: wrong config" % (bmcu, mcu))
+        if not bgyro or bgyro.upper() in ("NONE", "NOT"):
+            warnings.append("the backup shows no gyro (GYRO line): Betaflight drives the motors only with a gyro")
+        else:
+            drv = [k for k in imu if bgyro.upper() in k]
+            if not [k for k in drv if k in KNOWN_IMU]:
+                warnings.append("the board's gyro %s has no Betaflight 2025.12.1 driver in this config (%s): the motors "
+                                "would never be driven, stop" % (bgyro, ", ".join(drv) or "not listed"))
+            else:
+                notes.append("backup: board_name %s, MCU %s, gyro %s (driver in the config)" % (bname, bmcu, bgyro))
+    result = text + "\n" + block(cells, motors, usb_inhibit, vbat_line, gate=vbat_meter)
     flash, check_cmd = after_flash(a.board, esc_uart, preset_uart, rx, cells, motors, usb_inhibit, vbat_meter, name,
                                    None if a.print_only else repo_commit())
     target = REPO / "configs" / a.board
@@ -414,7 +499,7 @@ def main(argv=None):
     with open(target / "after-flash.txt", "w", encoding="utf-8", newline="\n") as f:
         f.write(flash)
     print("wrote configs/%s/config.h (sha256 %s)%s and configs/%s/after-flash.txt"
-          % (a.board, hashlib.sha256(result.encode("utf-8")).hexdigest()[:16], " + config.c" if config_c is not None else "", a.board))
+          % (a.board, hashlib.sha256(result.encode("utf-8")).hexdigest(), " + config.c" if config_c is not None else "", a.board))
     print("next: build it (AGENT_PORTING.md, step 6) with the docker prefix of your shell:")
     for shell, run in RUN.items():
         print("  %-18s %s bash /repo/build/build.sh %s" % (shell + ":", run, a.board))

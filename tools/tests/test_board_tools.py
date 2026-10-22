@@ -100,6 +100,14 @@ class CheckReference(unittest.TestCase):
         adapted = FIXTURE.replace("autostart_cells = 6", "autostart_cells = 4").replace("autostart_motors = 15", "autostart_motors = 1")
         self.assertEqual(fails(cr.check(cr.parse(adapted), 4, 1, "OFF")), set())
 
+    def test_esc_uart(self):
+        self.assertEqual(fails(cr.check(cr.parse(FIXTURE), 6, 15, "OFF", esc_uart="UART5")), set())
+        self.assertEqual(fails(cr.check(cr.parse(FIXTURE), 6, 15, "OFF", esc_uart="UART7")), {"serial ESC_SENSOR (1024)"})
+        two = FIXTURE.replace("serial UART3 0 ", "serial UART3 1024 ")
+        self.assertEqual(fails(cr.check(cr.parse(two), 6, 15, "OFF")), {"serial ESC_SENSOR (1024)"})
+        # Betaflight reads the first UART with the function: the wired one must be the only one
+        self.assertEqual(fails(cr.check(cr.parse(two), 6, 15, "OFF", esc_uart="UART5")), {"serial ESC_SENSOR (1024)"})
+
     def test_esc_sensor_needs_the_uart_function(self):
         no_port = FIXTURE.replace("serial UART5 1024", "serial UART5 0")
         self.assertEqual(fails(cr.check(cr.parse(no_port), 6, 15, "OFF")), {"serial ESC_SENSOR (1024)"})
@@ -188,7 +196,7 @@ class MakeBoardConfig(unittest.TestCase):
         # UART5 is preset: only the feature has to be sent
         self.assertIn('python tools/bf_cli.py <PORT> "feature ESC_SENSOR" "save"', flash)
         self.assertNotIn("serial UART5", flash)
-        self.assertIn("check_reference.py <PORT> --cells 6 --motors 15 --vbat-scale", flash)
+        self.assertIn("check_reference.py <PORT> --cells 6 --motors 15 --esc-uart UART5 --vbat-scale", flash)
 
     def test_stock_build_cut_leaves_the_vendor_config(self):
         stock = stock_cut(self.make(*ALL)[2])
@@ -268,10 +276,55 @@ class MakeBoardConfig(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("no battery gate and no cut-off", out)
         self.assertEqual(block_defines(cfg)["AUTOSTART_DEFAULT_USB_INHIBIT"], "1")
-        self.assertIn("--usb-inhibit ON --no-vbat-meter", flash)
+        self.assertIn("--motors 15 --no-vbat-meter --esc-uart", flash)  # check_reference then expects inhibit ON
         for form in (["--usb-inhibit", "OFF"], ["--usb-inhibit=OFF"]):
-            cfg = self.make(*ALL, *form, board_h=no_vbat)[2]
+            _, _, cfg, flash = self.make(*ALL, *form, board_h=no_vbat)
             self.assertEqual(block_defines(cfg)["AUTOSTART_DEFAULT_USB_INHIBIT"], "0", form)
+            self.assertIn("--no-vbat-meter --usb-inhibit OFF", flash)
+            self.assertIn("NO battery gate", cfg)
+
+    def test_battery_pad_without_meter_source_gets_it(self):
+        # 22 real boards (CRAZYBEEF405, BETAFLIGHTF4, ...) have ADC_VBAT_PIN but no DEFAULT_VOLTAGE_METER_SOURCE
+        board = BOARD_H.replace("#define DEFAULT_VOLTAGE_METER_SOURCE VOLTAGE_METER_ADC\n", "")
+        code, out, cfg, flash = self.make(*ALL, board_h=board)
+        self.assertEqual(code, 0)
+        self.assertNotIn("WARNING", out)
+        d = block_defines(cfg)
+        self.assertEqual((d["DEFAULT_VOLTAGE_METER_SOURCE"], d["AUTOSTART_DEFAULT_USB_INHIBIT"]), ("VOLTAGE_METER_ADC", "0"))
+        self.assertNotIn("--no-vbat-meter", flash)
+        self.assertNotIn("VOLTAGE_METER", stock_cut(cfg))  # the stock build keeps the board's own meter setting
+        other = BOARD_H.replace("VOLTAGE_METER_ADC", "VOLTAGE_METER_NONE")
+        cfg = self.make(*ALL, board_h=other)[2]
+        self.assertEqual(mbc.defines(cfg)["DEFAULT_VOLTAGE_METER_SOURCE"], "VOLTAGE_METER_ADC")
+        self.assertEqual(len(re.findall(r"^#define DEFAULT_VOLTAGE_METER_SOURCE", cfg, re.M)), 1)
+
+    def test_wired_uart_other_than_the_preset(self):
+        _, _, _, flash = self.make("--cells", "6", "--motors", "1", "--esc-telemetry", "UART3")
+        self.assertIn('"serial UART5 0 115200 57600 0 115200" "serial UART3 1024 115200 57600 0 115200" "feature ESC_SENSOR"', flash)
+        self.assertIn("--esc-uart UART3", flash)
+
+    def test_motors_above_the_mixer(self):
+        self.assertIn("outputs above 4", self.make("--cells", "6", "--motors", "16", "--esc-telemetry", "none",
+                                                   board_h=BOARD_H + "#define MOTOR5_PIN PC9\n")[1])
+        self.assertNotIn("outputs above 4", self.make(*ALL)[1])
+
+    def test_backup_check(self):
+        backup = "# Betaflight / STM32F405 (S405) 4.5.1 Jan 01 2025\n# board: manufacturer_id: TEST, board_name: TESTF405\nGYRO: (1) ICM42688P enabled\n"
+        with tempfile.TemporaryDirectory() as d:
+            b = Path(d) / "before.txt"
+            for text, warn in ((backup, None),
+                               (backup.replace("ICM42688P", "LSM6DSK320X"), "has no Betaflight 2025.12.1 driver"),
+                               (backup.replace("ICM42688P", "BMI270"), "has no Betaflight 2025.12.1 driver"),
+                               (backup.replace("GYRO: (1) ICM42688P enabled", "GYRO: None"), "shows no gyro"),
+                               (backup.replace("board_name: TESTF405", "board_name: OTHERF405"), "wrong config?"),
+                               (backup.replace("STM32F405", "STM32F7X2"), "wrong config")):
+                b.write_bytes(text.encode("utf-16"))  # as PowerShell writes it
+                out = self.make(*ALL, "--backup", str(b))[1]
+                if warn:
+                    self.assertIn(warn, out, text)
+                else:
+                    self.assertIn("backup: board_name TESTF405, MCU STM32F405, gyro ICM42688P (driver in the config)", out)
+                    self.assertNotIn("WARNING", out)
 
     def test_exst_board_warns(self):
         out = self.make(*ALL, board_h=BOARD_H.replace("STM32F405", "STM32H730") + "#define FC_VMA_ADDRESS 0x90100000\n")[1]
@@ -306,7 +359,85 @@ class BatteryTestLogic(unittest.TestCase):
         bp = self.bt.battery_present
         self.assertFalse(bp([dict(v_fc=0.1, esc=None), dict(v_fc=0.0, esc=dict(volts=0.0))]))
         self.assertTrue(bp([dict(v_fc=0.1, esc=None), dict(v_fc=22.3, esc=None)]))
-        self.assertTrue(bp([dict(v_fc=0.0, esc=dict(volts=22.3))]))  # VBAT pad not on the pack, ESC powered
+        # the ESC voltage is not proof: MSP keeps its last value after the battery is unplugged
+        self.assertFalse(bp([dict(v_fc=0.0, esc=dict(volts=22.3))]))
+
+    def test_sample_follows_the_motor_mask(self):
+        import struct
+        motors = struct.pack("<8H", 1000, 1000, 1150, 1000, 1000, 1000, 1000, 1000)
+        dbg = struct.pack("<8h", 3, 150, 0, 100, 8, 223, 50, 1)
+        bat = bytes(9) + struct.pack("<H", 2230) + bytes(2)
+        tel = bytes([4])
+        for i in range(4):  # TX-wire telemetry: no bad frames anywhere; only output 3 has an ESC
+            tel += struct.pack("<IHBHHH", 5200 if i == 2 else 0, 0, 31 if i == 2 else 0, 2512 if i == 2 else 0, 0, 0)
+        answers = {104: motors, 254: dbg, 139: tel, 130: bat}
+        real = self.bt.msp
+        self.bt.msp = lambda s, cmd, timeout=0.3: answers.get(cmd)
+        try:
+            x = self.bt.sample(None, mask=4)
+            self.assertEqual((x["motor"], x["esc"]["out"], x["esc"]["volts"], x["esc"]["rpm"]), (1150, 3, 25.12, 5200))
+            # negative control: the old behaviour (output 1 only) would see a stopped motor
+            self.assertEqual(self.bt.sample(None, mask=1)["motor"], 1000)
+        finally:
+            self.bt.msp = real
+
+
+class FcPeekVerdict(unittest.TestCase):
+    def test_battery_verdict(self):
+        import fc_peek
+        v = fc_peek.battery_verdict
+        self.assertEqual(v([0.1, 0.0, 0.1], 1)[0], 0)
+        self.assertEqual(v([0.1, 22.3], 1)[0], 1)
+        self.assertEqual(v([], 1)[0], 2)          # the board is in the CLI: nothing proven
+        self.assertEqual(v([0.0, 0.0], 0)[0], 3)  # battery_meter NONE: 0 V proves nothing
+        self.assertEqual(v([0.0], None)[0], 0)    # meter source not read: the voltage still decides
+
+
+class SelftestRefusals(unittest.TestCase):
+    """autostart_selftest.capture(): never reboot a board whose battery cannot be checked, always STOP"""
+
+    def setUp(self):
+        import importlib
+        self.st = importlib.import_module("autostart_selftest")
+        self.saved = (self.st.battery_volts, self.st._capture, self.st.send_stop)
+        self.stops = []
+        self.st.send_stop = lambda port, s=None: self.stops.append(port) or True
+
+    def tearDown(self):
+        self.st.battery_volts, self.st._capture, self.st.send_stop = self.saved
+
+    def args(self, hot=False, motor=1):
+        class A:
+            pass
+        a = A()
+        a.port, a.hot, a.motor = "COMX", hot, motor
+        return a
+
+    def test_refusals(self):
+        ran = []
+        self.st._capture = lambda a: ran.append(a) or []
+        for volts, hot in ((None, False), (None, True), (22.3, False)):
+            self.st.battery_volts = lambda port, v=volts: v
+            with self.assertRaises(SystemExit):
+                self.st.capture(self.args(hot))
+        with self.assertRaises(SystemExit):
+            self.st.capture(self.args(motor=9))
+        self.assertEqual(ran, [])
+        self.st.battery_volts = lambda port: 22.3
+        self.st.capture(self.args(hot=True))
+        self.st.battery_volts = lambda port: 0.1
+        self.st.capture(self.args())
+        self.assertEqual(len(ran), 2)
+        self.assertEqual(len(self.stops), 2)
+
+    def test_stop_after_an_error(self):
+        def boom(a):
+            raise RuntimeError("port gone")
+        self.st._capture = boom
+        self.st.battery_volts = lambda port: 0.0
+        with self.assertRaises(RuntimeError):
+            self.st.capture(self.args())
+        self.assertEqual(self.stops, ["COMX"])
 
 
 class SettingsDoc(unittest.TestCase):

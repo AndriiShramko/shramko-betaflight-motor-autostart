@@ -1,6 +1,12 @@
 """Read-only snapshot of a running Shramko Motor Autostart board over MSP (no CLI, no reboot):
 program state, commanded throttle, motor outputs, battery voltage, ESC telemetry for every output.
 usage: python fc_peek.py COM6 [seconds]
+The last line is the battery verdict, also as the exit code (AGENT_PORTING.md, rule 1):
+  0 "no battery": every batt= below 1 V            1 "BATTERY CONNECTED": a batt= of 1 V or more
+  2 "NO MSP ANSWER": nothing proven (the board is in the CLI or rebooting: replug USB with the battery out)
+  3 "NOT MEASURED": battery_meter is not ADC, so the board cannot see a battery (ask the human)
+escV= is the last value the ESC sent: it stays after the battery is unplugged until the board restarts,
+so it is shown but never used as proof that there is no battery.
 """
 import struct, sys, time
 import serial
@@ -38,11 +44,16 @@ def main():
     v = msp(s, 3)
     b = msp(s, 5)
     print("firmware:", ".".join(str(x) for x in v[:3]) if v else None, "| build:", b[:26].decode(errors="replace") if b else None)
+    bc = msp(s, 32)  # MSP_BATTERY_CONFIG: byte 5 = voltage meter source (0 NONE, 1 ADC, 2 ESC)
+    meter = bc[5] if bc and len(bc) >= 6 else None
+    seen = []
     t_end = time.time() + seconds
     while time.time() < t_end:
         m, d, t, bat = msp(s, 104), msp(s, 254), msp(s, 139), msp(s, 130)
         if not (m and d):
             continue
+        if bat and len(bat) >= 11:
+            seen.append(struct.unpack_from("<H", bat, 9)[0] / 100.0)
         motors = struct.unpack("<8H", m[:16])
         dbg = struct.unpack("<8h", d[:16])
         volts = struct.unpack_from("<H", bat, 9)[0] / 100.0 if bat and len(bat) >= 11 else None
@@ -56,6 +67,20 @@ def main():
               % (dbg[3] / 10.0, STATE.get(dbg[0], dbg[0]), dbg[1] / 10.0, motors[:4], volts, cells, dbg[4], "; ".join(tel)))
         time.sleep(1.0)
     s.close()
+    code, verdict = battery_verdict(seen, meter)
+    print(verdict)
+    sys.exit(code)
+
+
+def battery_verdict(volts, meter):
+    """(exit code, last line) from the batt= readings and the voltage meter source"""
+    if not volts:
+        return 2, "NO MSP ANSWER: nothing proven (board in the CLI or rebooting: replug USB with the battery out, run again)"
+    if max(volts) >= 1.0:
+        return 1, "BATTERY CONNECTED: batt up to %.2f V" % max(volts)
+    if meter is not None and meter != 1:
+        return 3, "NOT MEASURED: battery_meter is not ADC, the board cannot see a battery (ask the human)"
+    return 0, "no battery: every batt= below 1 V (%d samples)" % len(volts)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,11 @@ Waits for the port to appear (after a reboot) and retries CLI entry until the pr
 """
 import serial, sys, time
 
+if len(sys.argv) < 2 or sys.argv[1].startswith("-"):
+    print(__doc__)
+    sys.exit(0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 2)
+# the output is often redirected to a backup file: never die on a byte the console code page cannot print
+sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 port = sys.argv[1]
 cmds = sys.argv[2:]
 

@@ -1,0 +1,12 @@
+# Shramko Motor Autostart: board-level part of the reference setup for HGLRC_F405_S8.
+# Send after the first boot of the new firmware, USB only, battery unplugged, propeller off.
+# ESC TX wire -> UART5 RX pad (PD2): function 1024 (ESC_SENSOR) on that UART, feature ESC_SENSOR.
+feature ESC_SENSOR
+save
+
+# As one command:
+#   python tools/bf_cli.py <PORT> "feature ESC_SENSOR" "save"
+
+# Then calibrate vbat_scale (AGENT_PORTING.md, step 8) and check (step 9):
+#   python tools/check_reference.py <PORT> --cells 6 --motors 15 --vbat-scale <calibrated> --commit <the commit you built> --board HGLRC_F405_S8 --exit
+

@@ -1,5 +1,5 @@
 """Flash a Betaflight .hex over USB DFU without the Configurator (Windows, STM32CubeProgrammer CLI).
-usage: python flash_dfu.py COM6 firmware.hex
+usage: python flash_dfu.py COM6 firmware.hex   (Windows; needs STM32CubeProgrammer at the path in PROG)
 Enters the Betaflight CLI, sends `bl` (reboot to the STM32 ROM bootloader), waits for the DFU device,
 writes + verifies the hex and starts it. Only the firmware area is erased, but Betaflight itself resets
 ALL settings at the first boot when the new firmware adds or changes a parameter group (e.g. the first
@@ -48,8 +48,27 @@ def dfu_present():
     return "Device Index" in r.stdout
 
 
+def external_flash_hex(path):
+    """True when the hex writes above the internal flash (EXST targets such as H730/H750 at 0x90000000):
+    those are flashed only through the board vendor's bootloader, never through the ROM DFU"""
+    with open(path, encoding="ascii", errors="replace") as f:
+        for line in f:
+            line = line.strip()
+            if line.startswith(":") and line[7:9] == "04" and int(line[9:13], 16) >= 0x0900:
+                return True
+    return False
+
+
 def main():
+    if len(sys.argv) != 3 or sys.argv[1].startswith("-"):
+        print(__doc__)
+        sys.exit(0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 2)
     port, hexfile = sys.argv[1], os.path.abspath(sys.argv[2])
+    if not os.path.isfile(PROG):
+        raise SystemExit("STM32CubeProgrammer CLI not found at %s: install it, or flash with the Betaflight App" % PROG)
+    if external_flash_hex(hexfile):
+        raise SystemExit("this hex is for external flash (EXST board, e.g. H730/H750): flash it only through the "
+                         "board vendor's bootloader, never through the STM32 ROM DFU")
     if not dfu_present():
         enter_bootloader(port)
         for _ in range(30):

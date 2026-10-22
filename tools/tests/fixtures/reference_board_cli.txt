@@ -1,10 +1,31 @@
-# CLI output of the reference board (HGLRC F405 8S V2, firmware 1.1.1). `get autostart`, `get motor_pwm_protocol`
-# and `feature` are verbatim from the real board (2026-10-19/20); the version line carries the v1.1.1 build
-# string; `get dshot_bidir`, `get debug_mode`, `get vbat_scale` and `serial` are the values read back on 2026-10-20.
+# CLI output of the reference board (HGLRC F405 8S V2, firmware 1.1.1), assembled from real captures:
+# `get autostart` and `feature` are verbatim from the board (2026-10-19/20); `status` is verbatim from the
+# 2026-10-19 backup (docs/fc-backup/); the version line carries the v1.1.1 build (as-3c1808c); `get dshot_bidir`,
+# `get debug_mode`, `get vbat_scale`, `get battery_meter`, `get motor_pwm_protocol` and `serial` are the values
+# read back on 2026-10-20, in the format of Betaflight 2025.12.1 (`Default value:` only where it differs).
 version
-# Betaflight / STM32F405 (F405) 2025.12.1 Oct 20 2026 / 13:33:39 (as-3c18) MSP API: 1.47
+# Betaflight / STM32F405 (F405) 2025.12.1 Oct 20 2026 / 13:33:39 (as-3c1808c) MSP API: 1.47
 # config rev: 46f5576
 # board: manufacturer_id: HGLR, board_name: HGLRC_F405_S8
+#
+status
+MCU: STM32F40X CLK=168MHz (PLLP-HSI), Vref=3.22V, Core temp=48degC
+STACK: 2048b (0x1000fff0)
+CONFIG: CONFIGURED (4516b / 16384b)
+
+DEVICES DETECTED: SPI=1, I2C=1 (0 errors)
+GYRO: (1) ICM42688P enabled locked dma
+ACC: ICM42688P
+BARO: DPS310
+GPS: NOT ENABLED
+OSD: MSP (53 x 20)
+FLASH: JEDEC ID=0x00ef4018 16M
+
+System Uptime: 358 seconds
+CPU:42%, cycle time: 125, GYRO rate: 8000, RX rate: 0, System rate: 9
+Voltage: 0.10V (0S battery - NOT PRESENT)
+Arming disable flags: RXLOSS CLI
+
 #
 get autostart
 autostart_mode = POWER
@@ -51,7 +72,6 @@ Allowed range: 1 - 60
 get motor_pwm_protocol
 motor_pwm_protocol = DSHOT300
 Allowed values: PWM, ONESHOT125, ONESHOT42, MULTISHOT, BRUSHED, DSHOT150, DSHOT300, DSHOT600, PROSHOT1000, DISABLED
-Default value: DSHOT600
 #
 get dshot_bidir
 dshot_bidir = OFF
@@ -64,6 +84,10 @@ get vbat_scale
 vbat_scale = 149
 Allowed range: 0 - 255
 Default value: 210
+#
+get battery_meter
+battery_meter = ADC
+Allowed values: NONE, ADC, ESC
 #
 feature
 Enabled:  RX_SERIAL TELEMETRY LED_STRIP OSD AIRMODE ESC_SENSOR ANTI_GRAVITY

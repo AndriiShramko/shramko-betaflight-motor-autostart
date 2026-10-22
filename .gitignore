@@ -25,3 +25,6 @@ config.env
 .DS_Store
 Thumbs.db
 tools/*.keep.json
+# a user's board backups and CLI logs (AGENT_PORTING.md step 3): never commit them
+backup/
+/autostart_selftest.csv

@@ -35,7 +35,7 @@ with `autostart_delay` 0–1 the ESC gets about 1.5 s of them before the ramp; t
 | `autostart_cell_cutoff` | 0.01 V per cell | 0, 250–420 | 330 | stop the motor when the battery stays below `cells × cutoff` (3.30 V/cell = 19.8 V on 6S); `0` = no cut-off. The CLI also accepts 1–249: the firmware raises it to 250 |
 | `autostart_cutoff_time` | seconds | 1–60 | 5 | the voltage must stay below the cut-off this long (ignores sag during gusts) |
 | `autostart_vbat_min` | 0.1 V | 0–600 | 60 | a battery counts as plugged in at ≥ 6.0 V; the countdown starts then. Once plugged in it counts as unplugged only below the lower of `vbat_min` and `cells × 2.50 V` for 0.5 s, so load sag under a high `vbat_min` does not stop the program. With a USB host connected, below 1 V for 2 ticks (40 ms) already counts as unplugged (the board outlives the battery, the ESC does not). `0` = don't check |
-| `vbat_scale` | Betaflight | 0–255 | 210 | voltage calibration of the board (configurator: "calibrate with a multimeter"). 210 is the HGLRC_F405_S8 config value; it read 40.5 % high on the author's unit, calibrated to 149. Calibrate every board ([AGENT_PORTING.md](../AGENT_PORTING.md), step 8) |
+| `vbat_scale` | Betaflight | 0–255 | 210 | voltage calibration of the board (configurator: "calibrate with a multimeter"). 210 is the HGLRC_F405_S8 config value (other boards: their config's `DEFAULT_VOLTAGE_METER_SCALE`, else 110); it read 40.5 % high on the author's unit, calibrated to 149. Calibrate every board ([AGENT_PORTING.md](../AGENT_PORTING.md), step 8) |
 
 After a cut-off the program stays stopped until the battery is unplugged and a battery is plugged in
 again: a click or the RC switch does not restart it. Every 3 s the buzzer beeps and, with DShot, the motor
@@ -71,13 +71,13 @@ block. `tools/make_board_config.py` appends the same block to any other board's 
 | `autostart_motors` | 15 | 1 | `AUTOSTART_DEFAULT_MOTOR_MASK` |
 | `autostart_usb_inhibit` | `OFF` | `ON` | `AUTOSTART_DEFAULT_USB_INHIBIT` |
 | `autostart_cells` | 6 | 0 (auto-detect) | `AUTOSTART_DEFAULT_CELLS` |
-| `motor_pwm_protocol` | `DSHOT300` | `DSHOT600` (Betaflight) | `DEFAULT_MOTOR_DSHOT_SPEED` |
+| `motor_pwm_protocol` | `DSHOT300` | the board config's own, else `DSHOT600` (Betaflight) | `DEFAULT_MOTOR_DSHOT_SPEED` |
+| `dshot_bidir` | `OFF` | the board config's `DEFAULT_DSHOT_TELEMETRY` (ON on 20 boards), else `OFF` | (`make_board_config.py` comments it out) |
 | `debug_mode` | `AUTOSTART` | `NONE` | `DEBUG_MODE` |
 
 `autostart_delay`, `autostart_ramp`, `autostart_throttle`, `autostart_vbat_min` and `autostart_cell_cutoff` have
 macros with the same values in both. The rest (run time, throttle limit, pattern, gusts, cut-off time, box) has
-the same default in every build. `dshot_bidir` is `OFF` in both (Betaflight's default; the block keeps a board's
-`DEFAULT_DSHOT_TELEMETRY` out).
+the same default in every build.
 
 The reference setup adds two board-level settings that no build sets: `feature ESC_SENSOR` (the ESC's TX wire on a
 UART RX pad whose UART has function 1024, preset as UART5 on HGLRC_F405_S8) and a calibrated `vbat_scale`. All

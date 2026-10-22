@@ -29,6 +29,9 @@ def msp(s, cmd, timeout=0.3):
 
 
 def main():
+    if len(sys.argv) < 2 or sys.argv[1].startswith("-"):
+        print(__doc__)
+        sys.exit(0 if len(sys.argv) > 1 and sys.argv[1] in ("-h", "--help") else 2)
     port = sys.argv[1]
     seconds = float(sys.argv[2]) if len(sys.argv) > 2 else 5
     s = serial.Serial(port, 115200, timeout=0.05)

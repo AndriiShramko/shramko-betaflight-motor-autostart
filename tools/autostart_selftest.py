@@ -13,18 +13,22 @@ What it does
      host clock), checks the output against a straight line and the plateau, prints PASS/FAIL.
 
 usage
-  python autostart_selftest.py COM6 [--seconds 35] [--plot ramp.png] [--csv run.csv]
+  python autostart_selftest.py COM6 [--seconds 35] [--plot ramp.png] [--csv run.csv] [--hot]
   python autostart_selftest.py COM6 --expect-off            negative control: the motor must stay at stop
   python autostart_selftest.py X --analyze --csv run.csv --delay 10 --ramp 10 --throttle 15
   python autostart_selftest.py X --self-check --csv run.csv --delay 10 --ramp 10 --throttle 15
         (evaluator check: the recorded run must PASS, copies with wrong timing / plateau must FAIL)
 
 Without a battery set `autostart_vbat_min = 0` on the board, otherwise the program waits for the battery.
+With a battery connected the motor really turns: the test refuses unless --hot is given (propeller off).
+At the end it sends STOP (what the Configurator Motors tab / the web page's STOP sends): the program is held
+until the board restarts, so a hot run does not keep the motor turning.
 """
 import argparse, csv, statistics, struct, sys, time
 import serial
 
 MSP_REBOOT, MSP_MOTOR, MSP_BATTERY_STATE, MSP_MOTOR_TELEMETRY, MSP_DEBUG = 68, 104, 130, 139, 254
+MSP_SET_MOTOR = 214
 STATE = {0: "IDLE", 1: "DELAY", 2: "RAMP", 3: "RUN", 4: "DONE", 5: "LOW_BATTERY"}
 SOURCE = {0: "NONE", 1: "POWER", 2: "BUTTON", 3: "RC_BOX"}
 COLS = ["fc_uptime_s", "motor_us", "state", "percent", "state_ms", "usb", "rx", "button", "source",
@@ -109,7 +113,24 @@ def read_settings_and_reboot(port):
 
 
 # ---------------------------------------------------------------- capture
+def battery_volts(port):
+    """the board's battery reading over MSP before the test (None: no MSP answer, e.g. the board is in the CLI)"""
+    s = open_port(port, 10)
+    time.sleep(0.3)
+    b = None
+    for _ in range(5):
+        b = msp(s, MSP_BATTERY_STATE)
+        if b and len(b) >= 11:
+            break
+    s.close()
+    return struct.unpack_from("<H", b, 9)[0] / 100.0 if b and len(b) >= 11 else None
+
+
 def capture(a):
+    v = battery_volts(a.port)
+    if v is not None and v >= 1.0 and not a.hot:
+        raise SystemExit("a battery is connected (board %.2f V): the test reboots the board and the motor turns. "
+                         "Propeller off, then run again with --hot (or unplug the battery)." % v)
     cfg = read_settings_and_reboot(a.port)
     if cfg:
         a.delay = float(cfg.get("autostart_delay", a.delay))
@@ -152,6 +173,12 @@ def capture(a):
         rows.append((dbg[3] / 10.0, motors[a.motor - 1], dbg[0], dbg[1] / 10.0, dbg[2] * 10,
                      f & 1, (f >> 1) & 1, (f >> 2) & 1, dbg[7], rpm, inv, vbat, (f >> 3) & 1, dbg[6] / 10.0,
                      round(time.monotonic() - t_start, 3)))
+    # STOP: the program is held until the board restarts (a hot run must not keep the motor turning)
+    try:
+        s.write(msp_frame(MSP_SET_MOTOR, struct.pack("<8H", *[1000] * 8)))
+        time.sleep(0.2)
+    except serial.SerialException:
+        pass
     s.close()
     with open(a.csv, "w", newline="") as fh:
         w = csv.writer(fh)
@@ -339,6 +366,7 @@ def main():
     ap.add_argument("--seconds", type=float, default=35)
     ap.add_argument("--motor", type=int, default=1)
     ap.add_argument("--expect-off", action="store_true")
+    ap.add_argument("--hot", action="store_true", help="a battery is connected and the propeller is off: the motor turns")
     ap.add_argument("--csv", default="autostart_selftest.csv")
     ap.add_argument("--plot")
     ap.add_argument("--analyze", action="store_true")

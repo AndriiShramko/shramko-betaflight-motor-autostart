@@ -6,12 +6,17 @@ motor stops by itself after the cap. Plug the battery in only after "battery: pl
 
   0. idle: battery in, mode OFF -> nothing turns for 15 s; ESC telemetry (voltage, temperature) arrives
   1. voltage: board reading vs. the ESC's own measurement -> the vbat_scale that makes them agree
-     (--apply-scale writes it if they differ by more than 3 %)
+     (--apply-scale writes it if they differ by more than 2 %; a calibration it cannot do is a FAIL)
   2. run: 3 s delay, 3 s ramp to 15 %, 8 s run -> RPM follows, then DONE and the motor stops by itself
-  3. gusts: 10 s of the gust pattern -> RPM bursts above the steady level, motor stops after the cap
+  3. gusts: 10 s of the gust pattern -> RPM bursts above the steady level (peaks up to autostart_gust_max,
+     80 % by default, on every output of autostart_motors), motor stops after the cap
   4. STOP during the countdown (MSP_SET_MOTOR, what the web page's STOP sends) -> nothing turns
   5. cut-off: autostart_cell_cutoff above the pack -> LOW_BATTERY, motor stopped, the cut-off restored
-Settings are restored to what the board had, with autostart_mode = OFF (--finish puts the mode back).
+Tests 0-3 need ESC telemetry (the ESC TX wire + feature ESC_SENSOR, or bidirectional DShot); without it run
+--only 4,5. Settings are restored to what the board had, with autostart_mode = OFF. --finish puts the mode
+back to POWER and refuses while a battery is connected. A full run takes several minutes: run it with a long
+timeout (or detached), or an interrupted run leaves test values on the board (check with check_reference.py).
+Every `set` is confirmed by the board, or the CLI is left without saving.
 
 usage: python battery_test.py COM6 [--apply-scale] [--only 0,1,2,...]
        python battery_test.py COM6 --finish        # unplug the battery first: restores autostart_mode
@@ -29,7 +34,8 @@ CAP_S = 15
 
 
 def cli(port, cmds, wait=4.0):
-    """Run CLI commands, return the text. End with 'save' or 'exit' (both reboot the board)."""
+    """Run CLI commands, return the text. End with 'save' or 'exit' (both reboot the board).
+    Every `set` must be confirmed by the board (`... set to ...`), or the CLI is left WITHOUT saving."""
     s = open_port(port, 30)
     time.sleep(0.3)
     for _ in range(10):
@@ -38,6 +44,9 @@ def cli(port, cmds, wait=4.0):
         time.sleep(1.0)
         if s.read(4000).rstrip().endswith(b"#"):
             break
+    else:
+        s.close()
+        raise SystemExit("no CLI prompt on %s (close the Betaflight App / web configurator)" % port)
     s.write(b"\r\n")
     time.sleep(0.3)
     s.read(4000)
@@ -46,7 +55,18 @@ def cli(port, cmds, wait=4.0):
         s.write(c.encode() + b"\r\n")
         time.sleep(0.6)
         try:
-            out += s.read(8000).decode(errors="replace")
+            chunk = s.read(8000).decode(errors="replace")
+            if c.startswith("set ") and " set to " not in chunk:
+                # the first line after entering the CLI can be lost (bf_cli.py): one retry, then leave unsaved
+                s.write(c.encode() + b"\r\n")
+                time.sleep(0.8)
+                chunk += s.read(8000).decode(errors="replace")
+                if " set to " not in chunk:
+                    s.write(b"exit\r\n")
+                    time.sleep(0.3)
+                    s.close()
+                    raise SystemExit("not confirmed by the board: %s -- left the CLI without saving" % c)
+            out += chunk
         except serial.SerialException:
             break
     try:
@@ -70,6 +90,27 @@ def sample(s):
                 best = dict(rpm=rpm, bad=inv / 100.0, temp=temp, volts=ev / 100.0, amps=cur / 100.0, out=i + 1)
     return dict(t=time.time(), state=dbg[0], pct=dbg[1] / 10.0, flags=dbg[4], v_fc=struct.unpack_from("<H", b, 9)[0] / 100.0,
                 esc=best, motor=struct.unpack("<H", m[:2])[0])
+
+
+def battery_present(samples):
+    """the board or the ESC reads 1 V or more: a battery is connected"""
+    return any(x["v_fc"] >= 1.0 or (x["esc"] and x["esc"]["volts"] >= 1.0) for x in samples)
+
+
+def calibration(v_fc, v_esc, cells, scale):
+    """What --apply-scale does with the median readings: (new vbat_scale or None, verdict or None, reason).
+    verdict True = already within 2 %, False = cannot calibrate (reported as FAIL), None = nothing to judge."""
+    if v_esc <= 1:
+        return None, None, "no ESC voltage: needs the ESC TX wire and feature ESC_SENSOR (or a multimeter)"
+    if v_fc <= 1:
+        return None, False, "the board reads no battery: its VBAT pad does not get the ESC's pack"
+    if not (cells and 2.5 <= v_esc / cells <= 4.45):
+        return None, False, "the ESC's %.2f V is not a %dS pack: check autostart_cells" % (v_esc, cells)
+    diff = (v_fc - v_esc) / v_esc * 100
+    new = max(10, min(255, round(scale * v_esc / v_fc)))
+    if abs(diff) <= 2 or new == scale:
+        return None, True, "board %.2f V vs ESC %.2f V (%+.1f %%): within 2 %%, vbat_scale %d stays" % (v_fc, v_esc, diff, scale)
+    return new, None, "board %.2f V vs ESC %.2f V (%+.1f %%): vbat_scale %d -> %d" % (v_fc, v_esc, diff, scale, new)
 
 
 def watch(port, seconds, stop_at_state=None, on_sample=None):
@@ -124,6 +165,20 @@ def main():
     text = cli(a.port, ["get " + k for k in KEEP] + ["exit"])
     vals = {l.split(" = ")[0].strip(): l.split(" = ")[1].strip() for l in text.splitlines() if " = " in l}
     if a.finish:
+        # POWER with a battery in = the save reboots the board into a countdown: only with the battery unplugged
+        s = open_port(a.port, 15)
+        xs = []
+        for _ in range(10):
+            x = sample(s)
+            if x:
+                xs.append(x)
+            time.sleep(0.2)
+        s.close()
+        if not xs:
+            raise SystemExit("no MSP answer from the board: replug USB, then run --finish again")
+        if battery_present(xs):
+            raise SystemExit("a battery is still connected (board %.2f V): unplug it, then run --finish again"
+                             % max(x["v_fc"] for x in xs))
         print(cli(a.port, ["set autostart_mode = POWER", "save"]) and "autostart_mode = POWER: the motor starts again on every power-up")
         return
     base = {k: vals[k] for k in KEEP if k in vals}
@@ -168,18 +223,19 @@ def main():
             ev = ev[len(ev) // 2]
             print("1) board %.2f V (%.2f V/cell)  ESC %.2f V" % (v, v / cells if cells else 0, ev))
             results["1 ESC reports its voltage"] = ev > 1
-            if ev > 1 and v > 1:
-                diff = (v - ev) / ev * 100
-                new_scale = max(10, min(255, round(scale * ev / v)))
-                print("   board vs ESC %+.1f %% -> vbat_scale %d would agree (now %d)" % (diff, new_scale, scale))
-                plausible = cells and 3.0 <= ev / cells <= 4.35   # trust the ESC only for a believable LiPo reading
-                if a.apply_scale and plausible and abs(diff) > 3 and new_scale != scale:
-                    cli(a.port, ["set vbat_scale = %d" % new_scale, "save"])
+            new_scale, verdict, why = calibration(v, ev, cells, scale)
+            print("   " + why)
+            if a.apply_scale and new_scale:
+                cli(a.port, ["set vbat_scale = %d" % new_scale, "save"])
+                rows = watch(a.port, 6)
+                v2 = sorted(r["v_fc"] for r in rows)[len(rows) // 2]
+                good = abs(v2 - ev) / ev < 0.02
+                print("   vbat_scale %d -> board now %.2f V vs ESC %.2f V" % (new_scale, v2, ev))
+                results["1 calibrated board within 2 % of the ESC"] = good
+                if good:   # otherwise the restore puts the old value back
                     restore = [r for r in restore if not r.startswith("set vbat_scale")] + ["set vbat_scale = %d" % new_scale]
-                    rows = watch(a.port, 6)
-                    v2 = sorted(r["v_fc"] for r in rows)[len(rows) // 2]
-                    print("   vbat_scale %d -> board now %.2f V vs ESC %.2f V" % (new_scale, v2, ev))
-                    results["1 calibrated board within 2 % of the ESC"] = abs(v2 - ev) / ev < 0.02
+            elif a.apply_scale and verdict is not None:
+                results["1 vbat_scale: " + why] = verdict
 
         if 2 in only:
             rows = run(a.port, "2 run", ["autostart_delay = 3", "autostart_ramp = 30", "autostart_throttle = 15",

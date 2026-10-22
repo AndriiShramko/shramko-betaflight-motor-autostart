@@ -101,12 +101,13 @@ Details and sources: [docs/wiring.md](docs/wiring.md).
 
 ## Install
 
-1. Download the `.hex` from [Releases](https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/releases) (or build it, below).
-2. Flash with Betaflight Configurator (*Load firmware [Local]*) or `python tools/flash_dfu.py COM6 firmware.hex` (STM32CubeProgrammer CLI, no Configurator).
-3. **Remove the propeller**, then check the settings in the CLI (`get autostart`). Flashing this firmware over another Betaflight resets all settings once (Betaflight does that when a parameter group is added) — this build's defaults already are the reference settings (DShot300, `dshot_bidir` OFF, `debug_mode` AUTOSTART, autostart 10 s / 10 s / 15 % on motors 1–4, 6S cut-off 3.30 V/cell, USB inhibit OFF).
-4. Two settings are not in the build and are set once in the CLI: `feature ESC_SENSOR` (with the ESC TX wire), and `vbat_scale` calibrated against a multimeter or the ESC's voltage (the build's 210 read 40.5 % high on the author's unit, 149 fixed it; calibrate yours: AGENT_PORTING.md, step 8). Then `python tools/check_reference.py COM6 --vbat-scale <yours>` must say `RESULT: PASS`.
-5. Bench check over USB (no battery: `set autostart_vbat_min = 0`, and back to `60` afterwards), or "hot" with the battery and ESC attached (props off):
-   `python tools/autostart_selftest.py COM6 --plot ramp.png` (`pip install pyserial matplotlib`) — reboots the board and prints PASS/FAIL, the measured curve and the board's battery voltage (ESC RPM only with `dshot_bidir` ON).
+1. **Remove the propeller and unplug the battery** (USB only): the new firmware boots in POWER mode, so a battery left in starts the motor 10 s after the flash. Save the board's `diff all` first: flashing this firmware over another Betaflight resets all settings once (Betaflight does that when a parameter group is added).
+2. Download the `.hex` from [Releases](https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/releases): it is for the HGLRC F405 8S V2 only (`board_name HGLRC_F405_S8`); any other board: [AGENT_PORTING.md](AGENT_PORTING.md).
+3. Flash with the Betaflight App (*Load Firmware [Local]*) or `python tools/flash_dfu.py COM6 firmware.hex` (Windows, STM32CubeProgrammer CLI, no Configurator).
+4. Check the settings in the CLI (`get autostart`). This build's defaults already are the reference settings (DShot300, `dshot_bidir` OFF, `debug_mode` AUTOSTART, autostart 10 s / 10 s / 15 % on motors 1–4, 6S cut-off 3.30 V/cell, USB inhibit OFF). Another pack than 6S: `set autostart_cells = <cells>`, `save`.
+5. Two settings are not in the build and are set once in the CLI: `feature ESC_SENSOR` (with the ESC TX wire), and `vbat_scale` calibrated against a multimeter or the ESC's voltage (the build's 210 read 40.5 % high on the author's unit, 149 fixed it; calibrate yours: AGENT_PORTING.md, step 8). Then `python tools/check_reference.py COM6 --vbat-scale <yours> --exit` must say `RESULT: PASS` (add `--no-esc-sensor` without the TX wire, `--cells <N>` for another pack).
+6. Bench check over USB (no battery: `set autostart_vbat_min = 0`, back to `60` afterwards, battery out until then), or "hot" with the battery and ESC attached (propeller off, add `--hot`):
+   `python tools/autostart_selftest.py COM6 --plot ramp.png` (`pip install -r tools/requirements.txt`) — reboots the board, prints PASS/FAIL, the measured curve and the board's battery voltage, and sends STOP at the end (the self-test shows ESC RPM only with `dshot_bidir` ON).
 
 ## Verified on hardware (2026-10-19, HGLRC F405 8S V2, no ESC)
 
@@ -162,7 +163,7 @@ docker run --rm -v "$PWD:/repo" shramko-bf-build:2025.12.1 bash /repo/build/buil
 
 Windows: PowerShell `-v "${PWD}:/repo"`, Git Bash `MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd -W):/repo" ...`; Docker Desktop must be running. Apple Silicon: add `--platform linux/amd64`. Output: `out/betaflight_2025.12.1_STM32F405_HGLRC_F405_S8_autostart.hex`.
 
-**Another board:** `python tools/make_board_config.py <BOARD> --cells <N> --motors <MASK>` takes the board's `config.h` from [betaflight/config](https://github.com/betaflight/config/tree/2025.12-config) (branch `2025.12-config`), replaces the lines the project sets itself and appends the reference block; then build with `<BOARD>`. Adding only `#define USE_AUTOSTART` gives the generic defaults (mode OFF, motor 1, USB inhibit ON, cells auto, DShot600), not the reference. The whole procedure, with flashing, settings and checks: [AGENT_PORTING.md](AGENT_PORTING.md).
+**Another board:** `python tools/make_board_config.py <BOARD> --cells <N> --motors <MASK> --esc-telemetry <UARTn|none>` takes the board's `config.h` from [betaflight/config](https://github.com/betaflight/config/tree/2025.12-config) (branch `2025.12-config`), replaces the lines the project sets itself and appends the reference block; then build with `<BOARD>`. Adding only `#define USE_AUTOSTART` gives the generic defaults (mode OFF, motor 1, USB inhibit ON, cells auto, the board's own DShot speed and bidirectional DShot, else DShot600), not the reference. The whole procedure, with flashing, settings and checks: [AGENT_PORTING.md](AGENT_PORTING.md).
 
 ## Limitations
 

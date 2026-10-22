@@ -16,7 +16,7 @@
 | thick red / black | battery + / − | battery |
 | **yellow** thin (middle pad `S`) | throttle signal | FC connector `4321RCGB`, pin **`1`** (motor 1 = PC9, TIM8 CH4) |
 | **black** thin (pad `GND`) | signal ground | FC connector pin **`G`** |
-| `TX` | KISS telemetry | **recommended** → cable **yellow**, pin `R` (UART5 RX, PD2; `feature ESC_SENSOR`, on in this build). On the HGLRC F405 8S V2 the `R` pins of both 8-pin connectors are the same input: the yellow of the second cable (`8765RCGB`) works too (verified 2026-10-20) |
+| `TX` | KISS telemetry | **recommended** → cable **yellow**, pin `R` (UART5 RX, PD2; the build gives UART5 the ESC-sensor function, the feature is turned on once in the CLI: `feature ESC_SENSOR`, `save`). On the HGLRC F405 8S V2 the `R` pins of both 8-pin connectors are the same input: the yellow of the second cable (`8765RCGB`) works too (verified 2026-10-20) |
 | A / B / C | motor phases | motor, any order (direction is set in BLHeliSuite32 or via DShot commands) |
 
 ## FC underside connector `4321RCGB` (JST-SH 8-pin) and its cable

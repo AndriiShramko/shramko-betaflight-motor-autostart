@@ -9,7 +9,9 @@ Shramko Motor Autostart: a patch for Betaflight 2025.12.1 that turns a flight co
 | `patches/0001-shramko-motor-autostart.patch` | The firmware module (state machine, CLI parameters, debug mode) applied to Betaflight 2025.12.1. |
 | `configs/HGLRC_F405_S8/config.h` | Board config of the tested board, with `USE_AUTOSTART` and the project defaults. |
 | `build/` | Docker image (`Dockerfile`), `build.sh <BOARD> [--stock]`, `test.sh` (Betaflight googletest unit tests of the module and the files it touches). |
-| `tools/` | Host tools (Python, pyserial): `autostart_selftest.py` (measures the ramp on the board), `fc_peek.py` (read-only MSP snapshot), `bf_cli.py`, `flash_dfu.py`, `interference_test.py`, `rx_arbitration_test.py`, `wiring_diagram.py`. |
+| `configs/reference/reference.json` | The reference setup (the author's board): every CLI value, the build block, what adapts to other hardware. |
+| `AGENT_PORTING.md` | Protocol for a user's AI agent: build for another board, set it up like the reference, prove it. |
+| `tools/` | Host tools (Python 3.8+, `pip install pyserial`; `matplotlib` for plots): `make_board_config.py` (board config from betaflight/config + the reference block), `check_reference.py` (read-only: board vs reference, PASS/FAIL), `autostart_selftest.py` (measures the ramp on the board), `fc_peek.py` (read-only MSP snapshot: state, battery and ESC voltage), `bf_cli.py` (CLI commands; a `set` the board does not confirm aborts without saving), `battery_test.py` (with a battery: idle, voltage calibration `--apply-scale`, capped run, gusts, STOP, cut-off), `param_matrix_test.py` (every setting on the board), `esc_reboot_test.py`, `flash_dfu.py` (Windows + STM32CubeProgrammer), `interference_test.py`, `rx_arbitration_test.py`, `wiring_diagram.py`. Tests: `tools/tests/`. |
 | `docs/settings.md` | **Single source of truth** for setting names, units, ranges, defaults, states and debug fields. Firmware, configurator and docs follow it. |
 | `docs/wiring.md`, `docs/img/` | Wiring of the tested setup, diagrams. |
 | `docs/selftest/` | Raw measurements from the board. |
@@ -33,7 +35,8 @@ Shramko Motor Autostart: a patch for Betaflight 2025.12.1 that turns a flight co
 ## Checks before a PR
 
 ```bash
-docker run --rm -v "$PWD:/repo" shramko-bf-build:2025.12.1 bash /repo/build/test.sh   # firmware unit tests
+docker run --rm -v "$PWD:/repo" shramko-bf-build:2025.12.1 bash /repo/build/test.sh   # firmware unit tests (PowerShell: "${PWD}:/repo")
+python -m unittest discover -s tools/tests             # board tools: config generator, reference check
 cd site
 npm install && npm run build                         # typecheck + pages + bundle
 python -m unittest discover -s api/tests             # API

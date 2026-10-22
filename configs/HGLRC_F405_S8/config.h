@@ -143,8 +143,10 @@
 #define PINIO2_BOX           41
 
 // ---- Shramko Motor Autostart (patches/0001-shramko-motor-autostart.patch) ----
-// Project defaults: power on -> 10 s -> linear ramp over 10 s to 15 % on motor 1, hold.
-// All of these are CLI settings (autostart_*), changeable without rebuilding.
+// Reference setup (configs/reference/reference.json): battery plugged in -> 10 s -> linear ramp over 10 s
+// to 15 % on motors 1-4 -> hold. All of these are CLI settings (autostart_*), changeable without rebuilding.
+// Keep this block LAST: build.sh --stock deletes from the marker to the end. Other boards:
+// tools/make_board_config.py appends the same block (AGENT_PORTING.md).
 #define USE_AUTOSTART
 #define AUTOSTART_DEFAULT_MODE         AUTOSTART_MODE_POWER
 #define AUTOSTART_DEFAULT_DELAY_S      10
@@ -158,6 +160,7 @@
 
 // Survive any config reset (Betaflight resets the whole config when a parameter group changes):
 #define DEFAULT_MOTOR_DSHOT_SPEED      MOTOR_PROTOCOL_DSHOT300   // ~50 cm twisted pair next to 160 A wiring
-// dshot_bidir stays OFF by default: an ESC older than BLHeli_32 32.7 would never arm with it.
-// Turn it on from the CLI for bench tests (ESC RPM over USB) once the ESC is known to answer.
+// dshot_bidir stays OFF (Betaflight default): with ON a BLHeli_32 ESC that stays powered while the board
+// restarts sometimes stops answering (2 of ~25 restarts, 0 of 50+ with OFF). ESC telemetry comes from the
+// ESC's TX wire instead (yellow R = UART5 RX, `feature ESC_SENSOR`, set in the CLI).
 #define DEBUG_MODE                     DEBUG_AUTOSTART           // state / timing for tools/autostart_selftest.py

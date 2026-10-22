@@ -24,6 +24,8 @@ if [ "$MODE" = "--stock" ]; then
   CFG_DIR=/tmp/cfg
   mkdir -p "$CFG_DIR/configs/$CONFIG"
   sed '/---- Shramko Motor Autostart/,$d' "/repo/configs/$CONFIG/config.h" > "$CFG_DIR/configs/$CONFIG/config.h"
+  # a few boards also have a config.c (Betaflight compiles it when present)
+  if [ -f "/repo/configs/$CONFIG/config.c" ]; then cp "/repo/configs/$CONFIG/config.c" "$CFG_DIR/configs/$CONFIG/"; fi
 fi
 
 # firmware `version` shows which commit of this repo was built (stock: plain upstream revision)

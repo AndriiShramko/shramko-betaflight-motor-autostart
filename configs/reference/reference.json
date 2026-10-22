@@ -1,0 +1,56 @@
+{
+  "about": "The reference setup: Andrii Shramko's own board (HGLRC F405 8S V2 + Flycolor X-Cross HV3 160A BLHeli_32, 6S LiPo), firmware 1.1.1, as read back on 2026-10-20. tools/make_board_config.py writes the build part into a board's config.h, tools/check_reference.py compares a board with it. docs/settings.md explains every value.",
+  "firmware": {
+    "betaflight": "2025.12.1",
+    "release": "v1.1.1",
+    "hardware_tested_mcu": ["STM32F405"]
+  },
+  "cli": {
+    "autostart_mode": "POWER",
+    "autostart_delay": "10",
+    "autostart_ramp": "100",
+    "autostart_throttle": "15",
+    "autostart_motors": "15",
+    "autostart_usb_inhibit": "OFF",
+    "autostart_box": "255",
+    "autostart_vbat_min": "60",
+    "autostart_throttle_limit": "100",
+    "autostart_run_time": "0",
+    "autostart_pattern": "STEADY",
+    "autostart_gust_min": "40",
+    "autostart_gust_max": "80",
+    "autostart_gust_len_min": "300",
+    "autostart_gust_len_max": "800",
+    "autostart_gust_pause_min": "20",
+    "autostart_gust_pause_max": "80",
+    "autostart_cells": "6",
+    "autostart_cell_cutoff": "330",
+    "autostart_cutoff_time": "5",
+    "motor_pwm_protocol": "DSHOT300",
+    "dshot_bidir": "OFF",
+    "debug_mode": "AUTOSTART"
+  },
+  "features": {
+    "ESC_SENSOR": true
+  },
+  "build_block": {
+    "USE_AUTOSTART": "",
+    "AUTOSTART_DEFAULT_MODE": "AUTOSTART_MODE_POWER",
+    "AUTOSTART_DEFAULT_DELAY_S": "10",
+    "AUTOSTART_DEFAULT_RAMP_DS": "100",
+    "AUTOSTART_DEFAULT_THROTTLE_PCT": "15",
+    "AUTOSTART_DEFAULT_MOTOR_MASK": "0x0F",
+    "AUTOSTART_DEFAULT_USB_INHIBIT": "0",
+    "AUTOSTART_DEFAULT_VBAT_MIN_DV": "60",
+    "AUTOSTART_DEFAULT_CELLS": "6",
+    "AUTOSTART_DEFAULT_CELL_CUTOFF_CV": "330",
+    "DEFAULT_MOTOR_DSHOT_SPEED": "MOTOR_PROTOCOL_DSHOT300",
+    "DEBUG_MODE": "DEBUG_AUTOSTART"
+  },
+  "adapt_to_your_hardware": {
+    "autostart_cells": "the series cell count of YOUR battery (reference: 6 = 6S). A wrong count makes the 3.30 V/cell cut-off wrong.",
+    "autostart_motors": "bitmask of the outputs that carry YOUR ESC signal: 1 = output 1, 15 = outputs 1-4 (reference: one ESC on output 1; the HGLRC cable joins outputs 1-4). On a 4-in-1 ESC, 15 spins all four motors.",
+    "ESC_SENSOR": "on only when the ESC's TX pad is wired to a UART RX pad of the board (reference: yes, UART5 RX). That UART needs the ESC_SENSOR function (1024).",
+    "vbat_scale": "calibrate on YOUR board; never copy (reference unit: 149, its config default 210 read 40.5 % high)."
+  }
+}

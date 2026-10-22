@@ -1,0 +1,2 @@
+pyserial>=3.5
+matplotlib>=3.5   # only for --plot of autostart_selftest.py

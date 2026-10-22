@@ -6,6 +6,7 @@
 - README: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart#readme
 - Settings reference (single source of truth: names, ranges, defaults, states): https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/docs/settings.md
 - Wiring (HGLRC F405 8S V2 + Flycolor X-Cross HV3 160A, 6S): https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/docs/wiring.md
+- Build for another flight controller (protocol for AI agents): https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/AGENT_PORTING.md
 - Setup protocol for AI agents: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/AGENT_SETUP.md
 - Notes for coding agents: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/AGENTS.md
 - Safety and privacy: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/SECURITY.md and https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/docs/warnings.md
@@ -14,11 +15,11 @@
 
 ## Key facts
 - Ready firmware: HGLRC F405 8S V2 (Betaflight board_name HGLRC_F405_S8), file betaflight_2025.12.1_STM32F405_HGLRC_F405_S8_autostart.hex; ..._stock.hex is the same Betaflight without the module. Tested with a Flycolor X-Cross HV3 160A (BLHeli_32) on 6S.
-- Other Betaflight boards: build from source with Docker; add #define USE_AUTOSTART to the board's config.h.
+- Other Betaflight boards: give your AI agent the prompt in the README; it follows AGENT_PORTING.md (https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/AGENT_PORTING.md): tools/make_board_config.py takes the board's config.h from betaflight/config branch 2025.12-config and appends the reference block, Docker builds it, tools/check_reference.py proves the board matches the reference (configs/reference/reference.json). Builds for F405, F411, F722, F745, H743, G473 and AT32F435 boards; hardware-tested only on the HGLRC F405 8S V2.
 - Flash with https://app.betaflight.com -> Firmware Flasher -> Load Firmware [Local]. Windows "DFU device not found": ImpulseRC Driver Fixer or Zadig (WinUSB). The first boot after flashing resets settings once; the build's defaults are the project settings.
-- Defaults: autostart_mode POWER, autostart_delay 10 s, autostart_ramp 100 (10.0 s), autostart_throttle 15 %, autostart_motors 15 (motors 1-4), autostart_vbat_min 60 (6.0 V). Firmware 1.1 adds autostart_pattern (STEADY / GUSTS), autostart_run_time, autostart_throttle_limit and the battery cut-off (autostart_cells, autostart_cell_cutoff, autostart_cutoff_time).
-- Stops the program (never restarts by itself): entering the CLI, the Configurator Motors tab, arming via a receiver, a valid receiver link (unless autostart_box), run time over, battery cut-off, battery unplugged, a button click while running. Re-plugging the battery in POWER mode starts the countdown again.
-- Measured on hardware: ramp starts 10.01 s after power-on, takes 10.02 s, max deviation 1 us; 76 unit tests + a randomized property test of the firmware state machine; every setting re-checked on the real board with a 6S pack (45 of 45, 2026-10-20).
+- Defaults: autostart_mode POWER, autostart_delay 10 s, autostart_ramp 100 (10.0 s), autostart_throttle 15 %, autostart_motors 15 (motors 1-4), autostart_vbat_min 60 (6.0 V), autostart_cells 6, autostart_cell_cutoff 330, autostart_usb_inhibit OFF; DShot300, dshot_bidir OFF, debug_mode AUTOSTART. Set once in the CLI, not by the build: feature ESC_SENSOR (ESC TX wire) and a calibrated vbat_scale (never copy the author unit's 149). Firmware 1.1 adds autostart_pattern (STEADY / GUSTS), autostart_run_time, autostart_throttle_limit and the battery cut-off (autostart_cells, autostart_cell_cutoff, autostart_cutoff_time).
+- Stops the program (never restarts by itself): entering the CLI, the Configurator Motors tab, arming via a receiver, a valid receiver link (unless autostart_box), run time over, battery cut-off, battery unplugged, a button click while running. Re-plugging the battery in POWER mode starts the countdown again, unless a receiver link was confirmed since boot.
+- Measured on hardware: ramp starts 10.01 s after power-on, takes 10.02 s, max deviation 1 us; 76 googletest cases of the firmware state machine (74 unit tests, 2 randomized property tests); every setting re-checked on the real board with a 6S pack (45 of 45, 2026-10-20).
 - Web configurator browsers: Chrome, Edge, Opera on Windows/macOS/Linux. Firefox 151+ (one-time site permission). Android: Chrome 148+ with USB-OTG, only on phones whose Android supports USB serial (Google: limited set of devices). iPhone/iPad: not possible.
 
 ## Author

@@ -1,0 +1,79 @@
+# CLI output of the reference board (HGLRC F405 8S V2, firmware 1.1.1). `get autostart`, `get motor_pwm_protocol`
+# and `feature` are verbatim from the real board (2026-10-19/20); the version line carries the v1.1.1 build
+# string; `get dshot_bidir`, `get debug_mode`, `get vbat_scale` and `serial` are the values read back on 2026-10-20.
+version
+# Betaflight / STM32F405 (F405) 2025.12.1 Oct 20 2026 / 13:33:39 (as-3c18) MSP API: 1.47
+# config rev: 46f5576
+# board: manufacturer_id: HGLR, board_name: HGLRC_F405_S8
+#
+get autostart
+autostart_mode = POWER
+Allowed values: OFF, POWER, BUTTON
+autostart_delay = 10
+Allowed range: 0 - 600
+autostart_ramp = 100
+Allowed range: 0 - 6000
+autostart_throttle = 15
+Allowed range: 0 - 100
+autostart_motors = 15
+Allowed range: 1 - 255
+autostart_usb_inhibit = OFF
+Allowed values: OFF, ON
+autostart_box = 255
+Allowed range: 0 - 255
+autostart_vbat_min = 60
+Allowed range: 0 - 600
+autostart_throttle_limit = 100
+Allowed range: 1 - 100
+autostart_run_time = 0
+Allowed range: 0 - 65535
+autostart_pattern = STEADY
+Allowed values: STEADY, GUSTS
+autostart_gust_min = 40
+Allowed range: 0 - 100
+autostart_gust_max = 80
+Allowed range: 0 - 100
+autostart_gust_len_min = 300
+Allowed range: 50 - 10000
+autostart_gust_len_max = 800
+Allowed range: 50 - 10000
+autostart_gust_pause_min = 20
+Allowed range: 0 - 6000
+autostart_gust_pause_max = 80
+Allowed range: 0 - 6000
+autostart_cells = 6
+Allowed range: 0 - 12
+autostart_cell_cutoff = 330
+Allowed range: 0 - 420
+autostart_cutoff_time = 5
+Allowed range: 1 - 60
+#
+get motor_pwm_protocol
+motor_pwm_protocol = DSHOT300
+Allowed values: PWM, ONESHOT125, ONESHOT42, MULTISHOT, BRUSHED, DSHOT150, DSHOT300, DSHOT600, PROSHOT1000, DISABLED
+Default value: DSHOT600
+#
+get dshot_bidir
+dshot_bidir = OFF
+Allowed values: OFF, ON
+#
+get debug_mode
+debug_mode = AUTOSTART
+#
+get vbat_scale
+vbat_scale = 149
+Allowed range: 0 - 255
+Default value: 210
+#
+feature
+Enabled:  RX_SERIAL TELEMETRY LED_STRIP OSD AIRMODE ESC_SENSOR ANTI_GRAVITY
+#
+serial
+serial UART1 0 115200 57600 0 115200
+serial UART2 64 115200 57600 0 115200
+serial UART3 0 115200 57600 0 115200
+serial UART4 2 115200 57600 0 115200
+serial UART5 1024 115200 57600 0 115200
+serial UART6 0 115200 57600 0 115200
+serial VCP 1 115200 57600 0 115200
+#

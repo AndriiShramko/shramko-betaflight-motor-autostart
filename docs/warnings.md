@@ -12,7 +12,8 @@ An honest list for anyone using Shramko Motor Autostart (firmware and web config
 
 ## Wiring
 
-- **Never more than 8S on the `B` pin.** For 10–12S, feed the board from a 12S-rated BEC.
+- **Never more than 8S on the `B` pin** of the HGLRC F405 8S V2 (other boards: their own rating, usually lower). For 10–12S, feed the board from a 12S-rated BEC.
+- **`vbat_scale` must be calibrated** before you rely on the cut-off: on the author's unit the build's 210 read 40.5 % high, so a 6S cut-off at 19.8 V would have tripped only near 14 V real. Calibrate against a multimeter or the ESC's voltage ([AGENT_PORTING.md](../AGENT_PORTING.md), step 8); never copy another unit's value.
 - **The red wire is battery voltage.** If its joint touches a white, yellow or green wire, the flight controller's processor is destroyed. Insulate every joint separately.
 - **The cable's yellow is the ESC-telemetry input, not the signal.** The ESC's signal goes to a white wire.
 - **Ground goes through the ESC's thin black signal wire** in the documented setup. Do not add a second ground path through other thin wires.
@@ -26,7 +27,7 @@ An honest list for anyone using Shramko Motor Autostart (firmware and web config
 
 ## The web configurator
 
-- **Browser support can change.** Web Serial works today in Chrome, Edge and Opera on desktop; Firefox and Safari do not have it; iOS browsers have neither Web Serial nor WebUSB; Android with USB-OTG is not confirmed. A browser update can change any of this.
+- **Browser support can change.** Web Serial works today in Chrome, Edge and Opera on desktop, and in Firefox 151+ after a one-time site permission; Safari does not have it; iOS browsers have neither Web Serial nor WebUSB; Android works only in Chrome 148+ with USB-OTG on phones whose Android supports USB serial. A browser update can change any of this.
 - **Only one program can use the serial port.** The Betaflight App, a serial terminal or a second tab holding the port makes the connection fail.
 - **Saving reboots the board** and, like the CLI, stops a running program (by design). Do not save while the device is doing a job that must not stop.
 - **Windows drivers.** "DFU device not found" while flashing means the bootloader driver is missing (ImpulseRC Driver Fixer or Zadig/WinUSB). The configurator itself uses the normal USB serial (VCP) driver.

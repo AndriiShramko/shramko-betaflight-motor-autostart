@@ -3,7 +3,7 @@
 > Betaflight 2025.12.1 firmware module plus a browser configurator (https://autostart.flyreelstudio.eu) by Andrii Shramko that turns a flight controller into a standalone motor / ESC driver: plug in the battery and the motor starts by itself - wait, smooth linear speed-up, then it holds the power (optionally with random gusts, a set run time and a LiPo battery stop) - no transmitter, receiver or switch. The configurator talks to the board over USB with Web Serial, in the visitor's browser. Open source, GPL-3.0-or-later: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart
 
 ## The page, in task order
-- Step 1 - Put the firmware on the board: the ready .hex for the HGLRC F405 8S V2 (Betaflight board_name HGLRC_F405_S8), flashed with https://app.betaflight.com -> Firmware Flasher -> Load Firmware [Local]. Windows "DFU device not found": ImpulseRC Driver Fixer or Zadig (WinUSB). Other Betaflight boards: build from source (Docker; #define USE_AUTOSTART in the board's config.h). Going back: the release's ..._stock.hex.
+- Step 1 - Put the firmware on the board: the ready .hex for the HGLRC F405 8S V2 (Betaflight board_name HGLRC_F405_S8), flashed with https://app.betaflight.com -> Firmware Flasher -> Load Firmware [Local]. Windows "DFU device not found": ImpulseRC Driver Fixer or Zadig (WinUSB). Other Betaflight boards: an AI agent follows AGENT_PORTING.md (https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/AGENT_PORTING.md): tools/make_board_config.py builds the board's config with the author's reference settings, Docker builds the .hex, tools/check_reference.py proves the board matches. A config with only #define USE_AUTOSTART starts with the program OFF. Going back: the release's ..._stock.hex.
 - Step 2 - Connect the board: Chrome/Edge over USB, propeller off. Shows the board, the firmware level and the Motor status (state in plain words, Power %, Battery V, every battery warning, Run the program..., a fixed STOP bar).
 - Step 3 - Choose what it does: the program in words ("What the board will do"), five questions (Wait before start, Power, How long, Random gusts, Battery) and one "More settings" drawer with everything else; Save to board writes only the changes, restarts the board and reads every value back.
 - Zero clicks for the factory program: 10 s after the battery is plugged in, 10 s speed-up to 15 %, run until the battery stays below 19.8 V (6 x 3.30 V) for 5 s.
@@ -48,6 +48,8 @@
 ## For agents
 - README: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart#readme
 - Setup protocol: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/AGENT_SETUP.md
+- Build for another flight controller, set up like the reference: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/AGENT_PORTING.md
+- Reference values: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/configs/reference/reference.json
 - Settings reference (names, ranges, defaults): https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/docs/settings.md
 - Wiring: https://github.com/AndriiShramko/shramko-betaflight-motor-autostart/blob/main/docs/wiring.md
 

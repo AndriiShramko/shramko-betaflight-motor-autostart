@@ -1,0 +1,13 @@
+# Shramko Motor Autostart: board-level part of the reference setup for HGLRC_H743_LITE.
+# Send after the first boot of the new firmware, USB only, battery unplugged, propeller off.
+# ESC TX wire -> UART8 RX pad (PE0): function 1024 (ESC_SENSOR) on that UART, feature ESC_SENSOR.
+serial UART8 1024 115200 57600 0 115200
+feature ESC_SENSOR
+save
+
+# As one command:
+#   python tools/bf_cli.py <PORT> "serial UART8 1024 115200 57600 0 115200" "feature ESC_SENSOR" "save"
+
+# Then calibrate vbat_scale (AGENT_PORTING.md, step 8; not calibrated: leave out --vbat-scale and
+# expect WARN vbat_scale) and check (step 9):
+#   python tools/check_reference.py <PORT> --cells 6 --motors 1 --esc-uart UART8 --vbat-scale <calibrated> --commit 926ca2d --board HGLRC_H743_LITE --exit
